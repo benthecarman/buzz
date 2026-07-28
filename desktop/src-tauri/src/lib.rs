@@ -31,6 +31,8 @@ mod templates;
 mod util;
 #[cfg(target_os = "linux")]
 pub mod webkit_rendering;
+#[cfg(feature = "bitcoin")]
+mod wallet;
 use app_state::{build_app_state, resolve_persisted_identity, AppState};
 use builderlab::*;
 use commands::*;
@@ -895,6 +897,21 @@ pub fn run() {
             archive::read_unindexed_observer_rows,
             is_auto_update_supported,
             set_window_vibrancy,
+            bitcoin_compile_enabled,
+            wallet_enable,
+            wallet_disable,
+            wallet_get_status,
+            wallet_create_receive_request,
+            wallet_refresh_offer,
+            wallet_analyze_destination,
+            wallet_get_pending_send,
+            wallet_send,
+            wallet_list_transactions,
+            wallet_poll_updates,
+            wallet_get_recipient_offer,
+            wallet_get_pending_profile_zap,
+            wallet_send_profile_zap,
+            wallet_reveal_recovery_phrase,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

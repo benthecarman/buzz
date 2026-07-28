@@ -17,7 +17,8 @@ name = "buzz_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["system-keyring"]
+default = ["bitcoin", "system-keyring"]
+bitcoin = ["dep:async-trait", "dep:bip39", "dep:getrandom", "dep:hkdf", "dep:lexe", "dep:sha2_10"]
 mesh-llm = ["dep:iroh", "dep:mesh-llm-sdk", "dep:mesh-llm-host-runtime", "dep:mesh-llm-client", "dep:mesh-llm-node", "dep:mesh-llm-system", "dep:mesh-llm-events"]
 # OS keyring backing for desktop secret storage (nsec private keys). When
 # disabled, secrets fall back to 0o600 files. On by default for real builds.
@@ -57,7 +58,13 @@ user-idle = { version = "0.6", default-features = false }
 [dependencies]
 atomic-write-file = "0.3"
 anyhow = "1"
+async-trait = { version = "0.1", optional = true }
+bip39 = { version = "2", default-features = false, features = ["std", "zeroize"], optional = true }
 dirs = "6"
+getrandom = { version = "0.3", optional = true }
+hkdf = { version = "0.12", optional = true }
+lexe = { version = "=0.1.18", optional = true }
+sha2_10 = { package = "sha2", version = "0.10", optional = true }
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
