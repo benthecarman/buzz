@@ -22,6 +22,7 @@ import {
   Ticket,
   UserRound,
   Volume2,
+  WalletCards,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -89,11 +90,13 @@ import { ProfileSettingsCard } from "./ProfileSettingsCard";
 import { UpdateChecker } from "../UpdateChecker";
 import { SettingsSectionHeader } from "./SettingsSectionHeader";
 import { VoiceSettingsCard } from "./VoiceSettingsCard";
+import { WalletSettingsPanel } from "@/features/wallet/ui/WalletSettingsPanel";
 
 export type SettingsSection =
   | "profile"
   | "notifications"
   | "voice"
+  | "wallet"
   | "experimental"
   | "agents"
   | "channel-templates"
@@ -114,6 +117,7 @@ const SETTINGS_SECTION_VALUES: readonly SettingsSection[] = [
   "profile",
   "notifications",
   "voice",
+  "wallet",
   "experimental",
   "agents",
   "channel-templates",
@@ -179,6 +183,12 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     value: "voice",
     label: "Voice",
     icon: Volume2,
+  },
+  {
+    value: "wallet",
+    label: "Wallet",
+    icon: WalletCards,
+    featureGate: "bitcoin",
   },
   {
     value: "experimental",
@@ -870,6 +880,8 @@ export function renderSettingsSection(
       );
     case "voice":
       return <VoiceSettingsCard />;
+    case "wallet":
+      return <WalletSettingsPanel />;
     case "experimental":
       return <ExperimentalFeaturesCard />;
     case "agents":

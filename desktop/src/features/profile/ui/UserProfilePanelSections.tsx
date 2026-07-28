@@ -353,6 +353,7 @@ export function ProfileSummaryView({
       ) : !isSelf && pubkey ? (
         <ProfilePrimaryActions
           canEditAgent={canEditAgent}
+          recipientName={displayName}
           followMutation={followMutation}
           onCreateCard={onCreateCard}
           onEditAgent={handleEditAgent}

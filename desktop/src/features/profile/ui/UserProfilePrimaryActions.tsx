@@ -15,6 +15,7 @@ import type {
   useFollowMutation,
   useUnfollowMutation,
 } from "@/features/profile/hooks";
+import { ProfileBitcoinQuickAction } from "@/features/profile/ui/ProfileQuickAction";
 import { useFeatureEnabled } from "@/shared/features";
 import { cn } from "@/shared/lib/cn";
 import { Spinner } from "@/shared/ui/spinner";
@@ -36,6 +37,7 @@ export function ProfilePrimaryActions({
   onEditAgent,
   onMessage,
   pubkey,
+  recipientName,
   unfollowMutation,
 }: {
   agentActionDisabled?: boolean;
@@ -51,6 +53,7 @@ export function ProfilePrimaryActions({
   onEditAgent: () => void;
   onMessage?: () => void;
   pubkey: string;
+  recipientName: string;
   unfollowMutation: ReturnType<typeof useUnfollowMutation>;
 }) {
   const showFollowAction = useFeatureEnabled("pulse");
@@ -66,7 +69,7 @@ export function ProfilePrimaryActions({
   };
 
   return (
-    <div className="flex items-center justify-center gap-8">
+    <div className="flex flex-wrap items-center justify-center gap-8">
       {showFollowAction ? (
         <ProfileQuickAction
           active={isFollowing}
@@ -86,6 +89,10 @@ export function ProfilePrimaryActions({
           testId="user-profile-message"
         />
       ) : null}
+      <ProfileBitcoinQuickAction
+        recipientName={recipientName}
+        recipientPubkey={pubkey}
+      />
       {canEditAgent ? (
         <ProfileQuickAction
           icon={Pencil}

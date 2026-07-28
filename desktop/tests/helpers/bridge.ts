@@ -50,6 +50,7 @@ type MockSearchProfileSeed = {
   avatarUrl?: string | null;
   nip05Handle?: string | null;
   about?: string | null;
+  bolt12Offer?: string | null;
   ownerPubkey?: string | null;
   isAgent?: boolean;
 };
@@ -311,6 +312,28 @@ type MockBridgeOptions = {
   websocketConnectErrors?: string[];
   stallWebsocketSends?: boolean;
   userSearchDelayMs?: number;
+  /** Successive `wallet_poll_updates` results; defaults to no changes. */
+  walletPollUpdates?: boolean[];
+  /** Current mocked wallet totals, mutable by wallet polling specs. */
+  walletBalance?: number;
+  walletSpendableBalance?: number;
+  /**
+   * Value returned by the `observer_archive_default_enabled` mock command.
+   * `true` = internal-policy build (toggle locked ON); `false`/omitted = OSS
+   * build (toggle functional). Drives LocalArchiveSettingsCard policy state.
+   */
+  observerArchiveDefaultEnabled?: boolean;
+  /**
+   * Delay (ms) applied to `observer_archive_default_enabled` so specs can
+   * assert the pending-reconciliation state (toggle disabled, no
+   * `list_save_subscriptions` call yet) before the policy resolves.
+   */
+  observerArchiveDefaultEnabledDelayMs?: number;
+  /**
+   * When set, `observer_archive_default_enabled` throws with this message —
+   * drives the fail-closed path when the policy check itself fails.
+   */
+  observerArchiveDefaultEnabledError?: string;
   // NIP-IA gate inputs — drive the archive-button gate matrix in
   // tests/e2e/identity-archive.spec.ts.
   /**

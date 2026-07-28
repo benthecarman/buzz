@@ -63,6 +63,12 @@ import type {
 } from "@/shared/api/tauri";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 
+export const VALID_OFFER =
+  "lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
+
+export const VALID_INVOICE =
+  "lnbc1gcssw9pdqqpp54dkfmzgm5cqz4hzz24mpl7xtgz55dsuh430ap4rlugvywlm4syhqsp5qqtk8n0x2wa6ajl32mp6hj8u9vs55s5lst4s2rws3he4622w08es9qyysgqcqypt3ffpp36sw424yacusmj3hy32df9g97nlwm0a3e0yxw4nd8uau2zdw85lfl5w0h3mggd5g3qswxr9lje0el8g98vul9yec59gf0zxu3eg9rhda09ducxpupsfh36ks9jez7aamsn7hpkxqpw2xyek";
+
 type TestIdentity = {
   privateKey: string;
   pubkey: string;
@@ -353,6 +359,11 @@ type E2eConfig = {
     websocketConnectErrors?: string[];
     stallWebsocketSends?: boolean;
     userSearchDelayMs?: number;
+    /** Successive `wallet_poll_updates` results; defaults to no changes. */
+    walletPollUpdates?: boolean[];
+    /** Current mocked wallet totals, mutable by wallet polling specs. */
+    walletBalance?: number;
+    walletSpendableBalance?: number;
     // NIP-IA gate inputs — see tests/helpers/bridge.ts:MockBridgeOptions for
     // semantics. These three drive the archive-button gate matrix in
     // tests/e2e/identity-archive.spec.ts; they're plumbed into:
@@ -1389,6 +1400,12 @@ const ALICE_PUBKEY =
   "953d3363262e86b770419834c53d2446409db6d918a57f8f339d495d54ab001f";
 const BOB_PUBKEY =
   "bb22a5299220cad76ffd46190ccbeede8ab5dc260faa28b6e5a2cb31b9aff260";
+const BOB_IDENTITY = {
+  privateKey:
+    "7667ae87cbc50ac0b2251b115c9c51aca7e2da65301b28ecf82f4e4c5260a6bb",
+  pubkey: BOB_PUBKEY,
+  username: "bob",
+} satisfies TestIdentity;
 const CHARLIE_PUBKEY =
   "554cef57437abac34522ac2c9f0490d685b72c80478cf9f7ed6f9570ee8624ea";
 const OUTSIDER_PUBKEY =
@@ -5524,6 +5541,21 @@ function mockEventId(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function walletPaymentId(kind: "fs" | "ln", id = mockEventId()): string {
+  return `${Date.now().toString().padStart(19, "0")}-${kind}_${id}`;
+}
+
+async function signedWalletOffer(recipientPubkey: string) {
+  if (recipientPubkey !== BOB_IDENTITY.pubkey) {
+    throw new Error(`No E2E wallet signer for recipient ${recipientPubkey}`);
+  }
+  return signWithIdentity(BOB_IDENTITY, {
+    kind: 10058,
+    content: "",
+    tags: [["offer", VALID_OFFER]],
+  });
 }
 
 function createMockEvent(
@@ -11664,6 +11696,129 @@ export function maybeInstallE2eTauriMocks() {
         return getRelayWsUrl(activeConfig);
       case "auto_connect_default_relay_enabled":
         return activeConfig?.autoConnectDefaultRelay ?? false;
+      case "bitcoin_compile_enabled":
+        return true;
+      case "wallet_enable":
+        return {
+          status: {
+            providerName: "Lexe",
+            balance: activeConfig?.mock?.walletBalance ?? 21_000,
+            spendableBalance:
+              activeConfig?.mock?.walletSpendableBalance ?? 20_000,
+            lightningBalance: activeConfig?.mock?.walletBalance ?? 21_000,
+            onchainBalance: 0,
+          },
+          publicationWarnings: [],
+        };
+      case "wallet_disable":
+        return { offer: null, publicationWarnings: [] };
+      case "wallet_get_status":
+        return {
+          providerName: "Lexe",
+          balance: activeConfig?.mock?.walletBalance ?? 21_000,
+          spendableBalance:
+            activeConfig?.mock?.walletSpendableBalance ?? 20_000,
+          lightningBalance: activeConfig?.mock?.walletBalance ?? 21_000,
+          onchainBalance: 0,
+        };
+      case "wallet_create_receive_request": {
+        return {
+          bip321Uri: `bitcoin:?lightning=${VALID_INVOICE}&lno=${VALID_OFFER}`,
+          bolt11Invoice: VALID_INVOICE,
+          bolt11ExpiresAtMs: Date.now() + 30 * 24 * 60 * 60 * 1000,
+          bolt12Offer: VALID_OFFER,
+        };
+      }
+      case "wallet_refresh_offer":
+        return {
+          offer: VALID_OFFER,
+          publicationWarnings: [],
+        };
+      case "wallet_analyze_destination": {
+        const destination =
+          (payload as { destination?: string }).destination ?? VALID_INVOICE;
+        return {
+          normalizedDestination: destination,
+          description: "Lightning payment",
+          amount: null,
+          minAmount: 1,
+          maxAmount: null,
+          expiresAtMs: null,
+        };
+      }
+      case "wallet_get_pending_send":
+      case "wallet_get_pending_profile_zap":
+        return null;
+      case "wallet_list_transactions":
+        return {
+          transactions: [],
+          nextCursor: null,
+        };
+      case "wallet_poll_updates":
+        return activeConfig?.mock?.walletPollUpdates?.shift() ?? false;
+      case "wallet_send":
+        return {
+          paymentId: walletPaymentId("ln"),
+          status: "completed",
+          statusMessage: "Payment completed",
+          amount:
+            (payload as { request?: { amount?: number | null } }).request
+              ?.amount ?? 1000,
+          fees: 1,
+          createdAtMs: Date.now(),
+          finalizedAtMs: Date.now(),
+        };
+      case "wallet_get_recipient_offer": {
+        const recipientPubkey =
+          (payload as { recipientPubkey?: string }).recipientPubkey ??
+          BOB_IDENTITY.pubkey;
+        const offerEvent = await signedWalletOffer(recipientPubkey);
+        return {
+          recipientPubkey,
+          offer: VALID_OFFER,
+          offerEventJson: JSON.stringify(offerEvent),
+          offerEventId: offerEvent.id,
+        };
+      }
+      case "wallet_send_profile_zap": {
+        const request = (
+          payload as {
+            request?: {
+              recipientPubkey?: string;
+              amount?: number;
+              comment?: string | null;
+            };
+          }
+        ).request;
+        const recipientPubkey = request?.recipientPubkey ?? BOB_IDENTITY.pubkey;
+        const amount = request?.amount ?? 1000;
+        const offerEvent = await signedWalletOffer(recipientPubkey);
+        const intentEvent = await signWithIdentity(DEFAULT_REAL_IDENTITY, {
+          kind: 9737,
+          content: request?.comment ?? "",
+          tags: [
+            ["p", recipientPubkey],
+            ["amount", String(amount * 1000)],
+            ["offer_event", JSON.stringify(offerEvent)],
+            ["zap_id", crypto.randomUUID().replaceAll("-", "")],
+          ],
+        });
+        return {
+          payment: {
+            paymentId: walletPaymentId("fs", intentEvent.id),
+            status: "completed",
+            statusMessage: "Payment completed",
+            amount,
+            fees: 1,
+            createdAtMs: Date.now(),
+            finalizedAtMs: Date.now(),
+          },
+          intentEventId: intentEvent.id,
+          proofPublished: false,
+        };
+      }
+      case "wallet_reveal_recovery_phrase":
+        return "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
       case "get_legacy_workspace_storage":
         return {
           workspaces: null,
