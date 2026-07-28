@@ -127,6 +127,8 @@ export default defineConfig({
         "**/harness-management.spec.ts",
         "**/harness-catalog-screenshots.spec.ts",
         "**/inline-custom-harness.spec.ts",
+        "**/wallet-profile.spec.ts",
+        "**/wallet-settings.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],

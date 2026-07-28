@@ -1,5 +1,4 @@
 import * as React from "react";
-import type { LucideIcon } from "lucide-react";
 import {
   ArrowUpRight,
   ChevronDown,
@@ -44,10 +43,13 @@ import {
   STATUS_DOT_MASK_CURVE,
 } from "@/features/profile/ui/MaskedAvatarBadgeFrame";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
+import {
+  ProfileBitcoinQuickAction,
+  ProfileQuickAction,
+} from "@/features/profile/ui/ProfileQuickAction";
 import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 import { BotIdenticon } from "@/features/messages/ui/BotIdenticon";
 import type { ManagedAgent, RelayAgent } from "@/shared/api/types";
-import { Spinner } from "@/shared/ui/spinner";
 import type {
   ProfileChannelLink,
   ProfilePanelTab,
@@ -56,7 +58,6 @@ import { useFeatureEnabled } from "@/shared/features";
 import { cn } from "@/shared/lib/cn";
 import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert";
 import { Badge } from "@/shared/ui/badge";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 export { AgentInstructionsFocusedView } from "@/features/profile/ui/UserProfilePanelAgentDetails";
 
@@ -355,6 +356,7 @@ export function ProfileSummaryView({
       ) : !isSelf && pubkey ? (
         <ProfilePrimaryActions
           canEditAgent={canEditAgent}
+          recipientName={displayName}
           followMutation={followMutation}
           onEditAgent={handleEditAgent}
           agentActionDisabled={isAgentActionPending}
@@ -644,6 +646,7 @@ function ProfilePrimaryActions({
   onEditAgent,
   onMessage,
   pubkey,
+  recipientName,
   unfollowMutation,
 }: {
   agentActionDisabled?: boolean;
@@ -658,6 +661,7 @@ function ProfilePrimaryActions({
   onEditAgent: () => void;
   onMessage?: () => void;
   pubkey: string;
+  recipientName: string;
   unfollowMutation: ReturnType<typeof useUnfollowMutation>;
 }) {
   const showFollowAction = useFeatureEnabled("pulse");
@@ -673,7 +677,7 @@ function ProfilePrimaryActions({
   };
 
   return (
-    <div className="flex items-center justify-center gap-8">
+    <div className="flex flex-wrap items-center justify-center gap-8">
       {showFollowAction ? (
         <ProfileQuickAction
           active={isFollowing}
@@ -693,6 +697,10 @@ function ProfilePrimaryActions({
           testId="user-profile-message"
         />
       ) : null}
+      <ProfileBitcoinQuickAction
+        recipientName={recipientName}
+        recipientPubkey={pubkey}
+      />
       {canEditAgent ? (
         <ProfileQuickAction
           icon={Pencil}
@@ -754,53 +762,6 @@ function ProfilePersonaPrimaryActions({
         />
       ) : null}
     </div>
-  );
-}
-
-function ProfileQuickAction({
-  active,
-  disabled,
-  icon: Icon,
-  isLoading,
-  label,
-  onClick,
-  testId,
-}: {
-  active?: boolean;
-  disabled?: boolean;
-  icon: LucideIcon;
-  isLoading?: boolean;
-  label: string;
-  onClick: () => void;
-  testId?: string;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          aria-label={label}
-          className={cn(
-            "flex h-12 w-12 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-            active
-              ? "bg-foreground text-background hover:bg-foreground/90"
-              : "bg-muted/60 text-foreground hover:bg-muted/80",
-          )}
-          data-testid={testId}
-          disabled={disabled}
-          onClick={onClick}
-          type="button"
-        >
-          {isLoading ? (
-            <Spinner aria-hidden="true" className="h-4 w-4 border-2" />
-          ) : (
-            <Icon className="h-4 w-4" />
-          )}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent align="center" side="top">
-        {label}
-      </TooltipContent>
-    </Tooltip>
   );
 }
 

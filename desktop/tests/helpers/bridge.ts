@@ -67,6 +67,7 @@ type MockSearchProfileSeed = {
   avatarUrl?: string | null;
   nip05Handle?: string | null;
   about?: string | null;
+  bolt12Offer?: string | null;
   ownerPubkey?: string | null;
   isAgent?: boolean;
 };
@@ -286,6 +287,11 @@ type MockBridgeOptions = {
   websocketConnectErrors?: string[];
   stallWebsocketSends?: boolean;
   userSearchDelayMs?: number;
+  /** Successive `wallet_poll_updates` results; defaults to no changes. */
+  walletPollUpdates?: boolean[];
+  /** Current mocked wallet totals, mutable by wallet polling specs. */
+  walletBalance?: number;
+  walletSpendableBalance?: number;
   /**
    * Value returned by the `observer_archive_default_enabled` mock command.
    * `true` = internal-policy build (toggle locked ON); `false`/omitted = OSS

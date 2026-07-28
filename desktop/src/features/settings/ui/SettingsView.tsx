@@ -3,6 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { AlertCircle, ArrowLeft, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
+import { useBitcoinCompileEnabled } from "@/features/wallet/hooks";
 import {
   canManageCommunityMembers,
   shouldWarnMissingMembershipSnapshot,
@@ -58,6 +59,7 @@ const settingsNavGroups: Array<{
       "profile",
       "appearance",
       "notifications",
+      "wallet",
       "shortcuts",
       "custom-emoji",
       "local-archive",
@@ -128,8 +130,12 @@ export function SettingsView({
   const { isMobile, open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const myMembershipQuery = useMyRelayMembershipLookupQuery();
   const featureState = useFeatureSnapshot();
+  const bitcoinAvailable = useBitcoinCompileEnabled();
   const visibleSections = React.useMemo(() => {
     return settingsSections.filter((s) => {
+      if (s.value === "wallet" && !bitcoinAvailable) {
+        return false;
+      }
       // Feature gate check. Manifest is preview-only — if the gate id is in
       // the manifest, it's preview and needs an opt-in; if it's not, it's
       // stable and renders unconditionally (fail-open).
@@ -146,7 +152,7 @@ export function SettingsView({
       }
       return true;
     });
-  }, [myMembershipQuery.data, featureState]);
+  }, [bitcoinAvailable, myMembershipQuery.data, featureState]);
 
   const [isLoaded, setIsLoaded] = React.useState(false);
   const [appVersion, setAppVersion] = React.useState<string | null>(null);

@@ -21,6 +21,7 @@ import {
   SunMoon,
   Ticket,
   UserRound,
+  WalletCards,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -83,10 +84,12 @@ import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
 import { ProfileSettingsCard } from "./ProfileSettingsCard";
 import { UpdateChecker } from "../UpdateChecker";
 import { SettingsSectionHeader } from "./SettingsSectionHeader";
+import { WalletSettingsPanel } from "@/features/wallet/ui/WalletSettingsPanel";
 
 export type SettingsSection =
   | "profile"
   | "notifications"
+  | "wallet"
   | "experimental"
   | "agents"
   | "channel-templates"
@@ -106,6 +109,7 @@ export const DEFAULT_SETTINGS_SECTION: SettingsSection = "profile";
 const SETTINGS_SECTION_VALUES: readonly SettingsSection[] = [
   "profile",
   "notifications",
+  "wallet",
   "experimental",
   "agents",
   "channel-templates",
@@ -166,6 +170,12 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     value: "notifications",
     label: "Notifications",
     icon: BellRing,
+  },
+  {
+    value: "wallet",
+    label: "Wallet",
+    icon: WalletCards,
+    featureGate: "bitcoin",
   },
   {
     value: "experimental",
@@ -807,6 +817,8 @@ export function renderSettingsSection(
           onSetSoundForSlot={props.onSetSoundForSlot}
         />
       );
+    case "wallet":
+      return <WalletSettingsPanel />;
     case "experimental":
       return <ExperimentalFeaturesCard />;
     case "agents":
