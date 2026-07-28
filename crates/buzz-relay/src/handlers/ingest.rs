@@ -13,8 +13,9 @@ use buzz_auth::Scope;
 use buzz_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
     is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC,
-    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET,
-    KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
+    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOLT12_OFFER, KIND_BOLT12_ZAP,
+    KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION,
+    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
     KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
     KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
     KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
@@ -263,7 +264,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_PROFILE => Ok(Scope::UsersWrite),
         KIND_TEXT_NOTE | KIND_LONG_FORM => Ok(Scope::MessagesWrite),
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
-        | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
+        | KIND_BOLT12_OFFER | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
         | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
         }
@@ -291,7 +292,8 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_EMOJI_SET
         | KIND_EMOJI_LIST
         | KIND_AGENT_PROFILE => Ok(Scope::UsersWrite),
-        KIND_DELETION
+        KIND_BOLT12_ZAP
+        | KIND_DELETION
         | KIND_REACTION
         | KIND_GIFT_WRAP
         | KIND_STREAM_MESSAGE
@@ -451,6 +453,10 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_LONG_FORM
             | KIND_USER_STATUS
             | KIND_READ_STATE
+            // Draft BOLT12 offers are recipient-owned replaceable state.
+            // Zap proofs may be global profile zaps or channel-scoped message
+            // zaps, so KIND_BOLT12_ZAP deliberately remains out of this list.
+            | KIND_BOLT12_OFFER
             // NIP-51 standard lists + sets and NIP-65 relay list — user-owned global state.
             // Same as kind:3 (contacts): keyed by (pubkey, kind) or (pubkey, kind, d_tag),
             // never channel-scoped. A stray `h` tag must not channel-scope them.
@@ -3154,6 +3160,36 @@ mod tests {
                 "kind {kind} must not require an h tag"
             );
         }
+    }
+
+    #[test]
+    fn bolt12_kinds_have_narrow_scopes() {
+        let dummy = make_dummy_event();
+        assert_eq!(
+            required_scope_for_kind(KIND_BOLT12_OFFER, &dummy).unwrap(),
+            Scope::UsersWrite
+        );
+        assert_eq!(
+            required_scope_for_kind(KIND_BOLT12_ZAP, &dummy).unwrap(),
+            Scope::MessagesWrite
+        );
+        assert!(is_global_only_kind(KIND_BOLT12_OFFER));
+        assert!(!requires_h_channel_scope(KIND_BOLT12_OFFER));
+    }
+
+    #[test]
+    fn bolt12_zaps_allow_global_profiles_or_channel_scope() {
+        assert!(!is_global_only_kind(KIND_BOLT12_ZAP));
+        assert!(!requires_h_channel_scope(KIND_BOLT12_ZAP));
+    }
+
+    #[test]
+    fn bolt12_intents_are_not_admitted_as_standalone_events() {
+        let dummy = make_dummy_event();
+        assert_eq!(
+            required_scope_for_kind(buzz_core::kind::KIND_BOLT12_ZAP_INTENT, &dummy),
+            Err("restricted: unknown event kind")
+        );
     }
 
     #[test]

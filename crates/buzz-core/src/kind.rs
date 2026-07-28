@@ -56,6 +56,20 @@ pub const KIND_CHANNEL_METADATA: u32 = 41;
 pub const KIND_DELETION: u32 = 5;
 /// NIP-25: Content is emoji char or `+`/`-`.
 pub const KIND_REACTION: u32 = 7;
+/// Draft BOLT12 zaps: settled zap proof published by the payer.
+///
+/// Clients must validate the embedded intent, recipient offer, and payer
+/// proof. A profile zap is global; a future message zap may carry an `h` tag
+/// and inherit normal channel authorization. Relay ingestion only authenticates
+/// and stores the signed outer event.
+pub const KIND_BOLT12_ZAP: u32 = 9736;
+/// Draft BOLT12 zaps: signed payer intent embedded in a kind 9736 event.
+///
+/// Intents are never broadcast directly. Relays deliberately do not admit
+/// this kind as a standalone event.
+pub const KIND_BOLT12_ZAP_INTENT: u32 = 9737;
+/// Draft BOLT12 zaps: recipient-authored replaceable offer announcement.
+pub const KIND_BOLT12_OFFER: u32 = 10058;
 /// NIP-17: Outer envelope for private DMs — hides sender, content, timestamp.
 pub const KIND_GIFT_WRAP: u32 = 1059;
 /// NIP-94: File metadata attachment.
@@ -647,6 +661,9 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_CHANNEL_METADATA,
     KIND_DELETION,
     KIND_REACTION,
+    KIND_BOLT12_ZAP,
+    KIND_BOLT12_ZAP_INTENT,
+    KIND_BOLT12_OFFER,
     KIND_GIFT_WRAP,
     KIND_FILE_METADATA,
     KIND_AGENT_PROFILE,
