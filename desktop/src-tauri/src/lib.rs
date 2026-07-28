@@ -42,6 +42,8 @@ mod terminal_transport;
 #[cfg(target_os = "macos")]
 mod tray_menu;
 mod util;
+#[cfg(feature = "bitcoin")]
+mod wallet;
 #[cfg(target_os = "linux")]
 pub mod webkit_rendering;
 use app_state::{build_app_state, resolve_persisted_identity, AppState};
@@ -906,6 +908,21 @@ pub fn run() {
             archive::read_unindexed_observer_rows,
             is_auto_update_supported,
             set_window_vibrancy,
+            bitcoin_compile_enabled,
+            wallet_enable,
+            wallet_disable,
+            wallet_get_status,
+            wallet_create_receive_request,
+            wallet_refresh_offer,
+            wallet_analyze_destination,
+            wallet_get_pending_send,
+            wallet_send,
+            wallet_list_transactions,
+            wallet_poll_updates,
+            wallet_get_recipient_offer,
+            wallet_get_pending_profile_zap,
+            wallet_send_profile_zap,
+            wallet_reveal_recovery_phrase,
             #[cfg(target_os = "macos")]
             tray_menu::clear_tray_agent_activity,
             #[cfg(target_os = "macos")]

@@ -6,7 +6,6 @@ use tauri::State;
 
 use crate::{
     app_state::AppState,
-    events,
     managed_agents::persona_events::monotonic_created_at,
     models::{ProfileInfo, SearchUsersResponse, UserNotesResponse, UsersBatchResponse},
     nostr_convert,
@@ -77,7 +76,7 @@ pub async fn update_profile(
         .as_deref()
         .or_else(|| current.get("nip05").and_then(Value::as_str));
 
-    let builder = events::build_profile(dn, name, picture, ab, nip05)?;
+    let builder = build_merged_profile(&current, dn, name, picture, ab, nip05);
     submit_event(builder, &state).await?;
 
     // Re-fetch to return canonical profile.
@@ -158,11 +157,34 @@ fn build_deferred_profile_event(
     let nip05 = current.get("nip05").and_then(Value::as_str);
 
     Ok(
-        events::build_profile(display_name, name, Some(avatar_url), about, nip05)?
+        build_merged_profile(current, display_name, name, Some(avatar_url), about, nip05)
             .custom_created_at(monotonic_created_at(
                 prior_event.map(|event| event.created_at.as_secs() as i64),
             )),
     )
+}
+
+fn build_merged_profile(
+    current: &Value,
+    display_name: Option<&str>,
+    name: Option<&str>,
+    picture: Option<&str>,
+    about: Option<&str>,
+    nip05: Option<&str>,
+) -> nostr::EventBuilder {
+    let mut map = current.as_object().cloned().unwrap_or_default();
+    for (field, value) in [
+        ("display_name", display_name),
+        ("name", name),
+        ("picture", picture),
+        ("about", about),
+        ("nip05", nip05),
+    ] {
+        if let Some(value) = value {
+            map.insert(field.into(), Value::String(value.into()));
+        }
+    }
+    nostr::EventBuilder::new(nostr::Kind::Metadata, Value::Object(map).to_string())
 }
 
 fn capture_expected_signer(state: &AppState, expected_pubkey: &str) -> Result<nostr::Keys, String> {
@@ -466,6 +488,24 @@ mod tests {
             serde_json::from_str::<Value>(&event.content).unwrap()["picture"],
             "https://example.com/avatar.png"
         );
+    }
+
+    #[test]
+    fn profile_updates_preserve_extension_fields() {
+        let current = serde_json::json!({
+            "display_name": "Old name",
+            "bolt12": crate::wallet::VALID_OFFER,
+            "custom": {"enabled": true}
+        });
+        let keys = nostr::Keys::generate();
+        let event = build_merged_profile(&current, Some("New name"), None, None, None, None)
+            .sign_with_keys(&keys)
+            .unwrap();
+        let content: Value = serde_json::from_str(&event.content).unwrap();
+
+        assert_eq!(content["display_name"], "New name");
+        assert_eq!(content["bolt12"], crate::wallet::VALID_OFFER);
+        assert_eq!(content["custom"]["enabled"], true);
     }
 
     #[test]

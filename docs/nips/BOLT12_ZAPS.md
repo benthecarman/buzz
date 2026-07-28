@@ -14,7 +14,7 @@ events. It does not validate the embedded intent, recipient offer, BOLT12 payer
 proof, amount, target, or payment hash. Clients must validate that proof chain
 before rendering or counting a zap.
 
-The desktop wallet does not currently publish kind `9736`. Lexe 0.1.18 does
+The desktop wallet does not currently publish kind `9736`. Lexe 0.1.19 does
 not expose the settled `lnp` payer proof required by the proposal, so Buzz
 keeps the signed intent and payment result local until a valid proof is
 available.
@@ -34,7 +34,7 @@ author as authoritative, including an empty announcement with no `offer` tag,
 which withdraws the offer. A relay that missed the withdrawal and still serves
 an older announcement must not resurrect the withdrawn offer.
 
-The desktop wallet persists its active offer locally because Lexe 0.1.18 has
+The desktop wallet persists its active offer locally because Lexe 0.1.19 has
 no API to recover an existing offer and `create_offer` never invalidates prior
 ones; without persistence every app restart would mint and publish a fresh
 offer while the old ones stay payable.
