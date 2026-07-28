@@ -35,6 +35,7 @@ use buzz_core::kind::{
     KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
     RELAY_ADMIN_REMOVE_MEMBER, RELAY_ADMIN_SET_WORKSPACE_PROFILE,
 };
+use buzz_core::kind::{KIND_BOLT12_OFFER, KIND_BOLT12_ZAP};
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
 use buzz_core::CommunityId;
@@ -214,7 +215,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_TEXT_NOTE | KIND_LONG_FORM => Ok(Scope::MessagesWrite),
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
         | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
-        | super::push_lease::KIND_PUSH_LEASE => {
+        | KIND_BOLT12_OFFER | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
         }
         // NIP-AM: agent turn metrics are agent-authored global events (encrypted to owner).
@@ -243,6 +244,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_AGENT_PROFILE => Ok(Scope::UsersWrite),
         KIND_DELETION
         | KIND_REACTION
+        | KIND_BOLT12_ZAP
         | KIND_GIFT_WRAP
         | KIND_STREAM_MESSAGE
         | KIND_STREAM_MESSAGE_V2
@@ -395,6 +397,10 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
         KIND_PROFILE
             | KIND_TEXT_NOTE
             | KIND_CONTACT_LIST
+            // BOLT12 offer metadata and zap receipts are payment-level state,
+            // not channel-scoped content.
+            | KIND_BOLT12_OFFER
+            | KIND_BOLT12_ZAP
             | KIND_LONG_FORM
             | KIND_USER_STATUS
             | KIND_READ_STATE
@@ -2897,6 +2903,8 @@ mod tests {
             KIND_FORUM_COMMENT,
             KIND_LONG_FORM,
             KIND_USER_STATUS,
+            KIND_BOLT12_OFFER,
+            KIND_BOLT12_ZAP,
             // NIP-51 lists + sets, NIP-65 relay list
             KIND_MUTE_LIST,
             KIND_PIN_LIST,
@@ -2917,6 +2925,26 @@ mod tests {
             assert!(
                 required_scope_for_kind(kind, &dummy).is_ok(),
                 "kind {kind} should be in the allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn bolt12_kinds_are_global_and_in_scope_allowlist() {
+        let dummy = make_dummy_event();
+        for (kind, scope) in [
+            (KIND_BOLT12_OFFER, Scope::UsersWrite),
+            (KIND_BOLT12_ZAP, Scope::MessagesWrite),
+        ] {
+            assert_eq!(
+                required_scope_for_kind(kind, &dummy).unwrap(),
+                scope,
+                "kind {kind} should require the expected write scope"
+            );
+            assert!(is_global_only_kind(kind), "kind {kind} must be global-only");
+            assert!(
+                !requires_h_channel_scope(kind),
+                "kind {kind} must not require an h tag"
             );
         }
     }

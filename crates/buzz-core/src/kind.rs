@@ -56,6 +56,10 @@ pub const KIND_CHANNEL_METADATA: u32 = 41;
 pub const KIND_DELETION: u32 = 5;
 /// NIP-25: Content is emoji char or `+`/`-`.
 pub const KIND_REACTION: u32 = 7;
+/// BOLT12 offer metadata (replaceable, keyed by pubkey).
+pub const KIND_BOLT12_OFFER: u32 = 10058;
+/// BOLT12 zap receipt.
+pub const KIND_BOLT12_ZAP: u32 = 9736;
 /// NIP-17: Outer envelope for private DMs — hides sender, content, timestamp.
 pub const KIND_GIFT_WRAP: u32 = 1059;
 /// NIP-94: File metadata attachment.
