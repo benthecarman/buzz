@@ -6,16 +6,17 @@ pub fn bitcoin_compile_enabled() -> bool {
 
 #[cfg(feature = "bitcoin")]
 mod enabled {
-    use std::sync::OnceLock;
+    use std::{collections::HashSet, sync::OnceLock};
 
     use buzz_core_pkg::kind::KIND_BOLT12_OFFER;
+    use futures_util::future::join_all;
     use nostr::Event;
     use tauri::{AppHandle, Manager, State};
 
     use crate::{
         app_state::AppState,
         relay::{
-            query_relay_at_with_keys, relay_api_base_url_with_override,
+            query_relay_at_with_keys, relay_api_base_url_with_override, relay_http_base_url,
             submit_signed_event_at_with_keys,
         },
         wallet::{
@@ -68,18 +69,43 @@ mod enabled {
         error.to_ascii_lowercase().contains("unknown event kind")
     }
 
-    /// Publish a wallet event to the active workspace relay, the same relay
-    /// every other command in the codebase publishes to. An "unknown event
-    /// kind" rejection only warns: the community does not support wallet
-    /// events yet. Any other failure fails the command.
+    /// Resolve the active relay plus every configured community relay to
+    /// deduplicated HTTP API bases. The active relay is always first.
+    fn wallet_relay_api_base_urls(
+        active_relay_api_base_url: &str,
+        relay_urls: Option<Vec<String>>,
+    ) -> Vec<String> {
+        let mut seen = HashSet::new();
+        std::iter::once(active_relay_api_base_url.to_string())
+            .chain(relay_urls.unwrap_or_default())
+            .map(|relay_url| relay_http_base_url(&relay_url))
+            .filter(|relay_url| !relay_url.is_empty())
+            .filter(|relay_url| seen.insert(relay_url.clone()))
+            .collect()
+    }
+
+    /// Publish our own wallet event to the active workspace relay and every
+    /// configured community relay: our own offer announcement must reach
+    /// every community we joined. An "unknown event kind" rejection only
+    /// warns: that community does not support wallet events yet. A failure
+    /// on the active relay fails the command; failures on the other
+    /// community relays only warn.
     async fn publish_wallet_event(
         state: &AppState,
         keys: &nostr::Keys,
-        active_relay: &str,
+        relay_api_base_urls: &[String],
         event: &Event,
     ) -> Result<Vec<String>, WalletError> {
+        let Some(active_relay) = relay_api_base_urls.first() else {
+            return Err(WalletError::new(
+                "relay_publish_failed",
+                "no community relay is configured",
+            ));
+        };
+
+        let mut warnings = Vec::new();
         match submit_signed_event_at_with_keys(event, state, active_relay, keys).await {
-            Ok(_) => Ok(Vec::new()),
+            Ok(_) => {}
             Err(error) if is_unsupported_wallet_event_kind(&error) => {
                 tracing::warn!(
                     relay = active_relay,
@@ -87,19 +113,43 @@ mod enabled {
                     event_id = %event.id,
                     "active community does not support wallet events"
                 );
-                Ok(vec![format!("{active_relay}: {error}")])
+                warnings.push(format!("{active_relay}: {error}"));
             }
-            Err(error) => Err(WalletError::new(
-                "relay_publish_failed",
-                format!("publish wallet event to active community {active_relay}: {error}"),
-            )),
+            Err(error) => {
+                return Err(WalletError::new(
+                    "relay_publish_failed",
+                    format!("publish wallet event to active community {active_relay}: {error}"),
+                ))
+            }
         }
+
+        let results = join_all(relay_api_base_urls.iter().skip(1).map(|relay| async move {
+            let first = submit_signed_event_at_with_keys(event, state, relay, keys).await;
+            let result = match first {
+                Ok(response) => Ok(response),
+                Err(_) => submit_signed_event_at_with_keys(event, state, relay, keys).await,
+            };
+            (relay, result)
+        }))
+        .await;
+        warnings.extend(results.into_iter().filter_map(|(relay, result)| {
+            result.err().map(|error| {
+                tracing::warn!(
+                    relay,
+                    error,
+                    event_id = %event.id,
+                    "community relay rejected wallet event"
+                );
+                format!("{relay}: {error}")
+            })
+        }));
+        Ok(warnings)
     }
 
     async fn publish_offer(
         state: &AppState,
         keys: &nostr::Keys,
-        active_relay: &str,
+        relay_api_base_urls: &[String],
         offer: &str,
     ) -> Result<Vec<String>, WalletError> {
         let event = build_offer_announcement(offer)?
@@ -110,7 +160,7 @@ mod enabled {
                     format!("sign BOLT12 offer announcement: {error}"),
                 )
             })?;
-        publish_wallet_event(state, keys, active_relay, &event).await
+        publish_wallet_event(state, keys, relay_api_base_urls, &event).await
     }
 
     async fn resolve_recipient_offer(
@@ -210,6 +260,7 @@ mod enabled {
     pub async fn wallet_enable(
         app: AppHandle,
         state: State<'_, AppState>,
+        relay_urls: Option<Vec<String>>,
     ) -> Result<WalletEnableResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let app_data_dir = app_data_dir(&app)?;
@@ -217,8 +268,10 @@ mod enabled {
         provider.provision().await?;
         let status = provider.status().await?;
         let offer = provider.offer(false).await?;
-        let active_relay = relay_api_base_url_with_override(&state);
-        let publication_warnings = publish_offer(&state, &keys, &active_relay, &offer).await?;
+        let relay_api_base_urls =
+            wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
+        let publication_warnings =
+            publish_offer(&state, &keys, &relay_api_base_urls, &offer).await?;
         Ok(WalletEnableResult {
             status,
             publication_warnings,
@@ -228,6 +281,7 @@ mod enabled {
     #[tauri::command]
     pub async fn wallet_disable(
         state: State<'_, AppState>,
+        relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let event = build_offer_withdrawal()
@@ -238,9 +292,10 @@ mod enabled {
                     format!("sign BOLT12 offer withdrawal: {error}"),
                 )
             })?;
-        let active_relay = relay_api_base_url_with_override(&state);
+        let relay_api_base_urls =
+            wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
         let publication_warnings =
-            publish_wallet_event(&state, &keys, &active_relay, &event).await?;
+            publish_wallet_event(&state, &keys, &relay_api_base_urls, &event).await?;
         Ok(WalletOfferPublicationResult {
             offer: None,
             publication_warnings,
@@ -277,6 +332,7 @@ mod enabled {
     pub async fn wallet_refresh_offer(
         app: AppHandle,
         state: State<'_, AppState>,
+        relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let offer = wallet_manager()
@@ -284,8 +340,10 @@ mod enabled {
             .await?
             .offer(true)
             .await?;
-        let active_relay = relay_api_base_url_with_override(&state);
-        let publication_warnings = publish_offer(&state, &keys, &active_relay, &offer).await?;
+        let relay_api_base_urls =
+            wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
+        let publication_warnings =
+            publish_offer(&state, &keys, &relay_api_base_urls, &offer).await?;
         Ok(WalletOfferPublicationResult {
             offer: Some(offer),
             publication_warnings,
@@ -692,11 +750,11 @@ mod disabled {
         };
     }
 
-    disabled_async_command!(wallet_enable() -> serde_json::Value);
-    disabled_async_command!(wallet_disable() -> serde_json::Value);
+    disabled_async_command!(wallet_enable(relay_urls: Option<Vec<String>>) -> serde_json::Value);
+    disabled_async_command!(wallet_disable(relay_urls: Option<Vec<String>>) -> serde_json::Value);
     disabled_async_command!(wallet_get_status() -> serde_json::Value);
     disabled_async_command!(wallet_create_receive_request() -> serde_json::Value);
-    disabled_async_command!(wallet_refresh_offer() -> serde_json::Value);
+    disabled_async_command!(wallet_refresh_offer(relay_urls: Option<Vec<String>>) -> serde_json::Value);
     disabled_async_command!(wallet_analyze_destination(destination: String) -> serde_json::Value);
     disabled_async_command!(wallet_get_pending_send() -> serde_json::Value);
     disabled_async_command!(wallet_send(request: serde_json::Value) -> serde_json::Value);
