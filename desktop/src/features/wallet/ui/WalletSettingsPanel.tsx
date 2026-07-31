@@ -305,8 +305,12 @@ function TransferOutCard({
         setReconciling(true);
       }
     } catch (error) {
-      if (walletCommandError(error).code === "payment_status_unknown") {
+      const commandError = walletCommandError(error);
+      if (commandError.code === "payment_status_unknown") {
         setReconciling(true);
+      } else if (commandError.code === "payment_failed") {
+        setReconciling(false);
+        setRequestId(crypto.randomUUID());
       }
       toast.error(walletErrorMessage(error));
     } finally {

@@ -41,6 +41,9 @@ export function SendBitcoinDialog({
     "idle" | "loading" | "ready" | "missing"
   >("idle");
   const [offerError, setOfferError] = useState<string | null>(null);
+  const [pendingState, setPendingState] = useState<
+    "loading" | "ready" | "failed"
+  >("loading");
   const [sending, setSending] = useState(false);
   const [reconciling, setReconciling] = useState(false);
 
@@ -49,11 +52,22 @@ export function SendBitcoinDialog({
     let cancelled = false;
     setOfferState("loading");
     setOfferError(null);
-    void Promise.all([
-      getRecipientWalletOffer(recipientPubkey),
-      getPendingProfileZap(recipientPubkey).catch(() => null),
-    ])
-      .then(([, pending]) => {
+    setPendingState("loading");
+    getRecipientWalletOffer(recipientPubkey)
+      .then(() => {
+        if (!cancelled) setOfferState("ready");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const commandError = walletCommandError(error);
+        setOfferState("missing");
+        setOfferError(
+          commandError.message ??
+            `${recipientName} has not enabled their Bitcoin wallet.`,
+        );
+      });
+    getPendingProfileZap(recipientPubkey)
+      .then((pending) => {
         if (cancelled) return;
         if (pending) {
           setAmount(String(pending.amount));
@@ -66,16 +80,13 @@ export function SendBitcoinDialog({
           setIdempotencyKey(crypto.randomUUID());
           setReconciling(false);
         }
-        setOfferState("ready");
+        setPendingState("ready");
       })
-      .catch((error) => {
-        if (cancelled) return;
-        const commandError = walletCommandError(error);
-        setOfferState("missing");
-        setOfferError(
-          commandError.message ??
-            `${recipientName} has not enabled their Bitcoin wallet.`,
-        );
+      .catch(() => {
+        // A failed pending-attempt lookup must not look like "no pending
+        // attempt": minting a fresh idempotency key here could turn a
+        // reconcile into a duplicate payment. Keep sending disabled.
+        if (!cancelled) setPendingState("failed");
       });
     return () => {
       cancelled = true;
@@ -87,7 +98,13 @@ export function SendBitcoinDialog({
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!validAmount || sending || offerState !== "ready") return;
+    if (
+      !validAmount ||
+      sending ||
+      offerState !== "ready" ||
+      pendingState !== "ready"
+    )
+      return;
     setSending(true);
     try {
       const result = await sendProfileZap({
@@ -96,15 +113,26 @@ export function SendBitcoinDialog({
         comment: comment.trim() || null,
         idempotencyKey,
       });
-      toast.success(
-        `${formatBitcoin(result.payment.amount ?? parsedAmount)} sent`,
-        {
-          description:
-            "The payment settled. Buzz kept the intent local because the wallet cannot produce an lnp payer proof yet.",
-        },
-      );
-      setReconciling(false);
-      onOpenChange(false);
+      if (result.payment.status === "completed") {
+        toast.success(
+          `${formatBitcoin(result.payment.amount ?? parsedAmount)} sent`,
+          {
+            description:
+              "The payment settled. Buzz kept the intent local because the wallet cannot produce an lnp payer proof yet.",
+          },
+        );
+        setReconciling(false);
+        onOpenChange(false);
+      } else if (result.payment.status === "failed") {
+        setReconciling(false);
+        setIdempotencyKey(crypto.randomUUID());
+        toast.error(
+          result.payment.statusMessage || "The Bitcoin payment failed.",
+        );
+      } else {
+        setReconciling(true);
+        toast.warning("The payment is still pending. Buzz will reconcile it.");
+      }
     } catch (error) {
       const commandError = walletCommandError(error);
       if (commandError.code === "payment_status_unknown") {
@@ -152,6 +180,24 @@ export function SendBitcoinDialog({
           </div>
         ) : null}
 
+        {pendingState === "failed" ? (
+          <div
+            className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm"
+            data-testid="send-bitcoin-pending-check-failed"
+          >
+            <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div>
+              <p className="font-medium">
+                Could not check for a previous payment
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                Buzz could not read its local payment history. Sending is
+                disabled to avoid a duplicate payment.
+              </p>
+            </div>
+          </div>
+        ) : null}
+
         <form
           className="space-y-4"
           onSubmit={(event) => void handleSubmit(event)}
@@ -166,7 +212,12 @@ export function SendBitcoinDialog({
             <span className="text-sm font-medium">Amount in ₿</span>
             <Input
               autoFocus
-              disabled={sending || reconciling || offerState !== "ready"}
+              disabled={
+                sending ||
+                reconciling ||
+                offerState !== "ready" ||
+                pendingState !== "ready"
+              }
               id="profile-bitcoin-amount"
               inputMode="numeric"
               min="1"
@@ -183,7 +234,12 @@ export function SendBitcoinDialog({
           >
             <span className="text-sm font-medium">Comment (optional)</span>
             <Input
-              disabled={sending || reconciling || offerState !== "ready"}
+              disabled={
+                sending ||
+                reconciling ||
+                offerState !== "ready" ||
+                pendingState !== "ready"
+              }
               id="profile-bitcoin-comment"
               maxLength={280}
               onChange={(event) => setComment(event.target.value)}
@@ -206,7 +262,12 @@ export function SendBitcoinDialog({
               Cancel
             </Button>
             <Button
-              disabled={!validAmount || sending || offerState !== "ready"}
+              disabled={
+                !validAmount ||
+                sending ||
+                offerState !== "ready" ||
+                pendingState !== "ready"
+              }
               type="submit"
             >
               {sending ? (

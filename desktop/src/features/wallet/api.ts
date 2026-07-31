@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { loadCommunities } from "@/features/communities/communityStorage";
 import type {
   WalletDestinationAnalysis,
   WalletEnableResult,
@@ -18,25 +17,17 @@ import type {
 
 let compileEnabledPromise: Promise<boolean> | null = null;
 
-function communityRelayUrls(): string[] {
-  return loadCommunities().map((community) => community.relayUrl);
-}
-
 export function bitcoinCompileEnabled(): Promise<boolean> {
   compileEnabledPromise ??= invoke<boolean>("bitcoin_compile_enabled");
   return compileEnabledPromise;
 }
 
 export function enableWallet(): Promise<WalletEnableResult> {
-  return invoke<WalletEnableResult>("wallet_enable", {
-    relayUrls: communityRelayUrls(),
-  });
+  return invoke<WalletEnableResult>("wallet_enable");
 }
 
 export function disableWallet(): Promise<WalletOfferPublicationResult> {
-  return invoke<WalletOfferPublicationResult>("wallet_disable", {
-    relayUrls: communityRelayUrls(),
-  });
+  return invoke<WalletOfferPublicationResult>("wallet_disable");
 }
 
 export function getWalletStatus(): Promise<WalletStatus> {
@@ -48,9 +39,7 @@ export function createWalletReceiveRequest(): Promise<WalletFundingRequest> {
 }
 
 export function refreshWalletOffer(): Promise<WalletOfferPublicationResult> {
-  return invoke<WalletOfferPublicationResult>("wallet_refresh_offer", {
-    relayUrls: communityRelayUrls(),
-  });
+  return invoke<WalletOfferPublicationResult>("wallet_refresh_offer");
 }
 
 export function analyzeWalletDestination(
@@ -95,7 +84,6 @@ export function getRecipientWalletOffer(
 ): Promise<WalletRecipientOffer> {
   return invoke<WalletRecipientOffer>("wallet_get_recipient_offer", {
     recipientPubkey,
-    relayUrls: communityRelayUrls(),
   });
 }
 
@@ -115,6 +103,5 @@ export function sendProfileZap(
 ): Promise<WalletProfileZapResult> {
   return invoke<WalletProfileZapResult>("wallet_send_profile_zap", {
     request,
-    relayUrls: communityRelayUrls(),
   });
 }
