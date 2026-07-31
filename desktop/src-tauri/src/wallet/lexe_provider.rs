@@ -83,10 +83,17 @@ pub(super) fn create_lexe_provider(
     )
     .map_err(|error| WalletError::provider(format!("initialize Lexe wallet: {error:#}")))?;
 
+    let offer_path = cache_dir.join("active-offer.txt");
+    let persisted_offer = std::fs::read_to_string(&offer_path)
+        .ok()
+        .map(|offer| offer.trim().to_string())
+        .filter(|offer| canonical_offer(offer));
+
     Ok(Arc::new(LexeProvider {
         wallet,
         root_seed,
-        active_offer: Mutex::new(None),
+        offer_path,
+        active_offer: Mutex::new(persisted_offer),
     }))
 }
 
@@ -100,8 +107,13 @@ struct LexeProvider {
     wallet: LexeWallet,
     /// Retained because Lexe's idempotent signup API requires the root seed.
     root_seed: RootSeed,
-    /// Process-local reuse only; the canonical offer remains recoverable from
-    /// Lexe and is republished to Nostr whenever this cache is recreated.
+    /// Disk location of the persisted active offer. Lexe 0.1.18 has no API to
+    /// recover an existing offer and `create_offer` never invalidates prior
+    /// ones, so the offer is persisted here to keep a restart from minting a
+    /// fresh one and orphaning the previously published offer.
+    offer_path: std::path::PathBuf,
+    /// Process-local reuse, seeded from `offer_path` at load. The active offer
+    /// is republished to Nostr whenever the wallet is enabled.
     active_offer: Mutex<Option<String>>,
 }
 
@@ -205,6 +217,12 @@ impl WalletProvider for LexeProvider {
                     })?
                     .offer
                     .to_string();
+                // Best-effort persistence: the offer is public (published to
+                // Nostr), so a write failure only means the next restart
+                // mints again.
+                if let Err(error) = std::fs::write(&self.offer_path, &offer) {
+                    tracing::warn!(error = %error, "persist wallet offer");
+                }
                 *self
                     .active_offer
                     .lock()

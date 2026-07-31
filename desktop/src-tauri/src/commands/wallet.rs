@@ -6,17 +6,16 @@ pub fn bitcoin_compile_enabled() -> bool {
 
 #[cfg(feature = "bitcoin")]
 mod enabled {
-    use std::{collections::HashSet, sync::OnceLock};
+    use std::sync::OnceLock;
 
     use buzz_core_pkg::kind::KIND_BOLT12_OFFER;
-    use futures_util::future::join_all;
     use nostr::Event;
     use tauri::{AppHandle, Manager, State};
 
     use crate::{
         app_state::AppState,
         relay::{
-            query_relay_at_with_keys, relay_api_base_url_with_override, relay_http_base_url,
+            query_relay_at_with_keys, relay_api_base_url_with_override,
             submit_signed_event_at_with_keys,
         },
         wallet::{
@@ -29,12 +28,30 @@ mod enabled {
             provider::WalletPaymentMatch,
             send::{SendAttempt, SendAttemptState, SendAttemptStore},
             zap::{
-                build_offer_announcement, build_offer_withdrawal, recipient_offer, ZapAttempt,
-                ZapAttemptState, ZapAttemptStore,
+                build_offer_announcement, build_offer_withdrawal, recipient_offer,
+                validate_offer_event, ZapAttempt, ZapAttemptState, ZapAttemptStore,
             },
             WalletManager,
         },
     };
+
+    /// How long a `Paying` attempt is reconciled against the provider before
+    /// it is declared failed. Generous on purpose: Lightning HTLC expiry
+    /// resolves in-flight payments within hours, so a payment the provider
+    /// still cannot see a full day after dispatch never left the wallet.
+    /// Failing the attempt un-bricks the UI; it never resends.
+    const PAYING_ATTEMPT_GRACE_MS: u64 = 24 * 60 * 60 * 1_000;
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or_default()
+    }
+
+    fn paying_attempt_expired(updated_at_ms: u64) -> bool {
+        now_ms().saturating_sub(updated_at_ms) >= PAYING_ATTEMPT_GRACE_MS
+    }
 
     fn wallet_manager() -> &'static WalletManager {
         static MANAGER: OnceLock<WalletManager> = OnceLock::new();
@@ -47,41 +64,22 @@ mod enabled {
             .map_err(|error| WalletError::unavailable(format!("resolve app data path: {error}")))
     }
 
-    /// Resolve the active relay plus every configured community relay to
-    /// deduplicated HTTP API bases. The active relay is always first.
-    fn wallet_relay_api_base_urls(
-        active_relay_api_base_url: &str,
-        relay_urls: Option<Vec<String>>,
-    ) -> Vec<String> {
-        let mut seen = HashSet::new();
-        std::iter::once(active_relay_api_base_url.to_string())
-            .chain(relay_urls.unwrap_or_default())
-            .map(|relay_url| relay_http_base_url(&relay_url))
-            .filter(|relay_url| !relay_url.is_empty())
-            .filter(|relay_url| seen.insert(relay_url.clone()))
-            .collect()
-    }
-
     fn is_unsupported_wallet_event_kind(error: &str) -> bool {
         error.to_ascii_lowercase().contains("unknown event kind")
     }
 
+    /// Publish a wallet event to the active workspace relay, the same relay
+    /// every other command in the codebase publishes to. An "unknown event
+    /// kind" rejection only warns: the community does not support wallet
+    /// events yet. Any other failure fails the command.
     async fn publish_wallet_event(
         state: &AppState,
         keys: &nostr::Keys,
-        relay_api_base_urls: &[String],
+        active_relay: &str,
         event: &Event,
     ) -> Result<Vec<String>, WalletError> {
-        let Some(active_relay) = relay_api_base_urls.first() else {
-            return Err(WalletError::new(
-                "relay_publish_failed",
-                "no community relay is configured",
-            ));
-        };
-
-        let mut warnings = Vec::new();
         match submit_signed_event_at_with_keys(event, state, active_relay, keys).await {
-            Ok(_) => {}
+            Ok(_) => Ok(Vec::new()),
             Err(error) if is_unsupported_wallet_event_kind(&error) => {
                 tracing::warn!(
                     relay = active_relay,
@@ -89,43 +87,19 @@ mod enabled {
                     event_id = %event.id,
                     "active community does not support wallet events"
                 );
-                warnings.push(format!("{active_relay}: {error}"));
+                Ok(vec![format!("{active_relay}: {error}")])
             }
-            Err(error) => {
-                return Err(WalletError::new(
-                    "relay_publish_failed",
-                    format!("publish wallet event to active community {active_relay}: {error}"),
-                ))
-            }
+            Err(error) => Err(WalletError::new(
+                "relay_publish_failed",
+                format!("publish wallet event to active community {active_relay}: {error}"),
+            )),
         }
-
-        let results = join_all(relay_api_base_urls.iter().skip(1).map(|relay| async move {
-            let first = submit_signed_event_at_with_keys(event, state, relay, keys).await;
-            let result = match first {
-                Ok(response) => Ok(response),
-                Err(_) => submit_signed_event_at_with_keys(event, state, relay, keys).await,
-            };
-            (relay, result)
-        }))
-        .await;
-        warnings.extend(results.into_iter().filter_map(|(relay, result)| {
-            result.err().map(|error| {
-                tracing::warn!(
-                    relay,
-                    error,
-                    event_id = %event.id,
-                    "community relay rejected wallet event"
-                );
-                format!("{relay}: {error}")
-            })
-        }));
-        Ok(warnings)
     }
 
     async fn publish_offer(
         state: &AppState,
         keys: &nostr::Keys,
-        relay_api_base_urls: &[String],
+        active_relay: &str,
         offer: &str,
     ) -> Result<Vec<String>, WalletError> {
         let event = build_offer_announcement(offer)?
@@ -136,62 +110,51 @@ mod enabled {
                     format!("sign BOLT12 offer announcement: {error}"),
                 )
             })?;
-        publish_wallet_event(state, keys, relay_api_base_urls, &event).await
+        publish_wallet_event(state, keys, active_relay, &event).await
     }
 
     async fn resolve_recipient_offer(
         state: &AppState,
         keys: &nostr::Keys,
-        relay_api_base_urls: &[String],
+        active_relay: &str,
         recipient_pubkey: &str,
     ) -> Result<WalletRecipientOffer, WalletError> {
-        let queries = join_all(relay_api_base_urls.iter().map(|relay| async move {
-            let result = query_relay_at_with_keys(
-                state,
-                relay,
-                &[serde_json::json!({
-                    "kinds": [KIND_BOLT12_OFFER],
-                    "authors": [recipient_pubkey],
-                    "limit": 1
-                })],
-                keys,
-                None,
-            )
-            .await;
-            (relay, result)
-        }))
-        .await;
-
-        let mut successful_query = false;
-        let mut failures = Vec::new();
-        let mut offers = Vec::new();
-        for (relay, result) in queries {
-            match result {
-                Ok(events) => {
-                    successful_query = true;
-                    offers.extend(events.into_iter().filter_map(|event| {
-                        recipient_offer(&event, recipient_pubkey)
-                            .ok()
-                            .map(|offer| (event.created_at, offer))
-                    }));
-                }
-                Err(error) => failures.push(format!("{relay}: {error}")),
-            }
-        }
-        if let Some((_, offer)) = offers.into_iter().max_by_key(|(created_at, _)| *created_at) {
-            return Ok(offer);
-        }
-        if successful_query {
-            Err(WalletError::new(
-                "offer_missing",
-                "This user has not enabled their Bitcoin wallet",
+        let events = query_relay_at_with_keys(
+            state,
+            active_relay,
+            &[serde_json::json!({
+                "kinds": [KIND_BOLT12_OFFER],
+                "authors": [recipient_pubkey],
+                "limit": 1
+            })],
+            keys,
+            None,
+        )
+        .await
+        .map_err(|error| {
+            WalletError::unavailable(format!(
+                "query recipient offer from active community {active_relay}: {error}"
             ))
-        } else {
-            Err(WalletError::unavailable(format!(
-                "query recipient offer: {}",
-                failures.join("; ")
-            )))
+        })?;
+        // Kind 10058 is replaceable: the newest announcement per author is
+        // authoritative, including an empty one that withdraws the offer. A
+        // relay that missed the withdrawal must not resurrect the old offer.
+        if let Some(latest) = events
+            .into_iter()
+            .filter(|event| validate_offer_event(event, recipient_pubkey).is_ok())
+            .max_by_key(|event| event.created_at)
+        {
+            return recipient_offer(&latest, recipient_pubkey).map_err(|_| {
+                WalletError::new(
+                    "offer_missing",
+                    "This user has not enabled their Bitcoin wallet",
+                )
+            });
         }
+        Err(WalletError::new(
+            "offer_missing",
+            "This user has not enabled their Bitcoin wallet",
+        ))
     }
 
     fn payment_error(payment: &WalletPaymentResult) -> WalletError {
@@ -247,7 +210,6 @@ mod enabled {
     pub async fn wallet_enable(
         app: AppHandle,
         state: State<'_, AppState>,
-        relay_urls: Option<Vec<String>>,
     ) -> Result<WalletEnableResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let app_data_dir = app_data_dir(&app)?;
@@ -255,10 +217,8 @@ mod enabled {
         provider.provision().await?;
         let status = provider.status().await?;
         let offer = provider.offer(false).await?;
-        let relay_api_base_urls =
-            wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
-        let publication_warnings =
-            publish_offer(&state, &keys, &relay_api_base_urls, &offer).await?;
+        let active_relay = relay_api_base_url_with_override(&state);
+        let publication_warnings = publish_offer(&state, &keys, &active_relay, &offer).await?;
         Ok(WalletEnableResult {
             status,
             publication_warnings,
@@ -268,7 +228,6 @@ mod enabled {
     #[tauri::command]
     pub async fn wallet_disable(
         state: State<'_, AppState>,
-        relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let event = build_offer_withdrawal()
@@ -279,10 +238,9 @@ mod enabled {
                     format!("sign BOLT12 offer withdrawal: {error}"),
                 )
             })?;
-        let relay_api_base_urls =
-            wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
+        let active_relay = relay_api_base_url_with_override(&state);
         let publication_warnings =
-            publish_wallet_event(&state, &keys, &relay_api_base_urls, &event).await?;
+            publish_wallet_event(&state, &keys, &active_relay, &event).await?;
         Ok(WalletOfferPublicationResult {
             offer: None,
             publication_warnings,
@@ -319,7 +277,6 @@ mod enabled {
     pub async fn wallet_refresh_offer(
         app: AppHandle,
         state: State<'_, AppState>,
-        relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let offer = wallet_manager()
@@ -327,10 +284,8 @@ mod enabled {
             .await?
             .offer(true)
             .await?;
-        let relay_api_base_urls =
-            wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
-        let publication_warnings =
-            publish_offer(&state, &keys, &relay_api_base_urls, &offer).await?;
+        let active_relay = relay_api_base_url_with_override(&state);
+        let publication_warnings = publish_offer(&state, &keys, &active_relay, &offer).await?;
         Ok(WalletOfferPublicationResult {
             offer: Some(offer),
             publication_warnings,
@@ -389,10 +344,19 @@ mod enabled {
                 attempt
             }
         };
-        if let Some(payment) = attempt.payment.clone() {
-            if attempt.state.is_terminal() {
-                return Ok(payment);
+        match attempt.state {
+            SendAttemptState::Completed => {
+                return attempt.payment.ok_or_else(|| {
+                    WalletError::unavailable("terminal send attempt is missing its payment")
+                })
             }
+            SendAttemptState::Failed => {
+                return Err(attempt.payment.as_ref().map_or_else(
+                    || WalletError::new("payment_failed", "The prior payment failed"),
+                    payment_error,
+                ))
+            }
+            SendAttemptState::Prepared | SendAttemptState::Paying => {}
         }
         let provider = wallet_manager().provider_for(&keys, &app_data_dir).await?;
         let personal_note = format!("Buzz payment {}", attempt.request.request_id);
@@ -430,19 +394,30 @@ mod enabled {
                         })?,
                 }
             }
-            SendAttemptState::Paying => provider
-                .find_outbound_payment(payment_match())
-                .await?
-                .ok_or_else(|| {
-                    WalletError::new(
-                        "payment_status_unknown",
-                        "The prior payment result is still unknown; Buzz did not send again",
-                    )
-                })?,
+            SendAttemptState::Paying => {
+                match provider.find_outbound_payment(payment_match()).await? {
+                    Some(payment) => payment,
+                    None if paying_attempt_expired(attempt.updated_at_ms) => {
+                        attempt.state = SendAttemptState::Failed;
+                        store.save(&mut attempt)?;
+                        return Err(WalletError::new(
+                            "payment_failed",
+                            "No matching payment was found at the provider within 24 hours of the \
+                         send; the attempt was marked failed and Buzz did not send again",
+                        ));
+                    }
+                    None => {
+                        return Err(WalletError::new(
+                            "payment_status_unknown",
+                            "The prior payment result is still unknown; Buzz did not send again",
+                        ));
+                    }
+                }
+            }
             SendAttemptState::Completed | SendAttemptState::Failed => {
-                return attempt.payment.ok_or_else(|| {
-                    WalletError::unavailable("terminal send attempt is missing its payment")
-                })
+                return Err(WalletError::unavailable(
+                    "send attempt entered an invalid terminal transition",
+                ))
             }
         };
         generic_payment_result(&store, &mut attempt, payment)
@@ -480,13 +455,11 @@ mod enabled {
     #[tauri::command]
     pub async fn wallet_get_recipient_offer(
         recipient_pubkey: String,
-        relay_urls: Option<Vec<String>>,
         state: State<'_, AppState>,
     ) -> Result<WalletRecipientOffer, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        let relays =
-            wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
-        resolve_recipient_offer(&state, &keys, &relays, &recipient_pubkey).await
+        let active_relay = relay_api_base_url_with_override(&state);
+        resolve_recipient_offer(&state, &keys, &active_relay, &recipient_pubkey).await
     }
 
     #[tauri::command]
@@ -505,7 +478,6 @@ mod enabled {
         app: AppHandle,
         state: State<'_, AppState>,
         request: WalletProfileZapRequest,
-        relay_urls: Option<Vec<String>>,
     ) -> Result<WalletProfileZapResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let payer_pubkey = keys.public_key().to_hex();
@@ -544,13 +516,14 @@ mod enabled {
                 ))
             }
             None => {
-                let relays = wallet_relay_api_base_urls(
-                    &relay_api_base_url_with_override(&state),
-                    relay_urls,
-                );
-                let recipient =
-                    resolve_recipient_offer(&state, &keys, &relays, &request.recipient_pubkey)
-                        .await?;
+                let active_relay = relay_api_base_url_with_override(&state);
+                let recipient = resolve_recipient_offer(
+                    &state,
+                    &keys,
+                    &active_relay,
+                    &request.recipient_pubkey,
+                )
+                .await?;
                 let mut attempt = ZapAttempt::prepare(
                     request.idempotency_key,
                     recipient,
@@ -615,19 +588,29 @@ mod enabled {
                         })?,
                 }
             }
-            ZapAttemptState::Paying => provider
-                .find_outbound_payment(payment_match())
-                .await?
-                .ok_or_else(|| {
-                    WalletError::new(
+            ZapAttemptState::Paying => match provider.find_outbound_payment(payment_match()).await?
+            {
+                Some(payment) => payment,
+                None if paying_attempt_expired(attempt.updated_at_ms) => {
+                    attempt.state = ZapAttemptState::Failed;
+                    store.save(&mut attempt)?;
+                    return Err(WalletError::new(
+                        "payment_failed",
+                        "No matching payment was found at the provider within 24 hours of the \
+                         send; the attempt was marked failed and Buzz did not send again",
+                    ));
+                }
+                None => {
+                    return Err(WalletError::new(
                         "payment_status_unknown",
                         "The prior payment result is still unknown; Buzz did not send again",
-                    )
-                })?,
+                    ));
+                }
+            },
             ZapAttemptState::PaidWithoutProof | ZapAttemptState::Failed => {
                 return Err(WalletError::unavailable(
                     "profile payment entered an invalid terminal transition",
-                ))
+                ));
             }
         };
         profile_payment_result(&store, &mut attempt, payment)
@@ -645,7 +628,9 @@ mod enabled {
 
     #[cfg(test)]
     mod tests {
-        use super::{is_unsupported_wallet_event_kind, wallet_relay_api_base_urls};
+        use super::{
+            is_unsupported_wallet_event_kind, paying_attempt_expired, PAYING_ATTEMPT_GRACE_MS,
+        };
 
         #[test]
         fn only_unknown_kind_rejections_are_unsupported() {
@@ -664,23 +649,15 @@ mod enabled {
         }
 
         #[test]
-        fn wallet_relays_include_active_and_all_communities() {
-            let relay_urls = wallet_relay_api_base_urls(
-                "https://active.example/",
-                Some(vec![
-                    "wss://second.example/".to_string(),
-                    "https://active.example".to_string(),
-                    "ws://localhost:3000/".to_string(),
-                ]),
-            );
-            assert_eq!(
-                relay_urls,
-                vec![
-                    "https://active.example",
-                    "https://second.example",
-                    "http://localhost:3000",
-                ]
-            );
+        fn paying_attempt_expires_only_after_the_grace_period() {
+            let now = super::now_ms();
+            assert!(!paying_attempt_expired(now));
+            assert!(!paying_attempt_expired(
+                now.saturating_sub(PAYING_ATTEMPT_GRACE_MS - 1)
+            ));
+            assert!(paying_attempt_expired(
+                now.saturating_sub(PAYING_ATTEMPT_GRACE_MS)
+            ));
         }
     }
 }
@@ -715,11 +692,11 @@ mod disabled {
         };
     }
 
-    disabled_async_command!(wallet_enable(relay_urls: Option<Vec<String>>) -> serde_json::Value);
-    disabled_async_command!(wallet_disable(relay_urls: Option<Vec<String>>) -> serde_json::Value);
+    disabled_async_command!(wallet_enable() -> serde_json::Value);
+    disabled_async_command!(wallet_disable() -> serde_json::Value);
     disabled_async_command!(wallet_get_status() -> serde_json::Value);
     disabled_async_command!(wallet_create_receive_request() -> serde_json::Value);
-    disabled_async_command!(wallet_refresh_offer(relay_urls: Option<Vec<String>>) -> serde_json::Value);
+    disabled_async_command!(wallet_refresh_offer() -> serde_json::Value);
     disabled_async_command!(wallet_analyze_destination(destination: String) -> serde_json::Value);
     disabled_async_command!(wallet_get_pending_send() -> serde_json::Value);
     disabled_async_command!(wallet_send(request: serde_json::Value) -> serde_json::Value);
@@ -732,19 +709,13 @@ mod disabled {
     );
     disabled_async_command!(wallet_poll_updates() -> bool);
     disabled_async_command!(
-        wallet_get_recipient_offer(
-            recipient_pubkey: String,
-            relay_urls: Option<Vec<String>>,
-        ) -> serde_json::Value
+        wallet_get_recipient_offer(recipient_pubkey: String) -> serde_json::Value
     );
     disabled_async_command!(
         wallet_get_pending_profile_zap(recipient_pubkey: String) -> serde_json::Value
     );
     disabled_async_command!(
-        wallet_send_profile_zap(
-            request: serde_json::Value,
-            relay_urls: Option<Vec<String>>,
-        ) -> serde_json::Value
+        wallet_send_profile_zap(request: serde_json::Value) -> serde_json::Value
     );
 
     #[tauri::command]

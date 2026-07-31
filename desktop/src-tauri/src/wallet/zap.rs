@@ -51,10 +51,14 @@ pub fn build_offer_withdrawal() -> EventBuilder {
     EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
 }
 
-pub fn recipient_offer(
+/// Verify that an event is a signature-valid offer announcement authored by
+/// the recipient. The offer tag itself is validated separately so callers can
+/// treat a newer announcement without an offer (a withdrawal) as
+/// authoritative.
+pub(crate) fn validate_offer_event(
     event: &Event,
     recipient_pubkey: &str,
-) -> Result<WalletRecipientOffer, WalletError> {
+) -> Result<(), WalletError> {
     event
         .verify()
         .map_err(|error| WalletError::new("offer_invalid", error.to_string()))?;
@@ -66,6 +70,14 @@ pub fn recipient_offer(
             "offer announcement does not match the recipient",
         ));
     }
+    Ok(())
+}
+
+pub fn recipient_offer(
+    event: &Event,
+    recipient_pubkey: &str,
+) -> Result<WalletRecipientOffer, WalletError> {
+    validate_offer_event(event, recipient_pubkey)?;
     let offer = event
         .tags
         .iter()
@@ -169,7 +181,7 @@ pub struct ZapAttempt {
     /// UUID supplied by the UI and used as the durable attempt filename.
     pub idempotency_key: String,
     pub recipient_pubkey: String,
-    /// Whole base-unit bitcoins paid to the recipient.
+    /// Whole satoshis paid to the recipient (displayed as ₿ per BIP-177).
     pub amount: u64,
     pub comment: Option<String>,
     /// Canonical BOLT12 offer frozen before payment.
@@ -416,6 +428,21 @@ mod tests {
             .chars()
             .all(|character| character.is_ascii_hexdigit()));
         assert_eq!(zap_id, &zap_id.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn withdrawal_announcement_validates_but_yields_no_offer() {
+        let keys = Keys::generate();
+        let withdrawal = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
+            .sign_with_keys(&keys)
+            .unwrap();
+        assert!(validate_offer_event(&withdrawal, &keys.public_key().to_hex()).is_ok());
+        assert_eq!(
+            recipient_offer(&withdrawal, &keys.public_key().to_hex())
+                .unwrap_err()
+                .code,
+            "offer_invalid"
+        );
     }
 
     #[test]

@@ -63,9 +63,10 @@ pub struct WalletDestinationAnalysis {
 
 /// A request to send Bitcoin through the selected provider.
 ///
-/// `request_id` is a client-generated correlation value recorded in the
-/// provider's private payment note. It does not make a generic provider send
-/// idempotent.
+/// `request_id` is a client-generated UUID that makes `wallet_send`
+/// idempotent: repeat invokes with the same ID reconcile the recorded attempt
+/// instead of sending again. It is also recorded in the provider's private
+/// payment note for reconciliation.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletSendRequest {
