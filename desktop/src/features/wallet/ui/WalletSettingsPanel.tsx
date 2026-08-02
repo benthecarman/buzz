@@ -175,11 +175,6 @@ function FundWalletCard({
             <Copy />
             Copy
           </Button>
-          <p className="text-center text-xs text-muted-foreground">
-            The amountless BIP-321 instruction includes BOLT12 and BOLT11.
-            BOLT11 expires{" "}
-            {new Date(funding.bolt11ExpiresAtMs).toLocaleString()}.
-          </p>
         </div>
       ) : (
         <Button

@@ -34,7 +34,7 @@
     {
       "id": "bitcoin",
       "name": "Bitcoin wallet",
-      "description": "Self-custodial Lightning wallet, funding, payments, and BOLT12 offers",
+      "description": "Self-custodial Lightning wallet",
       "platforms": ["desktop"]
     }
   ]
