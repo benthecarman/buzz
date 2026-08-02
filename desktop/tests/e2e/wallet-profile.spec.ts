@@ -36,9 +36,7 @@ async function openBobProfile(page: Page, bolt12Offer?: string | null) {
   await expect(page.getByTestId("user-profile-panel")).toBeVisible();
 }
 
-test("sends bitcoin without relying on kind-0 metadata", async ({
-  page,
-}) => {
+test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   await openBobProfile(page);
 
   await page.getByTestId("user-profile-send-bitcoin").click();

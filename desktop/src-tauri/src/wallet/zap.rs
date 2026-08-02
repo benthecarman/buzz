@@ -5,16 +5,17 @@ use std::{
 };
 
 use atomic_write_file::AtomicWriteFile;
+use buzz_conformance_pkg::wallet::{WalletAbstractState, WalletAttemptStatus, WalletTraceAction};
 use buzz_core_pkg::kind::{KIND_BOLT12_OFFER, KIND_BOLT12_ZAP_INTENT};
 use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::lexe_provider::canonical_offer;
 use super::models::{
     WalletError, WalletPaymentResult, WalletProfileZapDraft, WalletProfileZapResult,
     WalletRecipientOffer,
 };
+use super::{conformance, lexe_provider::canonical_offer};
 
 const TERMINAL_ATTEMPT_RETENTION_MS: u64 = 90 * 24 * 60 * 60 * 1_000;
 
@@ -254,11 +255,25 @@ impl ZapAttempt {
             idempotency_key: self.idempotency_key.clone(),
         }
     }
+
+    fn abstract_state(&self) -> WalletAbstractState {
+        let status = match self.state {
+            ZapAttemptState::Prepared => WalletAttemptStatus::ProfilePrepared,
+            ZapAttemptState::Paying => WalletAttemptStatus::ProfilePaying,
+            ZapAttemptState::PaidWithoutProof => WalletAttemptStatus::ProfilePaidWithoutProof,
+            ZapAttemptState::Failed => WalletAttemptStatus::ProfileFailed,
+        };
+        WalletAbstractState {
+            status,
+            payment_recorded: self.payment.is_some(),
+        }
+    }
 }
 
 /// Atomic, identity-scoped persistence for profile-payment checkpoints.
 pub struct ZapAttemptStore {
     directory: PathBuf,
+    payer_pubkey: String,
 }
 
 impl ZapAttemptStore {
@@ -268,6 +283,7 @@ impl ZapAttemptStore {
                 .join("wallet")
                 .join("zap-attempts")
                 .join(payer_pubkey),
+            payer_pubkey: payer_pubkey.to_string(),
         }
     }
 
@@ -294,7 +310,7 @@ impl ZapAttemptStore {
         }
     }
 
-    pub fn save(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
+    fn save(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
         attempt.touch();
         std::fs::create_dir_all(&self.directory)
             .map_err(|error| WalletError::unavailable(format!("create zap store: {error}")))?;
@@ -307,6 +323,151 @@ impl ZapAttemptStore {
             .map_err(|error| WalletError::unavailable(format!("write zap attempt: {error}")))?;
         file.commit()
             .map_err(|error| WalletError::unavailable(format!("commit zap attempt: {error}")))
+    }
+
+    /// Persist a new profile attempt and emit `PrepareProfile`.
+    pub fn save_prepared(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
+        if attempt.state != ZapAttemptState::Prepared || attempt.payment.is_some() {
+            return Err(WalletError::unavailable(
+                "new profile payment is not in the prepared state",
+            ));
+        }
+        self.save(attempt)?;
+        conformance::record(
+            &self.payer_pubkey,
+            conformance::WalletAttemptKind::ProfileZap,
+            &attempt.idempotency_key,
+            WalletTraceAction::PrepareProfile,
+            WalletAbstractState::absent(),
+            attempt.abstract_state(),
+        );
+        Ok(())
+    }
+
+    /// Durably enter `Paying` before the only provider send call.
+    pub fn begin_dispatch(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
+        let before = attempt.abstract_state();
+        if attempt.state != ZapAttemptState::Prepared || attempt.payment.is_some() {
+            return Err(WalletError::unavailable(
+                "profile payment cannot dispatch from its current state",
+            ));
+        }
+        attempt.state = ZapAttemptState::Paying;
+        self.save(attempt)?;
+        conformance::record(
+            &self.payer_pubkey,
+            conformance::WalletAttemptKind::ProfileZap,
+            &attempt.idempotency_key,
+            WalletTraceAction::BeginDispatch,
+            before,
+            attempt.abstract_state(),
+        );
+        Ok(())
+    }
+
+    /// Record that this invocation chose provider reconciliation, not send.
+    pub fn record_reconcile(&self, attempt: &ZapAttempt) -> Result<(), WalletError> {
+        if attempt.state != ZapAttemptState::Paying {
+            return Err(WalletError::unavailable(
+                "profile payment cannot reconcile from its current state",
+            ));
+        }
+        let state = attempt.abstract_state();
+        conformance::record(
+            &self.payer_pubkey,
+            conformance::WalletAttemptKind::ProfileZap,
+            &attempt.idempotency_key,
+            WalletTraceAction::Reconcile,
+            state,
+            state,
+        );
+        Ok(())
+    }
+
+    /// Persist a provider result and emit the matching modeled transition.
+    pub fn record_payment(
+        &self,
+        attempt: &mut ZapAttempt,
+        payment: WalletPaymentResult,
+    ) -> Result<(), WalletError> {
+        let before = attempt.abstract_state();
+        if attempt.state != ZapAttemptState::Paying {
+            return Err(WalletError::unavailable(
+                "profile payment cannot record payment from its current state",
+            ));
+        }
+        let action = match payment.status.as_str() {
+            "completed" => {
+                attempt.state = ZapAttemptState::PaidWithoutProof;
+                WalletTraceAction::RecordPaidWithoutProof
+            }
+            "failed" => {
+                attempt.state = ZapAttemptState::Failed;
+                WalletTraceAction::RecordFailed {
+                    payment_recorded: true,
+                }
+            }
+            _ => WalletTraceAction::RecordPending,
+        };
+        attempt.payment = Some(payment);
+        self.save(attempt)?;
+        conformance::record(
+            &self.payer_pubkey,
+            conformance::WalletAttemptKind::ProfileZap,
+            &attempt.idempotency_key,
+            action,
+            before,
+            attempt.abstract_state(),
+        );
+        Ok(())
+    }
+
+    /// Fail an expired reconciliation without inventing a provider result.
+    pub fn fail_reconciliation(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
+        let before = attempt.abstract_state();
+        if attempt.state != ZapAttemptState::Paying {
+            return Err(WalletError::unavailable(
+                "profile reconciliation cannot expire from its current state",
+            ));
+        }
+        let payment_recorded = attempt.payment.is_some();
+        attempt.state = ZapAttemptState::Failed;
+        self.save(attempt)?;
+        conformance::record(
+            &self.payer_pubkey,
+            conformance::WalletAttemptKind::ProfileZap,
+            &attempt.idempotency_key,
+            WalletTraceAction::RecordFailed { payment_recorded },
+            before,
+            attempt.abstract_state(),
+        );
+        Ok(())
+    }
+
+    /// Emit a no-side-effect terminal replay decision.
+    pub fn record_terminal_reuse(&self, attempt: &ZapAttempt) {
+        let state = attempt.abstract_state();
+        conformance::record(
+            &self.payer_pubkey,
+            conformance::WalletAttemptKind::ProfileZap,
+            &attempt.idempotency_key,
+            WalletTraceAction::ReuseTerminal,
+            state,
+            state,
+        );
+    }
+
+    /// Emit rejection of different details under an existing idempotency key.
+    pub fn record_conflict(&self, attempt: &ZapAttempt) {
+        let state = attempt.abstract_state();
+        conformance::record(
+            &self.payer_pubkey,
+            conformance::WalletAttemptKind::ProfileZap,
+            &attempt.idempotency_key,
+            WalletTraceAction::RejectConflict,
+            state,
+            state,
+        );
     }
 
     pub fn pending_for_recipient(
@@ -473,7 +634,7 @@ mod tests {
         )
         .unwrap();
         let store = ZapAttemptStore::new(temp.path(), &payer.public_key().to_hex());
-        store.save(&mut attempt).unwrap();
+        store.save_prepared(&mut attempt).unwrap();
         assert_eq!(
             store.load(&attempt.idempotency_key).unwrap(),
             Some(attempt.clone())
@@ -486,5 +647,52 @@ mod tests {
                 .idempotency_key,
             attempt.idempotency_key
         );
+    }
+
+    #[test]
+    fn persisted_profile_execution_emits_a_model_accepted_trace() {
+        use buzz_conformance_pkg::wallet::{check_wallet_trace, WalletCheckerConfig};
+
+        let _ = crate::wallet::conformance::take_test_trace();
+        let temp = tempfile::tempdir().unwrap();
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let mut attempt = ZapAttempt::prepare(
+            Uuid::new_v4().to_string(),
+            recipient(&recipient_keys),
+            21,
+            None,
+            &payer,
+        )
+        .unwrap();
+        let store = ZapAttemptStore::new(temp.path(), &payer.public_key().to_hex());
+        store.save_prepared(&mut attempt).unwrap();
+        store.begin_dispatch(&mut attempt).unwrap();
+        store.record_reconcile(&attempt).unwrap();
+        store
+            .record_payment(
+                &mut attempt,
+                WalletPaymentResult {
+                    payment_id: "not-projected".to_string(),
+                    status: "completed".to_string(),
+                    status_message: String::new(),
+                    amount: Some(21),
+                    fees: 0,
+                    created_at_ms: 0,
+                    finalized_at_ms: Some(0),
+                },
+            )
+            .unwrap();
+
+        let trace = crate::wallet::conformance::take_test_trace();
+        check_wallet_trace(
+            &trace,
+            &WalletCheckerConfig::default()
+                .require("prepare_profile")
+                .require("begin_dispatch")
+                .require("reconcile")
+                .require("record_paid_without_proof"),
+        )
+        .expect("implementation trace must conform");
     }
 }

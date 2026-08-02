@@ -23,7 +23,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = ["bitcoin", "system-keyring"]
-bitcoin = ["dep:async-trait", "dep:bip39", "dep:hkdf", "dep:lexe", "dep:sha2_10"]
+bitcoin = ["dep:async-trait", "dep:bip39", "dep:buzz_conformance_pkg", "dep:hkdf", "dep:lexe", "dep:sha2_10"]
 mesh-llm = ["dep:iroh", "dep:mesh-llm-sdk", "dep:mesh-llm-host-runtime", "dep:mesh-llm-client", "dep:mesh-llm-node", "dep:mesh-llm-system", "dep:mesh-llm-events"]
 # OS keyring backing for desktop secret storage (nsec private keys). When
 # disabled, secrets fall back to 0o600 files. On by default for real builds.
@@ -108,6 +108,7 @@ reqwest = { version = "0.13", features = ["json", "query", "stream", "blocking"]
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 url = "2"
 buzz_core_pkg = { package = "buzz-core", path = "../../crates/buzz-core" }
+buzz_conformance_pkg = { package = "buzz-conformance", path = "../../crates/buzz-conformance", optional = true }
 buzz_persona_pkg = { package = "buzz-persona", path = "../../crates/buzz-persona" }
 buzz_sdk_pkg = { package = "buzz-sdk", path = "../../crates/buzz-sdk" }
 buzz_agent_pkg = { package = "buzz-agent", path = "../../crates/buzz-agent" }

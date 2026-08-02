@@ -1,3 +1,4 @@
+pub(crate) mod conformance;
 mod lexe_provider;
 mod manager;
 pub mod models;

@@ -323,6 +323,10 @@ test-unit:
         ./scripts/run-tests.sh unit
     fi
 
+# Model-check the wallet's durable payment-attempt transition system.
+wallet-formal:
+    ./scripts/check-wallet-payment-model.sh
+
 # Run integration tests only (starts services if needed)
 test-integration:
     ./scripts/run-tests.sh integration

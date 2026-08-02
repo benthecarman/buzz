@@ -216,28 +216,16 @@ mod enabled {
         attempt: &mut ZapAttempt,
         payment: WalletPaymentResult,
     ) -> Result<WalletProfileZapResult, WalletError> {
-        attempt.payment = Some(payment.clone());
+        store.record_payment(attempt, payment.clone())?;
         match payment.status.as_str() {
-            "completed" => {
-                attempt.state = ZapAttemptState::PaidWithoutProof;
-                store.save(attempt)?;
-                attempt
-                    .result()
-                    .ok_or_else(|| WalletError::unavailable("profile payment result is incomplete"))
-            }
-            "failed" => {
-                attempt.state = ZapAttemptState::Failed;
-                store.save(attempt)?;
-                Err(payment_error(&payment))
-            }
-            _ => {
-                attempt.state = ZapAttemptState::Paying;
-                store.save(attempt)?;
-                Err(WalletError::new(
-                    "payment_status_unknown",
-                    "The payment is still pending. Retry only to reconcile this same attempt.",
-                ))
-            }
+            "completed" => attempt
+                .result()
+                .ok_or_else(|| WalletError::unavailable("profile payment result is incomplete")),
+            "failed" => Err(payment_error(&payment)),
+            _ => Err(WalletError::new(
+                "payment_status_unknown",
+                "The payment is still pending. Retry only to reconcile this same attempt.",
+            )),
         }
     }
 
@@ -246,13 +234,7 @@ mod enabled {
         attempt: &mut SendAttempt,
         payment: WalletPaymentResult,
     ) -> Result<WalletPaymentResult, WalletError> {
-        attempt.payment = Some(payment.clone());
-        attempt.state = match payment.status.as_str() {
-            "completed" => SendAttemptState::Completed,
-            "failed" => SendAttemptState::Failed,
-            _ => SendAttemptState::Paying,
-        };
-        store.save(attempt)?;
+        store.record_payment(attempt, payment.clone())?;
         Ok(payment)
     }
 
@@ -390,29 +372,32 @@ mod enabled {
         store.prune()?;
         let mut attempt = match store.load(&request.request_id)? {
             Some(attempt) if attempt.request == request => attempt,
-            Some(_) => {
+            Some(attempt) => {
+                store.record_conflict(&attempt);
                 return Err(WalletError::new(
                     "idempotency_conflict",
                     "This payment request ID was already used for different details",
-                ))
+                ));
             }
             None => {
                 let mut attempt = SendAttempt::prepare(request);
-                store.save(&mut attempt)?;
+                store.save_prepared(&mut attempt)?;
                 attempt
             }
         };
         match attempt.state {
             SendAttemptState::Completed => {
+                store.record_terminal_reuse(&attempt);
                 return attempt.payment.ok_or_else(|| {
                     WalletError::unavailable("terminal send attempt is missing its payment")
-                })
+                });
             }
             SendAttemptState::Failed => {
+                store.record_terminal_reuse(&attempt);
                 return Err(attempt.payment.as_ref().map_or_else(
                     || WalletError::new("payment_failed", "The prior payment failed"),
                     payment_error,
-                ))
+                ));
             }
             SendAttemptState::Prepared | SendAttemptState::Paying => {}
         }
@@ -435,29 +420,31 @@ mod enabled {
         };
         let payment = match attempt.state {
             SendAttemptState::Prepared => {
-                attempt.state = SendAttemptState::Paying;
-                store.save(&mut attempt)?;
+                store.begin_dispatch(&mut attempt)?;
                 match provider.send(attempt.request.clone()).await {
                     Ok(payment) => payment,
-                    Err(error) => provider
-                        .find_outbound_payment(payment_match())
-                        .await?
-                        .ok_or_else(|| {
-                            WalletError::new(
-                                "payment_status_unknown",
-                                format!(
-                                    "{error}. Buzz retained this request and will only reconcile it."
-                                ),
-                            )
-                        })?,
+                    Err(error) => {
+                        store.record_reconcile(&attempt)?;
+                        provider
+                            .find_outbound_payment(payment_match())
+                            .await?
+                            .ok_or_else(|| {
+                                WalletError::new(
+                                    "payment_status_unknown",
+                                    format!(
+                                        "{error}. Buzz retained this request and will only reconcile it."
+                                    ),
+                                )
+                            })?
+                    }
                 }
             }
             SendAttemptState::Paying => {
+                store.record_reconcile(&attempt)?;
                 match provider.find_outbound_payment(payment_match()).await? {
                     Some(payment) => payment,
                     None if paying_attempt_expired(attempt.updated_at_ms) => {
-                        attempt.state = SendAttemptState::Failed;
-                        store.save(&mut attempt)?;
+                        store.fail_reconciliation(&mut attempt)?;
                         return Err(WalletError::new(
                             "payment_failed",
                             "No matching payment was found at the provider within 24 hours of the \
@@ -567,11 +554,12 @@ mod enabled {
             {
                 attempt
             }
-            Some(_) => {
+            Some(attempt) => {
+                store.record_conflict(&attempt);
                 return Err(WalletError::new(
                     "idempotency_conflict",
                     "This payment key was already used for different details",
-                ))
+                ));
             }
             None => {
                 let active_relay = relay_api_base_url_with_override(&state);
@@ -589,22 +577,24 @@ mod enabled {
                     normalized_comment,
                     &keys,
                 )?;
-                store.save(&mut attempt)?;
+                store.save_prepared(&mut attempt)?;
                 attempt
             }
         };
 
         match attempt.state {
             ZapAttemptState::PaidWithoutProof => {
+                store.record_terminal_reuse(&attempt);
                 return attempt.result().ok_or_else(|| {
                     WalletError::unavailable("settled profile payment is missing its result")
-                })
+                });
             }
             ZapAttemptState::Failed => {
+                store.record_terminal_reuse(&attempt);
                 return Err(attempt.payment.as_ref().map_or_else(
                     || WalletError::new("payment_failed", "The prior payment failed"),
                     payment_error,
-                ))
+                ));
             }
             ZapAttemptState::Prepared | ZapAttemptState::Paying => {}
         }
@@ -621,8 +611,7 @@ mod enabled {
         };
         let payment = match attempt.state {
             ZapAttemptState::Prepared => {
-                attempt.state = ZapAttemptState::Paying;
-                store.save(&mut attempt)?;
+                store.begin_dispatch(&mut attempt)?;
                 match provider
                     .send_offer(WalletOfferSendRequest {
                         offer: attempt.offer.clone(),
@@ -633,38 +622,42 @@ mod enabled {
                     .await
                 {
                     Ok(payment) => payment,
-                    Err(error) => provider
-                        .find_outbound_payment(payment_match())
-                        .await?
-                        .ok_or_else(|| {
-                            WalletError::new(
-                                "payment_status_unknown",
-                                format!(
-                                    "{error}. Buzz retained this attempt and will only reconcile it."
-                                ),
-                            )
-                        })?,
+                    Err(error) => {
+                        store.record_reconcile(&attempt)?;
+                        provider
+                            .find_outbound_payment(payment_match())
+                            .await?
+                            .ok_or_else(|| {
+                                WalletError::new(
+                                    "payment_status_unknown",
+                                    format!(
+                                        "{error}. Buzz retained this attempt and will only reconcile it."
+                                    ),
+                                )
+                            })?
+                    }
                 }
             }
-            ZapAttemptState::Paying => match provider.find_outbound_payment(payment_match()).await?
-            {
-                Some(payment) => payment,
-                None if paying_attempt_expired(attempt.updated_at_ms) => {
-                    attempt.state = ZapAttemptState::Failed;
-                    store.save(&mut attempt)?;
-                    return Err(WalletError::new(
-                        "payment_failed",
-                        "No matching payment was found at the provider within 24 hours of the \
+            ZapAttemptState::Paying => {
+                store.record_reconcile(&attempt)?;
+                match provider.find_outbound_payment(payment_match()).await? {
+                    Some(payment) => payment,
+                    None if paying_attempt_expired(attempt.updated_at_ms) => {
+                        store.fail_reconciliation(&mut attempt)?;
+                        return Err(WalletError::new(
+                            "payment_failed",
+                            "No matching payment was found at the provider within 24 hours of the \
                          send; the attempt was marked failed and Buzz did not send again",
-                    ));
+                        ));
+                    }
+                    None => {
+                        return Err(WalletError::new(
+                            "payment_status_unknown",
+                            "The prior payment result is still unknown; Buzz did not send again",
+                        ));
+                    }
                 }
-                None => {
-                    return Err(WalletError::new(
-                        "payment_status_unknown",
-                        "The prior payment result is still unknown; Buzz did not send again",
-                    ));
-                }
-            },
+            }
             ZapAttemptState::PaidWithoutProof | ZapAttemptState::Failed => {
                 return Err(WalletError::unavailable(
                     "profile payment entered an invalid terminal transition",
