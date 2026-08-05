@@ -79,7 +79,7 @@ pub fn recipient_offer(
     recipient_pubkey: &str,
 ) -> Result<WalletRecipientOffer, WalletError> {
     validate_offer_event(event, recipient_pubkey)?;
-    let offer = event
+    let offers = event
         .tags
         .iter()
         .filter_map(|tag| {
@@ -88,13 +88,25 @@ pub fn recipient_offer(
                 .then(|| parts.get(1).cloned())
                 .flatten()
         })
-        .find(|offer| validate_canonical_offer(offer).is_ok())
-        .ok_or_else(|| {
-            WalletError::new(
-                "offer_invalid",
-                "offer announcement has no canonical BOLT12 offer",
-            )
-        })?;
+        .collect::<Vec<_>>();
+    if offers.is_empty()
+        || offers
+            .iter()
+            .any(|offer| validate_canonical_offer(offer).is_err())
+    {
+        return Err(WalletError::new(
+            "offer_invalid",
+            "offer announcement must contain only canonical BOLT12 offers",
+        ));
+    }
+    // The current provider accepts one offer. The signed announcement remains
+    // embedded in full so a verifier can validate the proof against any offer.
+    let offer = offers.into_iter().next().ok_or_else(|| {
+        WalletError::new(
+            "offer_invalid",
+            "offer announcement has no canonical BOLT12 offer",
+        )
+    })?;
     Ok(WalletRecipientOffer {
         recipient_pubkey: recipient_pubkey.to_string(),
         offer,
@@ -134,17 +146,53 @@ pub fn signed_intent(
     recipient: &WalletRecipientOffer,
     amount: u64,
     comment: &str,
+    target_event_id: Option<&str>,
+    target_event_kind: Option<u32>,
 ) -> Result<Event, WalletError> {
-    let tags = vec![
+    if target_event_id.is_some() != target_event_kind.is_some() {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "event zaps require both a target event id and kind",
+        ));
+    }
+    if let Some(event_id) = target_event_id {
+        if event_id.len() != 64
+            || !event_id
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+            || event_id != event_id.to_ascii_lowercase()
+        {
+            return Err(WalletError::new(
+                "invalid_zap",
+                "zap target event id must be 32-byte lowercase hex",
+            ));
+        }
+    }
+
+    let mut tags = vec![
         tag(["p", recipient.recipient_pubkey.as_str()])?,
         tag(["amount", amount_msats(amount)?.as_str()])?,
         tag(["offer_event", recipient.offer_event_json.as_str()])?,
         tag(["zap_id", random_zap_id()?.as_str()])?,
     ];
-    EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), comment)
+    if let (Some(event_id), Some(event_kind)) = (target_event_id, target_event_kind) {
+        let event_kind = event_kind.to_string();
+        tags.push(tag(["e", event_id])?);
+        tags.push(tag(["k", event_kind.as_str()])?);
+    }
+    let intent = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), comment)
         .tags(tags)
         .sign_with_keys(keys)
-        .map_err(|error| WalletError::new("invalid_zap", format!("sign zap intent: {error}")))
+        .map_err(|error| WalletError::new("invalid_zap", format!("sign zap intent: {error}")))?;
+    let offer_event = Event::from_json(&recipient.offer_event_json)
+        .map_err(|error| WalletError::new("offer_invalid", error.to_string()))?;
+    if offer_event.created_at > intent.created_at {
+        return Err(WalletError::new(
+            "offer_invalid",
+            "offer announcement is newer than the zap intent",
+        ));
+    }
+    Ok(intent)
 }
 
 /// Durable checkpoints for a profile payment.
@@ -185,6 +233,12 @@ pub struct ZapAttempt {
     /// Whole satoshis paid to the recipient (displayed as ₿ per BIP-177).
     pub amount: u64,
     pub comment: Option<String>,
+    /// Event target frozen into the signed intent. Both fields are absent for
+    /// profile zaps and present for message zaps.
+    #[serde(default)]
+    pub target_event_id: Option<String>,
+    #[serde(default)]
+    pub target_event_kind: Option<u32>,
     /// Canonical BOLT12 offer frozen before payment.
     pub offer: String,
     /// Exact recipient-signed offer event embedded by the intent.
@@ -206,6 +260,8 @@ impl ZapAttempt {
         recipient: WalletRecipientOffer,
         amount: u64,
         comment: Option<String>,
+        target_event_id: Option<String>,
+        target_event_kind: Option<u32>,
         keys: &Keys,
     ) -> Result<Self, WalletError> {
         let comment = comment
@@ -216,14 +272,18 @@ impl ZapAttempt {
             &recipient,
             amount,
             comment.as_deref().unwrap_or_default(),
+            target_event_id.as_deref(),
+            target_event_kind,
         )?;
         let intent_event_id = intent.id.to_hex();
         Ok(Self {
-            version: 2,
+            version: 3,
             idempotency_key,
             recipient_pubkey: recipient.recipient_pubkey,
             amount,
             comment,
+            target_event_id,
+            target_event_kind,
             offer: recipient.offer,
             offer_event_json: recipient.offer_event_json,
             intent_event_json: intent.as_json(),
@@ -253,6 +313,8 @@ impl ZapAttempt {
             amount: self.amount,
             comment: self.comment.clone(),
             idempotency_key: self.idempotency_key.clone(),
+            target_event_id: self.target_event_id.clone(),
+            target_event_kind: self.target_event_kind,
         }
     }
 
@@ -473,6 +535,7 @@ impl ZapAttemptStore {
     pub fn pending_for_recipient(
         &self,
         recipient_pubkey: &str,
+        target_event_id: Option<&str>,
     ) -> Result<Option<WalletProfileZapDraft>, WalletError> {
         let entries = match std::fs::read_dir(&self.directory) {
             Ok(entries) => entries,
@@ -492,6 +555,7 @@ impl ZapAttemptStore {
                 continue;
             };
             if attempt.recipient_pubkey == recipient_pubkey
+                && attempt.target_event_id.as_deref() == target_event_id
                 && matches!(
                     attempt.state,
                     ZapAttemptState::Prepared | ZapAttemptState::Paying
@@ -560,6 +624,8 @@ mod tests {
             recipient(&recipient_keys),
             21,
             Some("great work".to_string()),
+            None,
+            None,
             &payer,
         )
         .unwrap();
@@ -592,6 +658,32 @@ mod tests {
     }
 
     #[test]
+    fn event_intent_binds_message_id_and_kind() {
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let target_event_id = "ab".repeat(32);
+        let attempt = ZapAttempt::prepare(
+            Uuid::new_v4().to_string(),
+            recipient(&recipient_keys),
+            21,
+            None,
+            Some(target_event_id.clone()),
+            Some(40_002),
+            &payer,
+        )
+        .unwrap();
+        let intent = Event::from_json(&attempt.intent_event_json).unwrap();
+        assert!(intent
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["e", target_event_id.as_str()]));
+        assert!(intent
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["k", "40002"]));
+    }
+
+    #[test]
     fn withdrawal_announcement_validates_but_yields_no_offer() {
         let keys = Keys::generate();
         let withdrawal = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
@@ -615,6 +707,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_announcement_when_any_offer_is_not_canonical() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
+            .tags([
+                Tag::parse(["offer", VALID_OFFER]).unwrap(),
+                Tag::parse(["offer", &VALID_OFFER.to_ascii_uppercase()]).unwrap(),
+            ])
+            .sign_with_keys(&keys)
+            .unwrap();
+        assert_eq!(
+            recipient_offer(&event, &keys.public_key().to_hex())
+                .unwrap_err()
+                .code,
+            "offer_invalid"
+        );
+    }
+
+    #[test]
     fn rejects_zero_or_overflowing_amount() {
         assert!(amount_msats(0).is_err());
         assert!(amount_msats(u64::MAX).is_err());
@@ -630,6 +740,8 @@ mod tests {
             recipient(&recipient_keys),
             21,
             None,
+            None,
+            None,
             &payer,
         )
         .unwrap();
@@ -641,7 +753,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .pending_for_recipient(&attempt.recipient_pubkey)
+                .pending_for_recipient(&attempt.recipient_pubkey, None)
                 .unwrap()
                 .unwrap()
                 .idempotency_key,
@@ -661,6 +773,8 @@ mod tests {
             Uuid::new_v4().to_string(),
             recipient(&recipient_keys),
             21,
+            None,
+            None,
             None,
             &payer,
         )

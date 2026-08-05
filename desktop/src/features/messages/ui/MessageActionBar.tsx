@@ -1,6 +1,7 @@
 import {
   BellOff,
   BellRing,
+  Bitcoin,
   Clock,
   Copy,
   CornerUpLeft,
@@ -20,6 +21,8 @@ import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import { useCustomEmoji } from "@/features/custom-emoji/hooks";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { ReportMessageDialog } from "@/features/moderation/ui/ReportMessageDialog";
+import { useBitcoinCompileEnabled } from "@/features/wallet/hooks";
+import { SendBitcoinDialog } from "@/features/wallet/ui/SendBitcoinDialog";
 import { MessageModerationMenuItems } from "@/features/moderation/ui/MessageModerationMenuItems";
 import type {
   TimelineMessage,
@@ -35,6 +38,8 @@ import { copyTextToClipboard } from "@/shared/lib/clipboard";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { KIND_HUDDLE_STARTED } from "@/shared/constants/kinds";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { useFeatureEnabled } from "@/shared/features";
 import { Button } from "@/shared/ui/button";
 import { DeleteMessageConfirmDialog } from "./DeleteMessageConfirmDialog";
 import {
@@ -373,7 +378,11 @@ export const MessageActionBar = React.memo(function MessageActionBar({
 }) {
   const [isReactionPickerOpen, setIsReactionPickerOpen] = React.useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = React.useState(false);
+  const [isZapDialogOpen, setIsZapDialogOpen] = React.useState(false);
   const customEmoji = useCustomEmoji();
+  const bitcoinEnabled = useFeatureEnabled("bitcoin");
+  const bitcoinCompiled = useBitcoinCompileEnabled();
+  const currentPubkey = useIdentityQuery().data?.pubkey;
   const quickReactionEmojis = useQuickReactionEmojis(4, customEmoji);
   const quickReactionItems = React.useMemo(
     () =>
@@ -389,6 +398,14 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   );
   const hasReplyAction = Boolean(onReply);
   const hasReactionAction = Boolean(onReactionSelect);
+  const hasZapAction =
+    bitcoinEnabled &&
+    bitcoinCompiled &&
+    !message.pending &&
+    message.kind !== KIND_HUDDLE_STARTED &&
+    message.kind !== undefined &&
+    Boolean(message.pubkey) &&
+    message.pubkey !== currentPubkey;
 
   const hasMoreMenuActions =
     Boolean(onEdit) ||
@@ -431,7 +448,12 @@ export const MessageActionBar = React.memo(function MessageActionBar({
     [onReactionBadgeBurstRequest, onReactionSelect, wouldAddReaction],
   );
 
-  if (!hasReplyAction && !hasReactionAction && !hasMoreMenuActions) {
+  if (
+    !hasReplyAction &&
+    !hasReactionAction &&
+    !hasZapAction &&
+    !hasMoreMenuActions
+  ) {
     return null;
   }
 
@@ -442,7 +464,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
         "opacity-100 sm:pointer-events-none sm:opacity-0",
         "sm:group-hover/message:pointer-events-auto sm:group-hover/message:opacity-100",
         "sm:group-focus-within/message:pointer-events-auto sm:group-focus-within/message:opacity-100",
-        isReactionPickerOpen || isDropdownOpen
+        isReactionPickerOpen || isDropdownOpen || isZapDialogOpen
           ? "sm:pointer-events-auto sm:opacity-100"
           : "",
       )}
@@ -534,6 +556,25 @@ export const MessageActionBar = React.memo(function MessageActionBar({
             </Tooltip>
           ) : null}
 
+          {hasZapAction ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Zap message"
+                  className={ACTION_BUTTON_CLASS}
+                  data-testid={`zap-message-${message.id}`}
+                  onClick={() => setIsZapDialogOpen(true)}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Bitcoin className={ACTION_ICON_CLASS} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Zap</TooltipContent>
+            </Tooltip>
+          ) : null}
+
           {hasMoreMenuActions ? (
             <MoreActionsMenu
               channelId={channelId}
@@ -553,6 +594,16 @@ export const MessageActionBar = React.memo(function MessageActionBar({
           ) : null}
         </div>
       </div>
+      {hasZapAction ? (
+        <SendBitcoinDialog
+          onOpenChange={setIsZapDialogOpen}
+          open={isZapDialogOpen}
+          recipientName={message.author}
+          recipientPubkey={message.pubkey ?? ""}
+          targetEventId={message.id}
+          targetEventKind={message.kind}
+        />
+      ) : null}
     </div>
   );
 });

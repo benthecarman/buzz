@@ -11787,6 +11787,8 @@ export function maybeInstallE2eTauriMocks() {
               recipientPubkey?: string;
               amount?: number;
               comment?: string | null;
+              targetEventId?: string | null;
+              targetEventKind?: number | null;
             };
           }
         ).request;
@@ -11801,6 +11803,12 @@ export function maybeInstallE2eTauriMocks() {
             ["amount", String(amount * 1000)],
             ["offer_event", JSON.stringify(offerEvent)],
             ["zap_id", crypto.randomUUID().replaceAll("-", "")],
+            ...(request?.targetEventId && request.targetEventKind != null
+              ? [
+                  ["e", request.targetEventId],
+                  ["k", String(request.targetEventKind)],
+                ]
+              : []),
           ],
         });
         return {

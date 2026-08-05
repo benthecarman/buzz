@@ -2080,15 +2080,21 @@ async fn ingest_event_inner(
         }
     }
 
-    let mut channel_id = if kind_u32 == KIND_REACTION {
+    let mut channel_id = if kind_u32 == KIND_REACTION || kind_u32 == KIND_BOLT12_ZAP {
         match derive_reaction_channel(tenant.community(), &state.db, &event).await {
             ReactionChannelResult::Channel(ch_id) => Some(ch_id),
             ReactionChannelResult::NoChannel => None,
             ReactionChannelResult::NotFound => {
                 return Err(IngestError::Rejected(
-                    "invalid: reaction target event not found".into(),
+                    if kind_u32 == KIND_BOLT12_ZAP {
+                        "invalid: zap target event not found"
+                    } else {
+                        "invalid: reaction target event not found"
+                    }
+                    .into(),
                 ));
             }
+            ReactionChannelResult::NoTarget if kind_u32 == KIND_BOLT12_ZAP => None,
             ReactionChannelResult::NoTarget => {
                 return Err(IngestError::Rejected(
                     "invalid: reaction must reference a target event via e tag".into(),
@@ -3178,7 +3184,7 @@ mod tests {
     }
 
     #[test]
-    fn bolt12_zaps_allow_global_profiles_or_channel_scope() {
+    fn bolt12_zaps_allow_global_profiles_or_event_derived_channel_scope() {
         assert!(!is_global_only_kind(KIND_BOLT12_ZAP));
         assert!(!requires_h_channel_scope(KIND_BOLT12_ZAP));
     }

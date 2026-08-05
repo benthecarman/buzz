@@ -26,11 +26,15 @@ export function SendBitcoinDialog({
   open,
   recipientName,
   recipientPubkey,
+  targetEventId = null,
+  targetEventKind = null,
 }: {
   onOpenChange: (open: boolean) => void;
   open: boolean;
   recipientName: string;
   recipientPubkey: string;
+  targetEventId?: string | null;
+  targetEventKind?: number | null;
 }) {
   const [amount, setAmount] = useState("");
   const [comment, setComment] = useState("");
@@ -66,7 +70,7 @@ export function SendBitcoinDialog({
             `${recipientName} has not enabled their Bitcoin wallet.`,
         );
       });
-    getPendingProfileZap(recipientPubkey)
+    getPendingProfileZap(recipientPubkey, targetEventId)
       .then((pending) => {
         if (cancelled) return;
         if (pending) {
@@ -91,7 +95,7 @@ export function SendBitcoinDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, recipientName, recipientPubkey]);
+  }, [open, recipientName, recipientPubkey, targetEventId]);
 
   const parsedAmount = parseWholeBitcoinAmount(amount);
   const validAmount = parsedAmount !== null;
@@ -112,6 +116,8 @@ export function SendBitcoinDialog({
         amount: parsedAmount,
         comment: comment.trim() || null,
         idempotencyKey,
+        targetEventId,
+        targetEventKind,
       });
       if (result.payment.status === "completed") {
         toast.success(
@@ -156,7 +162,9 @@ export function SendBitcoinDialog({
             Send bitcoin
           </DialogTitle>
           <DialogDescription>
-            Pay {recipientName}&apos;s BOLT12 offer from your Buzz wallet.
+            {targetEventId
+              ? `Zap ${recipientName}'s message from your Buzz wallet.`
+              : `Pay ${recipientName}'s BOLT12 offer from your Buzz wallet.`}
           </DialogDescription>
         </DialogHeader>
 

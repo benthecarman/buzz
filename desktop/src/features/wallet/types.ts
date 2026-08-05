@@ -78,9 +78,11 @@ export interface WalletProfileZapRequest {
   amount: number;
   comment: string | null;
   idempotencyKey: string;
+  targetEventId?: string | null;
+  targetEventKind?: number | null;
 }
 
-export interface WalletProfileZapDraft extends WalletProfileZapRequest {}
+export type WalletProfileZapDraft = WalletProfileZapRequest;
 
 export interface WalletProfileZapResult {
   payment: WalletPaymentResult;

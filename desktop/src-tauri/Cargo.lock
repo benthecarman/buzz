@@ -210,7 +210,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -221,7 +221,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1072,7 +1072,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling 0.20.11",
+ "darling 0.23.0",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -1595,6 +1595,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "chacha20-poly1305"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50844998c477072ba2cb2a63fa1dfca81b1368133f38084916bccd5710a374e1"
+
+[[package]]
 name = "chacha20poly1305"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1733,7 +1739,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2401,7 +2407,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2607,7 +2613,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2904,7 +2910,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4934,9 +4940,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lexe"
-version = "0.1.19"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45d52d3c62d73dad0ebc40e05c57a26d0fe4e03a061370830a947d977d872ab4"
+checksum = "cbea18d41ccd6b6657aed7039e87df07bf211b0e58d4bc97125337ad789813a7"
 dependencies = [
  "anyhow",
  "bip39",
@@ -4963,9 +4969,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-api"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df0d8bbd8a1b5697860db2fa41ccf4e41537fb9f653f36f27be2e7f10729612d"
+checksum = "b722ace0a691aad96912133842bd8ea34f18856881e30b2de7f404c4f2d2a529"
 dependencies = [
  "anyhow",
  "axum",
@@ -4999,9 +5005,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-api-core"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8220e49d8c8237e62e5b920bc722ffb582528398f292c2c08e33fa767e856d5"
+checksum = "0541fdda50ccc3f611692fa25889679ff6f40ed95d025a9f0658b87e86bac346"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5037,18 +5043,18 @@ dependencies = [
 
 [[package]]
 name = "lexe-byte-array"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e23344f7a31dca16335bde556bb7ac159e8104fbccc9c6c567464d4b7d96702"
+checksum = "e39ca1e07786b8f2459a34d66dc021c0adfc336cc31429d6f4b9f227a821a352"
 dependencies = [
  "lexe-hex",
 ]
 
 [[package]]
 name = "lexe-common"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aea4c29817487c8083ebae248cad9b275227893a0eaf2aee91ad741876edd045"
+checksum = "3c8a109fde27874d71be1c2c4ac4aaa2264de19761f2e487765bd92964d69e26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5088,9 +5094,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-crypto"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05e6974fab400e95d1793b3bdff27caf075c32c388c7ddccfbd5db83bf852e83"
+checksum = "95dc7cb93d6d54c68656fa3303cfc3c7a0d31bbcdbb6cbff5bd929f0bf2b8648"
 dependencies = [
  "bcs",
  "lexe-byte-array",
@@ -5107,9 +5113,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-enclave"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "584a0dec4f92eb083e0a62cc4c833e6046bfcecb1a10e6179df05aa130516cbc"
+checksum = "9ab484329c2bf1edb4c247200cf3eb979d43ce36caad8a7f64d927d5a0a401ed"
 dependencies = [
  "cfg-if 1.0.4",
  "lexe-byte-array",
@@ -5124,15 +5130,15 @@ dependencies = [
 
 [[package]]
 name = "lexe-hex"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ee60f4bb9eacd99d119d1831248778d0f4ee7650ef476507af2c9c11a683f46"
+checksum = "3751308565f6aeddbc0000681c174a5e600f88f90ee9787855099f51285d6a05"
 
 [[package]]
 name = "lexe-logger"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e06bbc4a4bda58f4a9ce2f3f45ea4cc9e70b61f82d7270c1bdcef3ab2fabb91b"
+checksum = "9987193cd91445337fe3761f20aae925d3ed30a7898413899386881c74b14ee4"
 dependencies = [
  "anyhow",
  "lexe-api",
@@ -5142,9 +5148,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-node-client"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60ecf91fcce612f23d7d2579948563a3f4c6bd04aee2eb1426c8def1c14d7738"
+checksum = "88db145fa0682cd8a9bf0a694fe75b66acf8ba4397040c2bda9dc51ca44f703c"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5162,9 +5168,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-payment-uri"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5deb43235035fa19695b6abc92dcaee12bb0005a5a2b678e1174afaed33c293"
+checksum = "b90275f3474aa416662b18a5609c423884e70cb2c7543642198ad21ef3bc479c"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -5186,9 +5192,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-payment-uri-core"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "562b34165669f027ef1f064b030c710c016097fc3f767682344c258bd3b9a88a"
+checksum = "985ca9881bbf6d6079be433e2f426a4e34bfad4d9085c68b0117e55836cd8a5e"
 dependencies = [
  "anyhow",
  "bech32",
@@ -5206,9 +5212,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-serde"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d4197b1db7c0a2df29931bce84e1d17fa0009a6a861ae9295ea1b4fa5c31aae"
+checksum = "69318e1faf68779bf2809f023f2b8640164b643126760088061dcb6199c5f579"
 dependencies = [
  "base64 0.21.7",
  "lexe-hex",
@@ -5217,9 +5223,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-sha256"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4db865c7a10553dc27b108e4bab8a0dc9d5e9b2edd1c98d08159e505296044ae"
+checksum = "73edd959e79db00df71799e4ecc1200c49d51f6ad655ab81a49808cf3c58dd57"
 dependencies = [
  "lexe-byte-array",
  "lexe-std",
@@ -5229,18 +5235,18 @@ dependencies = [
 
 [[package]]
 name = "lexe-std"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5179ab46c980244c8a537322ee4a34fb1a3466d84e10ee88b352ef137bab4d1"
+checksum = "6ef351a361ead528c299e784314c0f5289fe380b61014bf53626245945793eb7"
 dependencies = [
  "ref-cast",
 ]
 
 [[package]]
 name = "lexe-tls"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cf149a3143f7ca757819bf5a42dccdce2e02f2047347efe69d98e29cb7d9264"
+checksum = "24ffe4c32143d75685ef13ca39b545fe89a2fc67ccfa5399bda2fba250b7568d"
 dependencies = [
  "anyhow",
  "asn1-rs",
@@ -5272,9 +5278,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-tls-core"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f129b50f3e86bcf1b1bc79ba184f252fe3daef4c11c2568544590fb025425e74"
+checksum = "9b3a00f7c544ff1d147ec8660942c006d0a6e97691bced5eb1c690fe69627bf5"
 dependencies = [
  "rustls",
  "rustls-webpki",
@@ -5283,9 +5289,9 @@ dependencies = [
 
 [[package]]
 name = "lexe-tokio"
-version = "0.1.18"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d0a7585dca5eeabc3860c7715b71adaa7fc706379d13eb73cb51a22acda3559"
+checksum = "143708e7c12958b3e11a807a012654514d5a143961c9c786ed2079de8249f30c"
 dependencies = [
  "futures",
  "thiserror 2.0.19",
@@ -5387,12 +5393,13 @@ dependencies = [
 
 [[package]]
 name = "lightning"
-version = "0.2.4"
+version = "0.3.0-beta1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63a1ab99a13ab3343a9b4d1d25c455bf72322819fc5a5f05c5182e704528a583"
+checksum = "051fad04d4a4b6fd4b483528c3d61b0c76d9b70cc2f0a870147c10909350d722"
 dependencies = [
  "bech32",
  "bitcoin",
+ "chacha20-poly1305",
  "dnssec-prover",
  "hashbrown 0.13.2",
  "libm",
@@ -5404,9 +5411,9 @@ dependencies = [
 
 [[package]]
 name = "lightning-invoice"
-version = "0.34.1"
+version = "0.35.0-beta1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d83bd798e04ab9eecc8bbef1fa17d3808859bcdc0406bd16c55d51c8834444"
+checksum = "99e186bfc9aae7fa6fda7ac3f5d701d9ee1262407025bb7db5bc04af9593723a"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -5426,9 +5433,9 @@ dependencies = [
 
 [[package]]
 name = "lightning-types"
-version = "0.3.2"
+version = "0.4.0-beta1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c211dfcff95ca308247da8b1e0e81604bc9e568239967cd2c34572558511e869"
+checksum = "2e605bf5f355153e50ee9b2060dfe7640b6277e1b82929097b61b2b5d2837ee8"
 dependencies = [
  "bitcoin",
 ]
@@ -6411,7 +6418,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.19",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6909,7 +6916,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7616,7 +7623,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8385,7 +8392,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools",
  "log",
  "multimap",
@@ -8405,7 +8412,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools",
  "log",
  "multimap",
@@ -8651,7 +8658,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9414,7 +9421,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9493,7 +9500,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9759,7 +9766,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10385,7 +10392,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11433,10 +11440,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -12192,7 +12199,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.19",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -12293,7 +12300,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -13102,7 +13109,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
