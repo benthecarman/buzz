@@ -1,9 +1,12 @@
-import { SmilePlus } from "lucide-react";
+import { Bitcoin, SmilePlus } from "lucide-react";
 import * as React from "react";
 
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import type { TimelineReaction } from "@/features/messages/types";
 import { recordQuickReactionEmoji } from "@/features/messages/ui/useQuickReactionEmojis";
+import { formatBitcoin } from "@/features/wallet/lib/formatBitcoin";
+import { usePlaceholderMessageZaps } from "@/features/wallet/lib/placeholderMessageZaps";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import { cn } from "@/shared/lib/cn";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
@@ -156,6 +159,8 @@ export function MessageReactions({
   onBurstEmojiRendered?: (emoji: string) => void;
 }) {
   const { burstEmoji } = useEmojiBurst();
+  const payerPubkey = useIdentityQuery().data?.pubkey;
+  const placeholderZaps = usePlaceholderMessageZaps(messageId, payerPubkey);
   const [pendingBadgeBurstEmoji, setPendingBadgeBurstEmoji] = React.useState<
     string | null
   >(null);
@@ -242,7 +247,7 @@ export function MessageReactions({
     return cancelFrame;
   }, [badgeBurstEmoji, burstEmoji, onBurstEmojiRendered, reactions]);
 
-  if (reactions.length === 0) {
+  if (reactions.length === 0 && placeholderZaps.length === 0) {
     return null;
   }
 
@@ -254,6 +259,15 @@ export function MessageReactions({
       )}
       data-testid="message-reactions"
     >
+      {placeholderZaps.length > 0 ? (
+        <PlaceholderZapPill
+          amount={placeholderZaps.reduce(
+            (total, receipt) => total + receipt.amount,
+            0,
+          )}
+          count={placeholderZaps.length}
+        />
+      ) : null}
       {reactions.map((reaction) => (
         <ReactionPill
           key={`${messageId}-${reaction.emoji}`}
@@ -274,6 +288,37 @@ export function MessageReactions({
         />
       ) : null}
     </div>
+  );
+}
+
+function PlaceholderZapPill({
+  amount,
+  count,
+}: {
+  amount: number;
+  count: number;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={`${formatBitcoin(amount)}, local placeholder awaiting payer proof`}
+          className={cn(
+            REACTION_PILL_BASE_CLASSES,
+            "min-w-12 cursor-help justify-center gap-1.5 border-amber-500/40 bg-amber-500/10 px-2 text-amber-700 dark:text-amber-300",
+          )}
+          data-testid="placeholder-message-zap"
+          type="button"
+        >
+          <Bitcoin className="h-3.5 w-3.5" />
+          <span>{amount.toLocaleString()}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>
+        {count === 1 ? "Payment settled" : `${count} payments settled`} — local
+        placeholder awaiting payer proof
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::models::{
-    WalletError, WalletPaymentResult, WalletProfileZapDraft, WalletProfileZapResult,
-    WalletRecipientOffer,
+    WalletError, WalletPaymentResult, WalletPlaceholderMessageZap, WalletProfileZapDraft,
+    WalletProfileZapResult, WalletRecipientOffer,
 };
 use super::{conformance, lexe_provider::canonical_offer};
 
@@ -570,6 +570,40 @@ impl ZapAttemptStore {
         Ok(latest.map(|attempt| attempt.draft()))
     }
 
+    /// List settled event-targeted payments for local placeholder rendering.
+    pub fn settled_message_zaps(&self) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
+        let entries = match std::fs::read_dir(&self.directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(WalletError::unavailable(format!(
+                    "read zap attempt directory: {error}"
+                )))
+            }
+        };
+        let mut receipts = entries
+            .flatten()
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<ZapAttempt>(&bytes).ok())
+            .filter_map(|attempt| {
+                let target_event_id = attempt.target_event_id?;
+                let payment = attempt.payment?;
+                (attempt.state == ZapAttemptState::PaidWithoutProof
+                    && payment.status == "completed")
+                    .then(|| WalletPlaceholderMessageZap {
+                        intent_event_id: attempt.intent_event_id,
+                        target_event_id,
+                        recipient_pubkey: attempt.recipient_pubkey,
+                        amount: payment.amount.unwrap_or(attempt.amount),
+                        comment: attempt.comment,
+                        settled_at_ms: payment.finalized_at_ms.unwrap_or(payment.created_at_ms),
+                    })
+            })
+            .collect::<Vec<_>>();
+        receipts.sort_by_key(|receipt| receipt.settled_at_ms);
+        Ok(receipts)
+    }
+
     /// Remove terminal checkpoints after the documented 90-day retention
     /// period. Incomplete attempts are retained until reconciled.
     pub fn prune(&self) -> Result<(), WalletError> {
@@ -759,6 +793,48 @@ mod tests {
                 .idempotency_key,
             attempt.idempotency_key
         );
+    }
+
+    #[test]
+    fn settled_message_zaps_restore_local_placeholder_receipts() {
+        let temp = tempfile::tempdir().unwrap();
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let target_event_id = "ab".repeat(32);
+        let mut attempt = ZapAttempt::prepare(
+            Uuid::new_v4().to_string(),
+            recipient(&recipient_keys),
+            21,
+            Some("great work".to_string()),
+            Some(target_event_id.clone()),
+            Some(40_002),
+            &payer,
+        )
+        .unwrap();
+        let store = ZapAttemptStore::new(temp.path(), &payer.public_key().to_hex());
+        store.save_prepared(&mut attempt).unwrap();
+        store.begin_dispatch(&mut attempt).unwrap();
+        store
+            .record_payment(
+                &mut attempt,
+                WalletPaymentResult {
+                    payment_id: "payment".to_string(),
+                    status: "completed".to_string(),
+                    status_message: String::new(),
+                    amount: Some(21),
+                    fees: 0,
+                    created_at_ms: 100,
+                    finalized_at_ms: Some(200),
+                },
+            )
+            .unwrap();
+
+        let receipts = store.settled_message_zaps().unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].intent_event_id, attempt.intent_event_id);
+        assert_eq!(receipts[0].target_event_id, target_event_id);
+        assert_eq!(receipts[0].amount, 21);
+        assert_eq!(receipts[0].settled_at_ms, 200);
     }
 
     #[test]

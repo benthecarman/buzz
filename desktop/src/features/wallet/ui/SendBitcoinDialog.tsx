@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Bitcoin, LoaderCircle, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
@@ -8,6 +9,7 @@ import {
   sendProfileZap,
 } from "../api";
 import { formatBitcoin } from "../lib/formatBitcoin";
+import { placeholderMessageZapsQueryKey } from "../lib/placeholderMessageZaps";
 import { parseWholeBitcoinAmount } from "../lib/profileZap";
 import { walletCommandError } from "../lib/walletError";
 import { Button } from "@/shared/ui/button";
@@ -36,6 +38,7 @@ export function SendBitcoinDialog({
   targetEventId?: string | null;
   targetEventKind?: number | null;
 }) {
+  const queryClient = useQueryClient();
   const [amount, setAmount] = useState("");
   const [comment, setComment] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState<string>(
@@ -120,11 +123,17 @@ export function SendBitcoinDialog({
         targetEventKind,
       });
       if (result.payment.status === "completed") {
+        if (targetEventId) {
+          await queryClient.invalidateQueries({
+            queryKey: placeholderMessageZapsQueryKey,
+          });
+        }
         toast.success(
           `${formatBitcoin(result.payment.amount ?? parsedAmount)} sent`,
           {
-            description:
-              "The payment settled. Buzz kept the intent local because the wallet cannot produce an lnp payer proof yet.",
+            description: targetEventId
+              ? "The payment settled. A local placeholder receipt now appears under the message while payer proofs are unavailable."
+              : "The payment settled. Buzz kept the intent local because the wallet cannot produce an lnp payer proof yet.",
           },
         );
         setReconciling(false);

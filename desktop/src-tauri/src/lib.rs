@@ -917,6 +917,7 @@ pub fn run() {
             wallet_poll_updates,
             wallet_get_recipient_offer,
             wallet_get_pending_profile_zap,
+            wallet_list_placeholder_message_zaps,
             wallet_send_profile_zap,
             wallet_reveal_recovery_phrase,
             #[cfg(target_os = "macos")]

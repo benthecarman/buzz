@@ -90,6 +90,15 @@ export interface WalletProfileZapResult {
   proofPublished: false;
 }
 
+export interface WalletPlaceholderMessageZap {
+  intentEventId: string;
+  targetEventId: string;
+  recipientPubkey: string;
+  amount: number;
+  comment: string | null;
+  settledAtMs: number;
+}
+
 export interface WalletCommandError {
   code?: string;
   message?: string;

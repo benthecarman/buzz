@@ -185,6 +185,20 @@ pub struct WalletProfileZapResult {
     pub proof_published: bool,
 }
 
+/// A settled message payment retained locally until a payer proof is available.
+///
+/// This is display-only state. It is not a NIP-B1 proof and is never published.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletPlaceholderMessageZap {
+    pub intent_event_id: String,
+    pub target_event_id: String,
+    pub recipient_pubkey: String,
+    pub amount: u64,
+    pub comment: Option<String>,
+    pub settled_at_ms: u64,
+}
+
 /// A stable, serializable wallet error returned through Tauri.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct WalletError {

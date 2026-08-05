@@ -23,8 +23,9 @@ mod enabled {
             models::{
                 WalletDestinationAnalysis, WalletEnableResult, WalletError, WalletFundingRequest,
                 WalletOfferPublicationResult, WalletOfferSendRequest, WalletPaymentResult,
-                WalletProfileZapDraft, WalletProfileZapRequest, WalletProfileZapResult,
-                WalletRecipientOffer, WalletSendRequest, WalletStatus, WalletTransactionPage,
+                WalletPlaceholderMessageZap, WalletProfileZapDraft, WalletProfileZapRequest,
+                WalletProfileZapResult, WalletRecipientOffer, WalletSendRequest, WalletStatus,
+                WalletTransactionPage,
             },
             provider::WalletPaymentMatch,
             send::{SendAttempt, SendAttemptState, SendAttemptStore},
@@ -520,6 +521,16 @@ mod enabled {
     }
 
     #[tauri::command]
+    pub async fn wallet_list_placeholder_message_zaps(
+        app: AppHandle,
+        state: State<'_, AppState>,
+    ) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
+        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+        ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex())
+            .settled_message_zaps()
+    }
+
+    #[tauri::command]
     pub async fn wallet_send_profile_zap(
         app: AppHandle,
         state: State<'_, AppState>,
@@ -777,6 +788,7 @@ mod disabled {
             target_event_id: Option<String>,
         ) -> serde_json::Value
     );
+    disabled_async_command!(wallet_list_placeholder_message_zaps() -> serde_json::Value);
     disabled_async_command!(
         wallet_send_profile_zap(request: serde_json::Value) -> serde_json::Value
     );

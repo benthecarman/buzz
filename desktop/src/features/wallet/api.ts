@@ -7,6 +7,7 @@ import type {
   WalletFundingRequest,
   WalletOfferPublicationResult,
   WalletPaymentResult,
+  WalletPlaceholderMessageZap,
   WalletProfileZapDraft,
   WalletProfileZapRequest,
   WalletProfileZapResult,
@@ -108,6 +109,14 @@ export function getPendingProfileZap(
       recipientPubkey,
       targetEventId: targetEventId ?? null,
     },
+  );
+}
+
+export function listPlaceholderMessageZaps(): Promise<
+  WalletPlaceholderMessageZap[]
+> {
+  return invoke<WalletPlaceholderMessageZap[]>(
+    "wallet_list_placeholder_message_zaps",
   );
 }
 
