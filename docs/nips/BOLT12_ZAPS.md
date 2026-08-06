@@ -39,6 +39,6 @@ an existing offer. The `create_offer` API never invalidates prior offers.
 Without persistence, each app restart creates and publishes a new offer. The
 old offers remain payable.
 
-The POC protocol reference is the proposed
-[BOLT12 zaps NIP](https://github.com/benthecarman/nips/blob/035b3cf4d5fadb808031b94f2277ba98dc94e9ac/B1.md).
+The POC protocol reference is the latest proposed
+[NIP-B1 BOLT12 zaps draft](https://github.com/benthecarman/nips/blob/bolt12-zaps/B1.md).
 The candidate kind numbers are not final until the proposal is accepted.

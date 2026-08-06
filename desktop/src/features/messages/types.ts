@@ -11,6 +11,14 @@ export type TimelineReaction = {
   }>;
 };
 
+export type TimelineZap = {
+  amount: number;
+  comment: string;
+  intentEventId: string;
+  payerPubkey: string;
+  recipientPubkey: string;
+};
+
 export type TimelineMessage = {
   id: string;
   /** Stable local key used to avoid remounting optimistic rows on send ack. */
@@ -49,4 +57,5 @@ export type TimelineMessage = {
   kind?: number;
   tags?: string[][];
   reactions?: TimelineReaction[];
+  zaps?: TimelineZap[];
 };

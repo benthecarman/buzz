@@ -57,6 +57,7 @@ export interface WalletTransaction {
   amount: number | null;
   fees: number;
   note: string | null;
+  payerNote: string | null;
   createdAtMs: number;
   finalizedAtMs: number | null;
 }
@@ -87,7 +88,7 @@ export type WalletProfileZapDraft = WalletProfileZapRequest;
 export interface WalletProfileZapResult {
   payment: WalletPaymentResult;
   intentEventId: string;
-  proofPublished: false;
+  proofPublished: boolean;
 }
 
 export interface WalletPlaceholderMessageZap {

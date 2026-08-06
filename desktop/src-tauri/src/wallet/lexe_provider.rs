@@ -193,6 +193,7 @@ impl LexeProvider {
     }
 
     fn transaction(payment: Payment) -> Result<WalletTransaction, WalletError> {
+        let payer_note = payment.message.clone();
         Ok(WalletTransaction {
             id: Self::payment_id(&payment.index)?,
             direction: Self::json_string(&payment.direction),
@@ -204,6 +205,7 @@ impl LexeProvider {
                 .personal_note
                 .or(payment.message)
                 .or(payment.payer_name),
+            payer_note,
             created_at_ms: payment.created_at.to_millis(),
             finalized_at_ms: payment.finalized_at.map(|timestamp| timestamp.to_millis()),
         })

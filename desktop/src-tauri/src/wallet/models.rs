@@ -116,6 +116,9 @@ pub struct WalletTransaction {
     pub amount: Option<u64>,
     pub fees: u64,
     pub note: Option<String>,
+    /// Public payer metadata supplied with an inbound BOLT12 payment. Zap
+    /// notifications use this to bind a settled payment to its signed intent.
+    pub payer_note: Option<String>,
     pub created_at_ms: u64,
     pub finalized_at_ms: Option<u64>,
 }

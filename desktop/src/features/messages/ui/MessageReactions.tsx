@@ -2,7 +2,7 @@ import { Bitcoin, SmilePlus } from "lucide-react";
 import * as React from "react";
 
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
-import type { TimelineReaction } from "@/features/messages/types";
+import type { TimelineReaction, TimelineZap } from "@/features/messages/types";
 import { recordQuickReactionEmoji } from "@/features/messages/ui/useQuickReactionEmojis";
 import { formatBitcoin } from "@/features/wallet/lib/formatBitcoin";
 import { usePlaceholderMessageZaps } from "@/features/wallet/lib/placeholderMessageZaps";
@@ -142,6 +142,7 @@ function ReactionPopoverContent({ reaction }: { reaction: TimelineReaction }) {
 export function MessageReactions({
   messageId,
   reactions,
+  zaps = [],
   canToggle,
   pending,
   onSelect,
@@ -151,6 +152,7 @@ export function MessageReactions({
 }: {
   messageId: string;
   reactions: TimelineReaction[];
+  zaps?: TimelineZap[];
   canToggle: boolean;
   pending: boolean;
   onSelect: (emoji: string) => void;
@@ -161,6 +163,17 @@ export function MessageReactions({
   const { burstEmoji } = useEmojiBurst();
   const payerPubkey = useIdentityQuery().data?.pubkey;
   const placeholderZaps = usePlaceholderMessageZaps(messageId, payerPubkey);
+  const publicIntentIds = new Set(zaps.map((zap) => zap.intentEventId));
+  const unpublishedPlaceholders = placeholderZaps.filter(
+    (zap) => !publicIntentIds.has(zap.intentEventId),
+  );
+  const zapAmount =
+    zaps.reduce((total, zap) => total + zap.amount, 0) +
+    unpublishedPlaceholders.reduce(
+      (total, receipt) => total + receipt.amount,
+      0,
+    );
+  const zapCount = zaps.length + unpublishedPlaceholders.length;
   const [pendingBadgeBurstEmoji, setPendingBadgeBurstEmoji] = React.useState<
     string | null
   >(null);
@@ -247,7 +260,7 @@ export function MessageReactions({
     return cancelFrame;
   }, [badgeBurstEmoji, burstEmoji, onBurstEmojiRendered, reactions]);
 
-  if (reactions.length === 0 && placeholderZaps.length === 0) {
+  if (reactions.length === 0 && zapCount === 0) {
     return null;
   }
 
@@ -259,13 +272,11 @@ export function MessageReactions({
       )}
       data-testid="message-reactions"
     >
-      {placeholderZaps.length > 0 ? (
-        <PlaceholderZapPill
-          amount={placeholderZaps.reduce(
-            (total, receipt) => total + receipt.amount,
-            0,
-          )}
-          count={placeholderZaps.length}
+      {zapCount > 0 ? (
+        <ZapPill
+          amount={zapAmount}
+          count={zapCount}
+          hasUnpublishedPlaceholder={unpublishedPlaceholders.length > 0}
         />
       ) : null}
       {reactions.map((reaction) => (
@@ -291,23 +302,25 @@ export function MessageReactions({
   );
 }
 
-function PlaceholderZapPill({
+function ZapPill({
   amount,
   count,
+  hasUnpublishedPlaceholder,
 }: {
   amount: number;
   count: number;
+  hasUnpublishedPlaceholder: boolean;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
-          aria-label={`${formatBitcoin(amount)}, local placeholder awaiting payer proof`}
+          aria-label={`${formatBitcoin(amount)} across ${count} ${count === 1 ? "zap" : "zaps"}`}
           className={cn(
             REACTION_PILL_BASE_CLASSES,
             "min-w-12 cursor-help justify-center gap-1.5 border-amber-500/40 bg-amber-500/10 px-2 text-amber-700 dark:text-amber-300",
           )}
-          data-testid="placeholder-message-zap"
+          data-testid="message-zap"
           type="button"
         >
           <Bitcoin className="h-3.5 w-3.5" />
@@ -315,8 +328,8 @@ function PlaceholderZapPill({
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        {count === 1 ? "Payment settled" : `${count} payments settled`} — local
-        placeholder awaiting payer proof
+        {count === 1 ? "1 zap" : `${count} zaps`}
+        {hasUnpublishedPlaceholder ? " — publishing…" : null}
       </TooltipContent>
     </Tooltip>
   );

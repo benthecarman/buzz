@@ -6,7 +6,7 @@ use std::{
 
 use atomic_write_file::AtomicWriteFile;
 use buzz_conformance_pkg::wallet::{WalletAbstractState, WalletAttemptStatus, WalletTraceAction};
-use buzz_core_pkg::kind::{KIND_BOLT12_OFFER, KIND_BOLT12_ZAP_INTENT};
+use buzz_core_pkg::kind::{KIND_BOLT12_OFFER, KIND_BOLT12_ZAP, KIND_BOLT12_ZAP_INTENT};
 use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -18,6 +18,8 @@ use super::models::{
 use super::{conformance, lexe_provider::canonical_offer};
 
 const TERMINAL_ATTEMPT_RETENTION_MS: u64 = 90 * 24 * 60 * 60 * 1_000;
+/// Temporary proof marker published until the wallet exposes a real `lnp` proof.
+pub(crate) const PLACEHOLDER_PAYER_PROOF: &str = "placeholder";
 
 fn tag(parts: impl IntoIterator<Item = impl Into<String>>) -> Result<Tag, WalletError> {
     Tag::parse(parts).map_err(|error| WalletError::new("invalid_zap", error.to_string()))
@@ -203,8 +205,8 @@ pub enum ZapAttemptState {
     Prepared,
     /// Payment may have reached Lexe and must be reconciled before retrying.
     Paying,
-    /// Payment settled, but no public event can be produced without an `lnp`
-    /// payer proof.
+    /// Payment settled. A kind `9736` event carrying the temporary placeholder
+    /// payer proof can now be published.
     #[serde(
         alias = "paid_awaiting_proof",
         alias = "publishing_placeholder",
@@ -250,6 +252,12 @@ pub struct ZapAttempt {
     pub payer_note: String,
     pub state: ZapAttemptState,
     pub payment: Option<WalletPaymentResult>,
+    /// Exact signed kind `9736` event retained for idempotent relay retries.
+    #[serde(default)]
+    pub proof_event_json: Option<String>,
+    /// Whether the persisted proof event was accepted by the active relay.
+    #[serde(default)]
+    pub proof_published: bool,
     #[serde(default)]
     pub updated_at_ms: u64,
 }
@@ -277,7 +285,7 @@ impl ZapAttempt {
         )?;
         let intent_event_id = intent.id.to_hex();
         Ok(Self {
-            version: 3,
+            version: 4,
             idempotency_key,
             recipient_pubkey: recipient.recipient_pubkey,
             amount,
@@ -291,6 +299,8 @@ impl ZapAttempt {
             intent_event_id,
             state: ZapAttemptState::Prepared,
             payment: None,
+            proof_event_json: None,
+            proof_published: false,
             updated_at_ms: now_ms(),
         })
     }
@@ -303,8 +313,57 @@ impl ZapAttempt {
         Some(WalletProfileZapResult {
             payment: self.payment.clone()?,
             intent_event_id: self.intent_event_id.clone(),
-            proof_published: false,
+            proof_published: self.proof_published,
         })
+    }
+
+    /// Decode the exact signed proof event retained for publication retries.
+    pub fn proof_event(&self) -> Result<Option<Event>, WalletError> {
+        self.proof_event_json
+            .as_deref()
+            .map(|json| {
+                Event::from_json(json).map_err(|error| {
+                    WalletError::unavailable(format!("decode persisted zap proof event: {error}"))
+                })
+            })
+            .transpose()
+    }
+
+    fn build_placeholder_proof_event(
+        &self,
+        keys: &Keys,
+        channel_id: Option<&str>,
+    ) -> Result<Event, WalletError> {
+        if self.state != ZapAttemptState::PaidWithoutProof
+            || self.payment.as_ref().map(|payment| payment.status.as_str()) != Some("completed")
+        {
+            return Err(WalletError::unavailable(
+                "placeholder zap proof requires a settled payment",
+            ));
+        }
+        let intent = Event::from_json(&self.intent_event_json)
+            .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+        let mut tags = intent
+            .tags
+            .iter()
+            .filter(|tag| tag.as_slice().first().map(String::as_str) != Some("zap_id"))
+            .cloned()
+            .collect::<Vec<_>>();
+        tags.push(tag(["description", self.intent_event_json.as_str()])?);
+        tags.push(tag(["P", keys.public_key().to_hex().as_str()])?);
+        tags.push(tag(["proof", PLACEHOLDER_PAYER_PROOF])?);
+        if let Some(channel_id) = channel_id {
+            tags.push(tag(["h", channel_id])?);
+        }
+        EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), intent.content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .map_err(|error| {
+                WalletError::new(
+                    "relay_publish_failed",
+                    format!("sign placeholder zap proof: {error}"),
+                )
+            })
     }
 
     fn draft(&self) -> WalletProfileZapDraft {
@@ -484,6 +543,33 @@ impl ZapAttemptStore {
         Ok(())
     }
 
+    /// Persist the exact signed placeholder proof before relay publication.
+    pub fn prepare_placeholder_proof(
+        &self,
+        attempt: &mut ZapAttempt,
+        keys: &Keys,
+        channel_id: Option<&str>,
+    ) -> Result<Event, WalletError> {
+        if let Some(event) = attempt.proof_event()? {
+            return Ok(event);
+        }
+        let event = attempt.build_placeholder_proof_event(keys, channel_id)?;
+        attempt.proof_event_json = Some(event.as_json());
+        self.save(attempt)?;
+        Ok(event)
+    }
+
+    /// Persist successful publication to the active relay.
+    pub fn mark_proof_published(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
+        if attempt.proof_event_json.is_none() {
+            return Err(WalletError::unavailable(
+                "cannot mark a missing zap proof event as published",
+            ));
+        }
+        attempt.proof_published = true;
+        self.save(attempt)
+    }
+
     /// Fail an expired reconciliation without inventing a provider result.
     pub fn fail_reconciliation(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
         let before = attempt.abstract_state();
@@ -589,6 +675,7 @@ impl ZapAttemptStore {
                 let target_event_id = attempt.target_event_id?;
                 let payment = attempt.payment?;
                 (attempt.state == ZapAttemptState::PaidWithoutProof
+                    && !attempt.proof_published
                     && payment.status == "completed")
                     .then(|| WalletPlaceholderMessageZap {
                         intent_event_id: attempt.intent_event_id,
@@ -835,6 +922,26 @@ mod tests {
         assert_eq!(receipts[0].target_event_id, target_event_id);
         assert_eq!(receipts[0].amount, 21);
         assert_eq!(receipts[0].settled_at_ms, 200);
+
+        let proof = store
+            .prepare_placeholder_proof(&mut attempt, &payer, Some("channel-id"))
+            .unwrap();
+        assert_eq!(proof.kind, Kind::Custom(KIND_BOLT12_ZAP as u16));
+        assert!(proof
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["proof", PLACEHOLDER_PAYER_PROOF]));
+        assert!(proof
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["h", "channel-id"]));
+        let persisted = store
+            .prepare_placeholder_proof(&mut attempt, &payer, None)
+            .unwrap();
+        assert_eq!(persisted.id, proof.id);
+        store.mark_proof_published(&mut attempt).unwrap();
+        assert!(store.settled_message_zaps().unwrap().is_empty());
+        assert!(attempt.result().unwrap().proof_published);
     }
 
     #[test]
