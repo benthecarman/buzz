@@ -997,7 +997,7 @@ pub async fn create_managed_agent(
     )
     .await)
         .err();
-
+    super::agents_wallet::provision_agent_offer(&app, &state, &agent_keys, &pubkey, &input).await;
     // ── Phase 5: provider deploy (async, outside lock) ───────────────────────
     let spawn_error = if input.spawn_after_create && input.backend != BackendKind::Local {
         if let BackendKind::Provider { ref id, ref config } = input.backend {

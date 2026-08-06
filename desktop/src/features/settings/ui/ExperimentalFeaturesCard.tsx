@@ -24,7 +24,7 @@ function FeatureRow({ feature }: { feature: FeatureDefinition }) {
         toggle(value);
         if (result.publicationWarnings.length > 0) {
           toast.warning(
-            `Wallet ${value ? "enabled" : "disabled"}, but some communities could not be updated. They may not support wallet profile payments yet.`,
+            `Wallet ${value ? "enabled" : "disabled"}, but some agent offers or communities could not be updated. They may not support wallet profile payments yet.`,
           );
         }
       } catch (error) {

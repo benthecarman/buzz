@@ -70,6 +70,11 @@ pub trait WalletProvider: Send + Sync {
 
     async fn offer(&self, rotate: bool) -> Result<String, WalletError>;
 
+    /// Return a stable offer for a named recipient surface. All named offers
+    /// settle into this same provider wallet; `scope` only selects which
+    /// public offer is reused.
+    async fn scoped_offer(&self, scope: String, rotate: bool) -> Result<String, WalletError>;
+
     async fn funding_request(&self) -> Result<WalletFundingRequest, WalletError>;
 
     async fn analyze(&self, destination: String) -> Result<WalletDestinationAnalysis, WalletError>;

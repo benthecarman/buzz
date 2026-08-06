@@ -1,8 +1,4 @@
-use std::{
-    path::Path,
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
+use std::{path::Path, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
 use lexe::{
@@ -18,6 +14,8 @@ use lexe::{
     },
     wallet::LexeWallet,
 };
+use sha2_10::{Digest, Sha256};
+use tokio::sync::Mutex;
 
 use super::{
     models::{
@@ -66,6 +64,11 @@ pub(super) fn canonical_offer(value: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn scoped_offer_file_name(scope: &str) -> String {
+    let digest = Sha256::digest(scope.as_bytes());
+    format!("{}.txt", hex::encode(digest))
+}
+
 /// Creates the Lexe adapter for one identity-scoped wallet cache.
 pub(super) fn create_lexe_provider(
     seed: WalletSeed,
@@ -83,17 +86,12 @@ pub(super) fn create_lexe_provider(
     )
     .map_err(|error| WalletError::provider(format!("initialize Lexe wallet: {error:#}")))?;
 
-    let offer_path = cache_dir.join("active-offer.txt");
-    let persisted_offer = std::fs::read_to_string(&offer_path)
-        .ok()
-        .map(|offer| offer.trim().to_string())
-        .filter(|offer| canonical_offer(offer));
-
     Ok(Arc::new(LexeProvider {
         wallet,
         root_seed,
-        offer_path,
-        active_offer: Mutex::new(persisted_offer),
+        offer_path: cache_dir.join("active-offer.txt"),
+        scoped_offer_dir: cache_dir.join("offers"),
+        offer_lock: Mutex::new(()),
     }))
 }
 
@@ -112,12 +110,59 @@ struct LexeProvider {
     /// ones, so the offer is persisted here to keep a restart from minting a
     /// fresh one and orphaning the previously published offer.
     offer_path: std::path::PathBuf,
-    /// Process-local reuse, seeded from `offer_path` at load. The active offer
-    /// is republished to Nostr whenever the wallet is enabled.
-    active_offer: Mutex<Option<String>>,
+    /// Directory of stable, recipient-scoped offers. File names are hashes of
+    /// opaque scopes, so a caller cannot escape the wallet cache directory.
+    scoped_offer_dir: std::path::PathBuf,
+    /// Serializes read-create-persist so concurrent requests for one missing
+    /// scope cannot mint two offers and publish different values.
+    offer_lock: Mutex<()>,
 }
 
 impl LexeProvider {
+    fn scoped_offer_path(&self, scope: &str) -> std::path::PathBuf {
+        self.scoped_offer_dir.join(scoped_offer_file_name(scope))
+    }
+
+    async fn offer_at(
+        &self,
+        path: &Path,
+        description: &str,
+        rotate: bool,
+    ) -> Result<String, WalletError> {
+        let _guard = self.offer_lock.lock().await;
+        if !rotate {
+            if let Some(offer) = std::fs::read_to_string(path)
+                .ok()
+                .map(|offer| offer.trim().to_string())
+                .filter(|offer| canonical_offer(offer))
+            {
+                return Ok(offer);
+            }
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                WalletError::unavailable(format!("create wallet offer directory: {error}"))
+            })?;
+        }
+        let offer = self
+            .wallet
+            .create_offer(CreateOfferRequest {
+                description: Some(description.to_string()),
+                expiration_secs: Some(OFFER_EXPIRATION_SECS),
+                ..Default::default()
+            })
+            .await
+            .map_err(|error| WalletError::provider(format!("create BOLT12 offer: {error:#}")))?
+            .offer
+            .to_string();
+        // The offer is public and published to Nostr. A persistence failure is
+        // non-fatal, but the next process can mint a replacement for the scope.
+        if let Err(error) = std::fs::write(path, &offer) {
+            tracing::warn!(error = %error, "persist wallet offer");
+        }
+        Ok(offer)
+    }
+
     fn amount(value: u64) -> Result<Amount, WalletError> {
         Amount::try_from_sats_u64(value)
             .map_err(|error| WalletError::new("invalid_amount", error.to_string()))
@@ -193,44 +238,18 @@ impl WalletProvider for LexeProvider {
     }
 
     async fn offer(&self, rotate: bool) -> Result<String, WalletError> {
-        let cached_offer = if rotate {
-            None
-        } else {
-            self.active_offer
-                .lock()
-                .map_err(|_| WalletError::unavailable("wallet offer cache is unavailable"))?
-                .clone()
-        };
-        match cached_offer {
-            Some(offer) => Ok(offer),
-            None => {
-                let offer = self
-                    .wallet
-                    .create_offer(CreateOfferRequest {
-                        description: Some("Buzz wallet".to_string()),
-                        expiration_secs: Some(OFFER_EXPIRATION_SECS),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|error| {
-                        WalletError::provider(format!("create BOLT12 offer: {error:#}"))
-                    })?
-                    .offer
-                    .to_string();
-                // Best-effort persistence: the offer is public (published to
-                // Nostr), so a write failure only means the next restart
-                // mints again.
-                if let Err(error) = std::fs::write(&self.offer_path, &offer) {
-                    tracing::warn!(error = %error, "persist wallet offer");
-                }
-                *self
-                    .active_offer
-                    .lock()
-                    .map_err(|_| WalletError::unavailable("wallet offer cache is unavailable"))? =
-                    Some(offer.clone());
-                Ok(offer)
-            }
+        self.offer_at(&self.offer_path, "Buzz wallet", rotate).await
+    }
+
+    async fn scoped_offer(&self, scope: String, rotate: bool) -> Result<String, WalletError> {
+        if scope.is_empty() {
+            return Err(WalletError::new(
+                "invalid_offer_scope",
+                "wallet offer scope must not be empty",
+            ));
         }
+        let path = self.scoped_offer_path(&scope);
+        self.offer_at(&path, "Buzz agent", rotate).await
     }
 
     async fn funding_request(&self) -> Result<WalletFundingRequest, WalletError> {
@@ -419,7 +438,10 @@ mod tests {
         payment::PaymentDirection,
     };
 
-    use super::{payment_sync_changed, reconciliation_fields_match, WalletPaymentMatch};
+    use super::{
+        payment_sync_changed, reconciliation_fields_match, scoped_offer_file_name,
+        WalletPaymentMatch,
+    };
     use crate::wallet::{VALID_INVOICE, VALID_OFFER};
 
     const VALID_PAYER_NOTE: &str =
@@ -435,6 +457,15 @@ mod tests {
             Offer::from_str(VALID_OFFER).unwrap().to_string(),
             VALID_OFFER
         );
+    }
+
+    #[test]
+    fn scoped_offer_files_are_stable_distinct_and_path_safe() {
+        let first = scoped_offer_file_name("agent-a");
+        assert_eq!(first, scoped_offer_file_name("agent-a"));
+        assert_ne!(first, scoped_offer_file_name("agent-b"));
+        assert!(!first.contains('/'));
+        assert!(!scoped_offer_file_name("../agent").contains(".."));
     }
 
     #[test]
