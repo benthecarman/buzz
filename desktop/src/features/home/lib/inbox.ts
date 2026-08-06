@@ -19,6 +19,7 @@ import type {
   RelayEvent,
 } from "@/shared/api/types";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
+import { KIND_BOLT12_ZAP } from "@/shared/constants/kinds";
 
 export type InboxFilter =
   | "all"
@@ -169,6 +170,8 @@ function feedHeadline(item: FeedItem, groupItems: readonly FeedItem[] = []) {
   }
 
   switch (item.kind) {
+    case KIND_BOLT12_ZAP:
+      return "Zap received";
     case 40007:
       return "Reminder";
     case 43001:
@@ -302,6 +305,10 @@ export function getInboxTypeLabel(item: InboxItem): InboxTypeLabel {
       text: projectTypeLabel(root),
       channelLabel: null,
     };
+  }
+
+  if (item.item.kind === KIND_BOLT12_ZAP) {
+    return { text: "Zap received", channelLabel: null };
   }
 
   if (item.item.channelType === "dm") {

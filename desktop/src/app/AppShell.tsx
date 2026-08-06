@@ -41,8 +41,6 @@ import { PreventSleepProvider } from "@/features/agents/usePreventSleep";
 import { requestOpenCreateAgent } from "@/features/agents/openCreateAgentEvent";
 import { useAgentsDataRefresh } from "@/features/agents/lib/useAgentsDataRefresh";
 import { useManagedAgentRuntimeReconciliation } from "@/features/agents/useManagedAgentRuntimeReconciliation";
-import { useZapNotifications } from "@/features/wallet/useZapNotifications";
-import { useFeatureEnabled } from "@/shared/features";
 import { useAutoRestartPolicy } from "@/features/agents/lib/useAutoRestartPolicy";
 import { usePersonaSync } from "@/features/agents/lib/usePersonaSync";
 import { useAgentObserverIngestion } from "@/features/agents/useAgentObserverIngestion";
@@ -222,12 +220,6 @@ export function AppShell() {
   const setUserStatusMutation = useSetUserStatusMutation(deferredPubkey);
   const { feedProfilesQuery, homeFeedQuery, notificationSettings } =
     useHomeFeedNotifications(identityQuery.data?.pubkey);
-  const bitcoinEnabled = useFeatureEnabled("bitcoin");
-  useZapNotifications(
-    identityQuery.data?.pubkey,
-    bitcoinEnabled,
-    notificationSettings.settings,
-  );
   const feedItemState = useFeedItemState(identityQuery.data?.pubkey);
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? [];
@@ -430,7 +422,6 @@ export function AppShell() {
     markChannelRead,
     unreadThreadFeedItems,
   ]);
-
   const { homeBadgeCount, homeBadgeCountExcludingHighPriority } =
     useHomeFeedNotificationState(
       homeFeedQuery.data,

@@ -3,6 +3,11 @@ import * as React from "react";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
+import {
+  useZapHistory,
+  zapHistoryFeedItems,
+} from "@/features/wallet/lib/zapHistory";
+import { useZapNotifications } from "@/features/wallet/useZapNotifications";
 import type { Channel, FeedItem, HomeFeedResponse } from "@/shared/api/types";
 import {
   getDesktopNotificationPermissionState,
@@ -415,12 +420,21 @@ export function useHomeFeedNotificationState(
     silentChannelIds,
   );
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
+  const zapHistory = useZapHistory(normalizedPubkey);
+  const zapFeedItems = React.useMemo(
+    () => zapHistoryFeedItems(zapHistory),
+    [zapHistory],
+  );
+  const inboxItems = React.useMemo(
+    () => [...extraInboxItems, ...zapFeedItems],
+    [extraInboxItems, zapFeedItems],
+  );
   const [seenFeedIds, setSeenFeedIds] = React.useState<string[]>(() =>
     readStoredSeenFeedIds(normalizedPubkey),
   );
   const currentFeedItems = React.useMemo(() => {
-    return buildHomeBadgeFeedItems(feed, extraInboxItems, localUnreadFeedIds);
-  }, [extraInboxItems, feed, localUnreadFeedIds]);
+    return buildHomeBadgeFeedItems(feed, inboxItems, localUnreadFeedIds);
+  }, [feed, inboxItems, localUnreadFeedIds]);
   const currentFeedIds = React.useMemo(
     () => currentFeedItems.map((item) => item.id),
     [currentFeedItems],
@@ -513,6 +527,7 @@ export function useHomeFeedNotificationState(
 
 export function useHomeFeedNotifications(pubkey: string | undefined) {
   const notificationSettings = useNotificationSettings(pubkey);
+  useZapNotifications(pubkey, notificationSettings.settings);
   const homeFeedQuery = useHomeFeedQuery();
   const refetchHomeFeedForE2e = React.useEffectEvent(() => {
     void homeFeedQuery.refetch();

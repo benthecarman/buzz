@@ -19,6 +19,13 @@ not expose the settled `lnp` payer proof required by the proposal, so Buzz
 keeps the signed intent and payment result local until a valid proof is
 available.
 
+The desktop subscribes to kind `9736` events that tag the user or a managed
+agent. It validates the signed Nostr envelope, intent, and offer announcement,
+then correlates the intent with settled inbound wallet history before it adds a
+local Inbox and zap-history record. This notification path validates the `lnp`
+Bech32 encoding but does not yet validate its payer-proof cryptography, so these
+records must not be used for public zap totals.
+
 ## Units
 
 All wallet amounts are whole satoshis end-to-end. The UI labels and displays
