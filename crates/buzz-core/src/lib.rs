@@ -26,6 +26,7 @@ pub mod invite;
 pub mod kind;
 /// Network utilities — SSRF-safe IP classification.
 pub mod network;
+pub mod nwc;
 /// Agent observer frame helpers.
 pub mod observer;
 /// NIP-AB device pairing — crypto primitives, message types, and errors.

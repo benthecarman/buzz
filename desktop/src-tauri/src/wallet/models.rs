@@ -188,6 +188,21 @@ pub struct WalletProfileZapResult {
     pub proof_published: bool,
 }
 
+/// Validated agent-originated NWC-321 payment request shown for approval.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletNwcRequest {
+    pub event_id: String,
+    pub agent_pubkey: String,
+    pub agent_name: String,
+    pub recipient_pubkey: String,
+    pub amount: u64,
+    pub comment: String,
+    pub destination: String,
+    pub payer_note: String,
+    pub request_id: String,
+}
+
 /// A settled message payment retained locally until a payer proof is available.
 ///
 /// This is display-only state. It is not a NIP-B1 proof and is never published.

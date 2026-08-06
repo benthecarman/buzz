@@ -45,7 +45,6 @@ pub(crate) mod enabled {
     /// it is declared failed. Generous on purpose: Lightning HTLC expiry
     /// resolves in-flight payments within hours, so a payment the provider
     /// still cannot see a full day after dispatch never left the wallet.
-    /// Failing the attempt un-bricks the UI; it never resends.
     const PAYING_ATTEMPT_GRACE_MS: u64 = 24 * 60 * 60 * 1_000;
 
     fn now_ms() -> u64 {
@@ -70,12 +69,11 @@ pub(crate) mod enabled {
             .map_err(|error| WalletError::unavailable(format!("resolve app data path: {error}")))
     }
 
-    fn is_unsupported_wallet_event_kind(error: &str) -> bool {
+    pub(crate) fn is_unsupported_wallet_event_kind(error: &str) -> bool {
         error.to_ascii_lowercase().contains("unknown event kind")
     }
 
-    /// Resolve the active relay plus every configured community relay to
-    /// deduplicated HTTP API bases. The active relay is always first.
+    /// Resolve deduplicated community HTTP API bases, with the active relay first.
     fn wallet_relay_api_base_urls(
         active_relay_api_base_url: &str,
         relay_urls: Option<Vec<String>>,
@@ -89,8 +87,7 @@ pub(crate) mod enabled {
             .collect()
     }
 
-    /// Publish a wallet event to the active workspace relay and every
-    /// configured community relay. An "unknown event kind" rejection only
+    /// Publish to each community relay. An "unknown event kind" rejection only
     /// warns: that community does not support wallet events yet. A failure
     /// on the active relay fails the command; failures on the other
     /// community relays only warn.
@@ -379,16 +376,70 @@ pub(crate) mod enabled {
         WalletError::new("payment_failed", payment.status_message.clone())
     }
 
-    fn profile_payment_result(
+    async fn zap_target_channel_id(
+        state: &AppState,
+        keys: &nostr::Keys,
+        attempt: &ZapAttempt,
+    ) -> Result<Option<String>, WalletError> {
+        let (Some(target_event_id), Some(target_event_kind)) = (
+            attempt.target_event_id.as_deref(),
+            attempt.target_event_kind,
+        ) else {
+            return Ok(None);
+        };
+        let active_relay = relay_api_base_url_with_override(state);
+        let events = query_relay_at_with_keys(
+            state,
+            &active_relay,
+            &[serde_json::json!({
+                "ids": [target_event_id],
+                "kinds": [target_event_kind],
+                "limit": 1
+            })],
+            keys,
+            None,
+        )
+        .await
+        .map_err(|error| {
+            WalletError::unavailable(format!("resolve zap target channel: {error}"))
+        })?;
+        Ok(events.into_iter().find_map(|event| {
+            event.tags.iter().find_map(|tag| {
+                let parts = tag.as_slice();
+                (parts.first().map(String::as_str) == Some("h"))
+                    .then(|| parts.get(1).cloned())
+                    .flatten()
+            })
+        }))
+    }
+
+    async fn profile_payment_result(
+        state: &AppState,
+        keys: &nostr::Keys,
         store: &ZapAttemptStore,
         attempt: &mut ZapAttempt,
         payment: WalletPaymentResult,
     ) -> Result<WalletProfileZapResult, WalletError> {
         store.record_payment(attempt, payment.clone())?;
         match payment.status.as_str() {
-            "completed" => attempt
-                .result()
-                .ok_or_else(|| WalletError::unavailable("profile payment result is incomplete")),
+            "completed" => {
+                let channel_id = zap_target_channel_id(state, keys, attempt).await?;
+                let event =
+                    store.prepare_placeholder_proof(attempt, keys, channel_id.as_deref())?;
+                let active_relay = relay_api_base_url_with_override(state);
+                submit_signed_event_at_with_keys(&event, state, &active_relay, keys)
+                    .await
+                    .map_err(|error| {
+                        WalletError::new(
+                            "relay_publish_failed",
+                            format!("publish placeholder zap proof: {error}"),
+                        )
+                    })?;
+                store.mark_proof_published(attempt)?;
+                attempt
+                    .result()
+                    .ok_or_else(|| WalletError::unavailable("profile payment result is incomplete"))
+            }
             "failed" => Err(payment_error(&payment)),
             _ => Err(WalletError::new(
                 "payment_status_unknown",
@@ -423,6 +474,10 @@ pub(crate) mod enabled {
         let mut publication_warnings =
             publish_offer(&state, &keys, &keys, &relay_api_base_urls, &offer).await?;
         publication_warnings.extend(
+            super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, true)
+                .await?,
+        );
+        publication_warnings.extend(
             provision_managed_agent_offers(&app, &state, &keys, &provider, &relay_api_base_urls)
                 .await,
         );
@@ -451,6 +506,10 @@ pub(crate) mod enabled {
             wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
         let mut publication_warnings =
             publish_wallet_event(&state, &keys, None, &relay_api_base_urls, &event).await?;
+        publication_warnings.extend(
+            super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, false)
+                .await?,
+        );
         publication_warnings
             .extend(withdraw_managed_agent_offers(&app, &state, &relay_api_base_urls).await);
         Ok(WalletOfferPublicationResult {
@@ -499,8 +558,12 @@ pub(crate) mod enabled {
             .await?;
         let relay_api_base_urls =
             wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
-        let publication_warnings =
+        let mut publication_warnings =
             publish_offer(&state, &keys, &keys, &relay_api_base_urls, &offer).await?;
+        publication_warnings.extend(
+            super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, true)
+                .await?,
+        );
         Ok(WalletOfferPublicationResult {
             offer: Some(offer),
             publication_warnings,
@@ -775,6 +838,24 @@ pub(crate) mod enabled {
         match attempt.state {
             ZapAttemptState::PaidWithoutProof => {
                 store.record_terminal_reuse(&attempt);
+                if !attempt.proof_published {
+                    let channel_id = zap_target_channel_id(&state, &keys, &attempt).await?;
+                    let event = store.prepare_placeholder_proof(
+                        &mut attempt,
+                        &keys,
+                        channel_id.as_deref(),
+                    )?;
+                    let active_relay = relay_api_base_url_with_override(&state);
+                    submit_signed_event_at_with_keys(&event, &state, &active_relay, &keys)
+                        .await
+                        .map_err(|error| {
+                            WalletError::new(
+                                "relay_publish_failed",
+                                format!("publish placeholder zap proof: {error}"),
+                            )
+                        })?;
+                    store.mark_proof_published(&mut attempt)?;
+                }
                 return attempt.result().ok_or_else(|| {
                     WalletError::unavailable("settled profile payment is missing its result")
                 });
@@ -858,7 +939,7 @@ pub(crate) mod enabled {
                 ));
             }
         };
-        profile_payment_result(&store, &mut attempt, payment)
+        profile_payment_result(&state, &keys, &store, &mut attempt, payment).await
     }
 
     #[tauri::command]

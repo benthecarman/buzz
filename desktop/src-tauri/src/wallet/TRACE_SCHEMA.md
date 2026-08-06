@@ -6,7 +6,8 @@ Schema version: **1** (`WALLET_TRACE_SCHEMA_VERSION` in
 ## Modeled seam
 
 The seam is the identity-scoped, durable payment-attempt checkpoint used by
-`wallet_send` and `wallet_send_profile_zap`. The formal contract is
+`wallet_send` (including approved managed-agent NWC-321 requests) and
+`wallet_send_profile_zap`. The formal contract is
 `docs/spec/WalletPaymentAttempts.tla`: the implementation must persist
 `Paying` before its only provider send call, and every later invocation must
 reconcile instead of sending again.
@@ -78,6 +79,13 @@ Set `BUZZ_WALLET_TRACE_PATH` before running desktop integration flows to write
 the same secret-free JSONL emitted at the live persistence boundary.
 
 ## Limits
+
+The NWC request signature, NIP-44 decryption, managed-agent authorization, and
+human approval UI are validated before this seam but are not state variables in
+`WalletPaymentAttempts.tla`. This checker begins when an approved request is
+persisted as a generic send. It proves the exercised payment attempts cannot
+dispatch twice; it does not prove that every approval prompt was shown or that
+NIP-44 is cryptographically sound.
 
 Trace checking proves only that **executed paths** emitted traces accepted by
 this model. It does not prove unexecuted paths, provider behavior, filesystem

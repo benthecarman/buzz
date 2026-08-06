@@ -28,7 +28,8 @@ use buzz_core::kind::{
     KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP,
     KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST,
     KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER, KIND_NIP43_LEAVE_REQUEST,
-    KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
+    KIND_NIP65_RELAY_LIST_METADATA, KIND_NWC_INFO, KIND_NWC_REQUEST, KIND_NWC_RESPONSE,
+    KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
     KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE, KIND_PROJECT, KIND_REACTION,
     KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED,
     KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED,
@@ -264,8 +265,9 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_PROFILE => Ok(Scope::UsersWrite),
         KIND_TEXT_NOTE | KIND_LONG_FORM => Ok(Scope::MessagesWrite),
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
-        | KIND_BOLT12_OFFER | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
-        | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG | super::push_lease::KIND_PUSH_LEASE => {
+        | KIND_BOLT12_OFFER | KIND_NWC_INFO | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM
+        | KIND_MANAGED_AGENT | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG
+        | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
         }
         // NIP-AM: agent turn metrics are agent-authored global events (encrypted to owner).
@@ -293,6 +295,8 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_EMOJI_LIST
         | KIND_AGENT_PROFILE => Ok(Scope::UsersWrite),
         KIND_BOLT12_ZAP
+        | KIND_NWC_REQUEST
+        | KIND_NWC_RESPONSE
         | KIND_DELETION
         | KIND_REACTION
         | KIND_GIFT_WRAP
@@ -457,6 +461,9 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             // Zap proofs may be global profile zaps or channel-scoped message
             // zaps, so KIND_BOLT12_ZAP deliberately remains out of this list.
             | KIND_BOLT12_OFFER
+            | KIND_NWC_INFO
+            | KIND_NWC_REQUEST
+            | KIND_NWC_RESPONSE
             // NIP-51 standard lists + sets and NIP-65 relay list — user-owned global state.
             // Same as kind:3 (contacts): keyed by (pubkey, kind) or (pubkey, kind, d_tag),
             // never channel-scoped. A stray `h` tag must not channel-scope them.
@@ -3187,6 +3194,24 @@ mod tests {
     fn bolt12_zaps_allow_global_profiles_or_event_derived_channel_scope() {
         assert!(!is_global_only_kind(KIND_BOLT12_ZAP));
         assert!(!requires_h_channel_scope(KIND_BOLT12_ZAP));
+    }
+
+    #[test]
+    fn nwc_kinds_are_global_and_use_narrow_scopes() {
+        let dummy = make_dummy_event();
+        assert_eq!(
+            required_scope_for_kind(KIND_NWC_INFO, &dummy).unwrap(),
+            Scope::UsersWrite
+        );
+        for kind in [KIND_NWC_REQUEST, KIND_NWC_RESPONSE] {
+            assert_eq!(
+                required_scope_for_kind(kind, &dummy).unwrap(),
+                Scope::MessagesWrite
+            );
+            assert!(is_global_only_kind(kind));
+            assert!(!requires_h_channel_scope(kind));
+        }
+        assert!(is_global_only_kind(KIND_NWC_INFO));
     }
 
     #[test]

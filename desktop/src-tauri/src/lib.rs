@@ -908,6 +908,8 @@ pub fn run() {
             wallet_enable,
             wallet_disable,
             wallet_get_status,
+            wallet_parse_nwc_request,
+            wallet_build_nwc_response,
             wallet_create_receive_request,
             wallet_refresh_offer,
             wallet_analyze_destination,

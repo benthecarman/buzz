@@ -569,6 +569,11 @@ impl BuzzClient {
         &self.relay_url
     }
 
+    /// Return the verified NIP-OA tag used for WebSocket authentication.
+    pub fn auth_tag(&self) -> Option<&Tag> {
+        self.auth_tag.as_ref()
+    }
+
     /// Return the owner pubkey carried by the NIP-OA auth tag, if any.
     ///
     /// The auth tag is `["auth", owner_pubkey, conditions, sig]`; the

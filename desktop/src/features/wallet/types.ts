@@ -100,6 +100,18 @@ export interface WalletPlaceholderMessageZap {
   settledAtMs: number;
 }
 
+export interface WalletNwcRequest {
+  eventId: string;
+  agentPubkey: string;
+  agentName: string;
+  recipientPubkey: string;
+  amount: number;
+  comment: string;
+  destination: string;
+  payerNote: string;
+  requestId: string;
+}
+
 export interface WalletCommandError {
   code?: string;
   message?: string;

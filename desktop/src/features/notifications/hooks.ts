@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { useCommunities } from "@/features/communities/useCommunities";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -8,6 +9,7 @@ import {
   zapHistoryFeedItems,
 } from "@/features/wallet/lib/zapHistory";
 import { useZapNotifications } from "@/features/wallet/useZapNotifications";
+import { useAgentWalletRequests } from "@/features/wallet/useAgentWalletRequests";
 import type { Channel, FeedItem, HomeFeedResponse } from "@/shared/api/types";
 import {
   getDesktopNotificationPermissionState,
@@ -526,8 +528,14 @@ export function useHomeFeedNotificationState(
 }
 
 export function useHomeFeedNotifications(pubkey: string | undefined) {
+  const { activeCommunity } = useCommunities();
   const notificationSettings = useNotificationSettings(pubkey);
-  useZapNotifications(pubkey, notificationSettings.settings);
+  useZapNotifications(
+    pubkey,
+    notificationSettings.settings,
+    activeCommunity?.relayUrl,
+  );
+  useAgentWalletRequests(pubkey);
   const homeFeedQuery = useHomeFeedQuery();
   const refetchHomeFeedForE2e = React.useEffectEvent(() => {
     void homeFeedQuery.refetch();

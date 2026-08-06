@@ -4,6 +4,9 @@ export const KIND_REACTION = 7;
 export const KIND_BOLT12_ZAP = 9736;
 export const KIND_BOLT12_ZAP_INTENT = 9737;
 export const KIND_BOLT12_OFFER = 10058;
+export const KIND_NWC_INFO = 13194;
+export const KIND_NWC_REQUEST = 23194;
+export const KIND_NWC_RESPONSE = 23195;
 export const KIND_TEXT_NOTE = 1;
 export const KIND_STREAM_MESSAGE = 9;
 // Buzz-native deletion. The relay soft-deletes the target and emits a
