@@ -18,7 +18,7 @@ import type { PresenceStatus } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { isMacPlatform } from "@/shared/lib/platform";
 
-import bitcoinIconUrl from "../assets/bitcoin.svg";
+import bitcoinIconUrl from "../assets/bitcoin.svg?inline";
 
 interface ProfilePopoverProps {
   open: boolean;
