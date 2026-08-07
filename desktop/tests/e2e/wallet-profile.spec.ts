@@ -52,12 +52,20 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   );
   const comment = dialog.getByLabel("Comment");
   await expect(comment).not.toHaveAttribute("placeholder");
-  await expect(
-    dialog.getByTestId("profile-bitcoin-comment-annotation"),
-  ).toHaveText("optional");
-  await expect(
-    dialog.getByTestId("profile-bitcoin-available-balance"),
-  ).toHaveText("Available balance: ₿20,000");
+  const commentAnnotation = dialog.getByTestId(
+    "profile-bitcoin-comment-annotation",
+  );
+  await expect(commentAnnotation).toHaveText("(Optional)");
+  await expect(commentAnnotation).toHaveClass(
+    "text-xs text-muted-foreground/70",
+  );
+  const balanceAnnotation = dialog.getByTestId(
+    "profile-bitcoin-available-balance",
+  );
+  await expect(balanceAnnotation).toHaveText("Available: ₿20,000");
+  await expect(balanceAnnotation).toHaveClass(
+    "text-xs text-muted-foreground/70",
+  );
   await expect(amount).toHaveCSS("width", "160px");
   await expect(comment).toHaveCSS("width", "160px");
   await expect(dialog).toHaveCSS("max-width", "320px");

@@ -262,11 +262,10 @@ export function SendBitcoinDialog({
                 />
               </div>
               <p
-                className="text-xs text-muted-foreground"
+                className="text-xs text-muted-foreground/70"
                 data-testid="profile-bitcoin-available-balance"
               >
-                Available balance:{" "}
-                {formatBitcoin(availableBalance).replace("₿ ", "₿")}
+                Available: {formatBitcoin(availableBalance).replace("₿ ", "₿")}
               </p>
             </div>
             <label
@@ -290,10 +289,10 @@ export function SendBitcoinDialog({
                 value={comment}
               />
               <p
-                className="text-xs text-muted-foreground"
+                className="text-xs text-muted-foreground/70"
                 data-testid="profile-bitcoin-comment-annotation"
               >
-                optional
+                (Optional)
               </p>
             </div>
           </div>
