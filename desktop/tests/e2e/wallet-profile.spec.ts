@@ -43,8 +43,23 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   const dialog = page.getByTestId("send-bitcoin-dialog");
   await expect(dialog).toBeVisible();
 
-  const amount = dialog.getByLabel("Amount in ₿");
+  const amount = dialog.getByLabel("Amount");
   await expect(amount).toBeEnabled();
+  await expect(amount).toHaveValue("");
+  await expect(amount).not.toHaveAttribute("placeholder");
+  await expect(dialog.getByTestId("profile-bitcoin-amount-prefix")).toHaveText(
+    "₿",
+  );
+  await expect(dialog.getByLabel("Comment")).toHaveAttribute(
+    "placeholder",
+    "optional",
+  );
+  await expect(
+    dialog.getByTestId("profile-bitcoin-available-balance"),
+  ).toHaveText("Available balance: ₿ 20,000");
+  await expect(
+    dialog.getByText("Pay bob's BOLT12 offer from your Buzz wallet."),
+  ).toHaveCount(0);
   await amount.fill("21");
   await dialog.getByRole("button", { name: "Send bitcoin" }).click();
 
