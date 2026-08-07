@@ -171,7 +171,7 @@ export function SendBitcoinDialog({
 
   return (
     <Dialog onOpenChange={sending ? undefined : onOpenChange} open={open}>
-      <DialogContent className="sm:max-w-md" data-testid="send-bitcoin-dialog">
+      <DialogContent className="sm:max-w-xs" data-testid="send-bitcoin-dialog">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Bitcoin className="h-5 w-5" />
@@ -227,58 +227,75 @@ export function SendBitcoinDialog({
               will not send again.
             </div>
           ) : null}
-          <div className="grid grid-cols-[5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-3">
+          <div className="grid grid-cols-[4.5rem_10rem] items-start gap-x-3 gap-y-3">
             <label
-              className="text-sm font-medium"
+              className="pt-2 text-sm font-medium"
               htmlFor="profile-bitcoin-amount"
             >
               Amount
             </label>
-            <div className="relative">
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-foreground"
-                data-testid="profile-bitcoin-amount-prefix"
+            <div className="space-y-1">
+              <div className="relative">
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-foreground"
+                  data-testid="profile-bitcoin-amount-prefix"
+                >
+                  ₿
+                </span>
+                <Input
+                  autoFocus
+                  className="w-40 pl-7"
+                  disabled={
+                    sending ||
+                    reconciling ||
+                    offerState !== "ready" ||
+                    pendingState !== "ready"
+                  }
+                  id="profile-bitcoin-amount"
+                  inputMode="numeric"
+                  min="1"
+                  onChange={(event) => setAmount(event.target.value)}
+                  step="1"
+                  type="text"
+                  value={amount}
+                />
+              </div>
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="profile-bitcoin-available-balance"
               >
-                ₿
-              </span>
+                Available balance:{" "}
+                {formatBitcoin(availableBalance).replace("₿ ", "₿")}
+              </p>
+            </div>
+            <label
+              className="pt-2 text-sm font-medium"
+              htmlFor="profile-bitcoin-comment"
+            >
+              Comment
+            </label>
+            <div className="space-y-1">
               <Input
-                autoFocus
-                className="pl-7"
+                className="w-40"
                 disabled={
                   sending ||
                   reconciling ||
                   offerState !== "ready" ||
                   pendingState !== "ready"
                 }
-                id="profile-bitcoin-amount"
-                inputMode="numeric"
-                min="1"
-                onChange={(event) => setAmount(event.target.value)}
-                step="1"
-                type="text"
-                value={amount}
+                id="profile-bitcoin-comment"
+                maxLength={280}
+                onChange={(event) => setComment(event.target.value)}
+                value={comment}
               />
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="profile-bitcoin-comment-annotation"
+              >
+                optional
+              </p>
             </div>
-            <label
-              className="text-sm font-medium"
-              htmlFor="profile-bitcoin-comment"
-            >
-              Comment
-            </label>
-            <Input
-              disabled={
-                sending ||
-                reconciling ||
-                offerState !== "ready" ||
-                pendingState !== "ready"
-              }
-              id="profile-bitcoin-comment"
-              maxLength={280}
-              onChange={(event) => setComment(event.target.value)}
-              placeholder="optional"
-              value={comment}
-            />
           </div>
           {validAmount ? (
             <p className="text-sm text-muted-foreground">
@@ -309,13 +326,6 @@ export function SendBitcoinDialog({
               {reconciling ? "Check payment" : "Send bitcoin"}
             </Button>
           </DialogFooter>
-          <p
-            className="text-right text-xs text-muted-foreground"
-            data-testid="profile-bitcoin-available-balance"
-          >
-            Available balance:{" "}
-            {formatBitcoin(availableBalance).replace("₿ ", "₿")}
-          </p>
         </form>
       </DialogContent>
     </Dialog>
