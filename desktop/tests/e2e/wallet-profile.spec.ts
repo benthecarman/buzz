@@ -56,7 +56,7 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   );
   await expect(
     dialog.getByTestId("profile-bitcoin-available-balance"),
-  ).toHaveText("Available balance: ₿ 20,000");
+  ).toHaveText("Available balance: ₿20,000");
   await expect(
     dialog.getByText("Pay bob's BOLT12 offer from your Buzz wallet."),
   ).toHaveCount(0);

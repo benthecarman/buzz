@@ -313,7 +313,8 @@ export function SendBitcoinDialog({
             className="text-right text-xs text-muted-foreground"
             data-testid="profile-bitcoin-available-balance"
           >
-            Available balance: {formatBitcoin(availableBalance)}
+            Available balance:{" "}
+            {formatBitcoin(availableBalance).replace("₿ ", "₿")}
           </p>
         </form>
       </DialogContent>
