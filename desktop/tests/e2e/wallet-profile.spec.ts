@@ -66,14 +66,31 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   await expect(balanceAnnotation).toHaveClass(
     "text-xs text-muted-foreground/70",
   );
-  await expect(amount).toHaveCSS("width", "160px");
-  await expect(comment).toHaveCSS("width", "160px");
   await expect(dialog).toHaveCSS("max-width", "320px");
+  const sendButton = dialog.getByRole("button", { name: "Send bitcoin" });
+  const [amountBox, commentBox, sendButtonBox] = await Promise.all([
+    amount.boundingBox(),
+    comment.boundingBox(),
+    sendButton.boundingBox(),
+  ]);
+  if (!amountBox || !commentBox || !sendButtonBox) {
+    throw new Error("Send bitcoin controls must be visible");
+  }
+  expect(amountBox.width).toBeGreaterThan(160);
+  expect(commentBox.width).toBeGreaterThan(160);
+  expect(amountBox.x + amountBox.width).toBeCloseTo(
+    sendButtonBox.x + sendButtonBox.width,
+    0,
+  );
+  expect(commentBox.x + commentBox.width).toBeCloseTo(
+    sendButtonBox.x + sendButtonBox.width,
+    0,
+  );
   await expect(
     dialog.getByText("Pay bob's BOLT12 offer from your Buzz wallet."),
   ).toHaveCount(0);
   await amount.fill("21");
-  await dialog.getByRole("button", { name: "Send bitcoin" }).click();
+  await sendButton.click();
 
   await expect(dialog).toHaveCount(0);
   await expect(

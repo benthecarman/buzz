@@ -227,7 +227,7 @@ export function SendBitcoinDialog({
               will not send again.
             </div>
           ) : null}
-          <div className="grid grid-cols-[4.5rem_10rem] items-start gap-x-3 gap-y-3">
+          <div className="grid grid-cols-[4.5rem_1fr] items-start gap-x-3 gap-y-3">
             <label
               className="pt-2 text-sm font-medium"
               htmlFor="profile-bitcoin-amount"
@@ -245,7 +245,7 @@ export function SendBitcoinDialog({
                 </span>
                 <Input
                   autoFocus
-                  className="w-40 pl-7"
+                  className="pl-7"
                   disabled={
                     sending ||
                     reconciling ||
@@ -276,7 +276,6 @@ export function SendBitcoinDialog({
             </label>
             <div className="space-y-1">
               <Input
-                className="w-40"
                 disabled={
                   sending ||
                   reconciling ||
