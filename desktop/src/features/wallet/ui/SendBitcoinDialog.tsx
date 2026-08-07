@@ -302,6 +302,7 @@ export function SendBitcoinDialog({
           ) : null}
           <DialogFooter>
             <Button
+              className="min-w-20"
               disabled={sending}
               onClick={() => onOpenChange(false)}
               type="button"
@@ -310,6 +311,7 @@ export function SendBitcoinDialog({
               Cancel
             </Button>
             <Button
+              className="min-w-20"
               disabled={
                 !validAmount ||
                 sending ||
@@ -321,7 +323,7 @@ export function SendBitcoinDialog({
               {sending ? (
                 <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
               ) : null}
-              {reconciling ? "Check payment" : "Send bitcoin"}
+              {reconciling ? "Check payment" : "Send"}
             </Button>
           </DialogFooter>
         </form>
