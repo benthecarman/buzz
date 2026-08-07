@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Bitcoin, Smile } from "lucide-react";
+import { Smile } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
@@ -17,6 +17,8 @@ import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 import type { PresenceStatus } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { isMacPlatform } from "@/shared/lib/platform";
+
+import bitcoinIconUrl from "../assets/bitcoin.svg";
 
 interface ProfilePopoverProps {
   open: boolean;
@@ -203,7 +205,7 @@ export function ProfilePopover({
               spendableWalletBalance !== undefined ? (
                 <button
                   aria-label={`Open wallet settings. Spendable balance ₿${bitcoinAmountFormatter.format(spendableWalletBalance)}`}
-                  className="ml-auto inline-flex max-w-32 shrink-0 items-center gap-1.5 rounded-lg border border-border/70 bg-background/80 px-2 py-1 text-sm font-medium text-popover-foreground outline-hidden transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="ml-auto inline-flex max-w-32 shrink-0 items-center gap-1.5 rounded-lg border border-border/70 bg-background/80 px-2 py-1 text-xs font-medium text-popover-foreground outline-hidden transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   data-testid="profile-popover-wallet-balance"
                   onClick={() => {
                     closePopover();
@@ -214,9 +216,12 @@ export function ProfilePopover({
                   role="menuitem"
                   type="button"
                 >
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-500 text-white">
-                    <Bitcoin aria-hidden="true" className="h-3.5 w-3.5" />
-                  </span>
+                  <img
+                    alt=""
+                    aria-hidden="true"
+                    className="h-5 w-5 shrink-0"
+                    src={bitcoinIconUrl}
+                  />
                   <span className="truncate tabular-nums">
                     {bitcoinAmountFormatter.format(spendableWalletBalance)}
                   </span>
