@@ -15,3 +15,18 @@ export function zapSubscriptionFilter(
     since,
   };
 }
+
+export function zapLiveSubscriptionFilters(
+  pubkeys: readonly string[],
+  since: number,
+  channelIds: readonly string[],
+) {
+  const global = zapSubscriptionFilter(pubkeys, since);
+  const channels = [...new Set(channelIds.map((id) => id.trim()))]
+    .filter(Boolean)
+    .sort();
+  return [
+    global,
+    ...channels.map((channelId) => ({ ...global, "#h": [channelId] })),
+  ];
+}

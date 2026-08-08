@@ -218,11 +218,11 @@ export function AppShell() {
     deferredPubkey ? [deferredPubkey] : [],
   );
   const setUserStatusMutation = useSetUserStatusMutation(deferredPubkey);
-  const { feedProfilesQuery, homeFeedQuery, notificationSettings } =
-    useHomeFeedNotifications(identityQuery.data?.pubkey);
-  const feedItemState = useFeedItemState(identityQuery.data?.pubkey);
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? [];
+  const { feedProfilesQuery, homeFeedQuery, notificationSettings } =
+    useHomeFeedNotifications(identityQuery.data?.pubkey, channels);
+  const feedItemState = useFeedItemState(identityQuery.data?.pubkey);
   useReminderNotifications(
     identityQuery.data?.pubkey,
     notificationSettings.settings,

@@ -951,6 +951,42 @@ impl ZapAttemptStore {
         Ok(attempts)
     }
 
+    /// List dispatched payments that still need a terminal provider result.
+    ///
+    /// A provider call can return or be recovered while the payment is still
+    /// pending. These checkpoints must be revisited in the background: the
+    /// recipient cannot discover a settled zap until the payer publishes its
+    /// kind-9736 proof.
+    pub fn paying_attempts_for_relay(
+        &self,
+        relay_url: &str,
+    ) -> Result<Vec<ZapAttempt>, WalletError> {
+        let entries = match std::fs::read_dir(&self.directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(WalletError::unavailable(format!(
+                    "read zap attempt directory: {error}"
+                )))
+            }
+        };
+        let relay_url = relay_url.trim_end_matches('/');
+        let mut attempts = entries
+            .flatten()
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<ZapAttempt>(&bytes).ok())
+            .filter(|attempt| {
+                attempt.state == ZapAttemptState::Paying
+                    && attempt
+                        .relay_url
+                        .as_deref()
+                        .is_some_and(|relay| relay.trim_end_matches('/') == relay_url)
+            })
+            .collect::<Vec<_>>();
+        attempts.sort_by_key(|attempt| attempt.updated_at_ms);
+        Ok(attempts)
+    }
+
     /// List settled event-targeted payments for local fallback rendering.
     ///
     /// Keep published attempts in this list. Relay acceptance and renderer
@@ -1365,5 +1401,51 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(attempt.result().unwrap().proof_published);
+    }
+
+    #[test]
+    fn paying_attempts_are_relay_scoped_for_background_reconciliation() {
+        let temp = tempfile::tempdir().unwrap();
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let mut attempt = ZapAttempt::prepare(
+            Uuid::new_v4().to_string(),
+            recipient(&recipient_keys),
+            21,
+            None,
+            None,
+            None,
+            &payer,
+        )
+        .unwrap();
+        attempt.relay_url = Some("https://relay.example/".to_string());
+        let store = ZapAttemptStore::new(temp.path(), &payer.public_key().to_hex());
+        store.save_prepared(&mut attempt).unwrap();
+        store.begin_dispatch(&mut attempt).unwrap();
+        store
+            .record_payment(
+                &mut attempt,
+                WalletPaymentResult {
+                    payment_id: "payment".to_string(),
+                    status: "pending".to_string(),
+                    status_message: String::new(),
+                    amount: Some(21),
+                    fees: 0,
+                    created_at_ms: 100,
+                    finalized_at_ms: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .paying_attempts_for_relay("https://relay.example")
+                .unwrap(),
+            vec![attempt]
+        );
+        assert!(store
+            .paying_attempts_for_relay("https://other.example")
+            .unwrap()
+            .is_empty());
     }
 }

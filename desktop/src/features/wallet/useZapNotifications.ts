@@ -13,7 +13,7 @@ import { useFeatureEnabled } from "@/shared/features";
 import type { WalletVerifiedZapEvent } from "./types";
 import { listWalletTransactions, parseWalletZapEvents } from "./api";
 import { formatBitcoin } from "./lib/formatBitcoin";
-import { zapSubscriptionFilter } from "./lib/zapEvents";
+import { zapLiveSubscriptionFilters } from "./lib/zapEvents";
 import { persistZapHistoryItem } from "./lib/zapHistory";
 import {
   fetchZapCatchupEvents,
@@ -37,6 +37,7 @@ export function useZapNotifications(
   ownerPubkey: string | undefined,
   notificationSettings: NotificationSettings,
   relayUrl: string | undefined,
+  channelIds: readonly string[],
 ) {
   const walletEnabled = useFeatureEnabled("bitcoin");
   const managedAgents =
@@ -54,6 +55,10 @@ export function useZapNotifications(
     return names;
   }, [managedAgents, ownerPubkey]);
   const recipientKey = [...recipientNames.keys()].sort().join(",");
+  const channelKey = [...new Set(channelIds.map((id) => id.trim()))]
+    .filter(Boolean)
+    .sort()
+    .join(",");
 
   const handleZap = React.useEffectEvent(
     async (event: RelayEvent): Promise<ZapProcessingResult> => {
@@ -80,6 +85,12 @@ export function useZapNotifications(
             listTransactions: listWalletTransactions,
           }))
         ) {
+          console.warn("Zap proof is waiting for inbound wallet correlation", {
+            amount: zap.amount,
+            eventId: event.id,
+            intentEventId: zap.intentEventId,
+            recipientPubkey: zap.recipientPubkey,
+          });
           return {
             // The proof commonly reaches the relay before Lexe's inbound
             // payment index catches up. Do not advance the durable relay
@@ -173,6 +184,7 @@ export function useZapNotifications(
     let retryAttempt = 0;
     let generation = 0;
     const recipients = recipientKey.split(",");
+    const channels = channelKey ? channelKey.split(",") : [];
 
     const scopeFor = (recipientPubkey: string): ZapSyncScope => ({
       ownerPubkey: owner,
@@ -237,20 +249,38 @@ export function useZapNotifications(
 
       try {
         let pendingCorrelationError: Error | null = null;
-        const nextDisposer = await relayClient.subscribeLive(
-          zapSubscriptionFilter(
-            recipients,
-            Math.max(0, syncUntil - ZAP_SYNC_OVERLAP_SECONDS),
-          ),
-          (event) => {
-            if (!isCurrent()) return;
-            if (!caughtUp) {
-              bufferedEvents.set(event.id, event);
-              return;
-            }
-            enqueueLiveEvent(event);
-          },
+        const liveFilters = zapLiveSubscriptionFilters(
+          recipients,
+          Math.max(0, syncUntil - ZAP_SYNC_OVERLAP_SECONDS),
+          channels,
         );
+        const onLiveEvent = (event: RelayEvent) => {
+          if (!isCurrent()) return;
+          if (!caughtUp) {
+            bufferedEvents.set(event.id, event);
+            return;
+          }
+          enqueueLiveEvent(event);
+        };
+        // The relay intentionally fans channel events only to subscriptions
+        // indexed by one exact #h. Keep the global subscription for profile
+        // zaps and add one subscription per accessible channel for message
+        // zaps; a single filter with several #h values is indexed globally and
+        // would miss the same events.
+        const nextDisposers: Array<() => Promise<void>> = [];
+        try {
+          for (const liveFilter of liveFilters) {
+            nextDisposers.push(
+              await relayClient.subscribeLive(liveFilter, onLiveEvent),
+            );
+          }
+        } catch (error) {
+          await Promise.allSettled(nextDisposers.map((dispose) => dispose()));
+          throw error;
+        }
+        const nextDisposer = async () => {
+          await Promise.allSettled(nextDisposers.map((dispose) => dispose()));
+        };
         if (!isCurrent()) {
           await nextDisposer();
           return;
@@ -320,5 +350,5 @@ export function useZapNotifications(
       if (retryTimer) globalThis.clearTimeout(retryTimer);
       void disposer?.();
     };
-  }, [ownerPubkey, recipientKey, relayUrl, walletEnabled]);
+  }, [channelKey, ownerPubkey, recipientKey, relayUrl, walletEnabled]);
 }

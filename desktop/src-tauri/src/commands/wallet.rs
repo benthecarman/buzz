@@ -111,7 +111,21 @@ pub(crate) mod enabled {
         });
         events
             .iter()
-            .filter_map(|event| parse_tagged_zap_event(event).ok())
+            .filter_map(|event| match parse_tagged_zap_event(event) {
+                Ok(zap) => Some(zap),
+                Err(error) => {
+                    tracing::warn!(
+                        event_id = event
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown"),
+                        code = error.code,
+                        error = %error.message,
+                        "rejected received zap proof"
+                    );
+                    None
+                }
+            })
             .filter(|zap| {
                 allowed
                     .as_ref()

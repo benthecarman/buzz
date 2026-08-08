@@ -105,6 +105,33 @@ test("wallet correlation stays unresolved until the inbound payment is indexed",
   assert.equal(found, false);
 });
 
+test("wallet correlation accepts the provider public note fallback", async () => {
+  const found = await hasSettledZapPayment({
+    amount: 33,
+    intentEventId: "intent",
+    listTransactions: async () => ({
+      transactions: [
+        {
+          id: "transaction",
+          direction: "inbound",
+          status: "completed",
+          statusMessage: "",
+          amount: 33,
+          fees: 0,
+          note: "nostr:nipB1:intent",
+          payerNote: null,
+          offerId: null,
+          createdAtMs: 0,
+          finalizedAtMs: 0,
+        },
+      ],
+      nextCursor: null,
+    }),
+  });
+
+  assert.equal(found, true);
+});
+
 test("zap catch-up processes later proofs without skipping an unresolved proof", () => {
   assert.deepEqual(
     zapCatchupProgress(50, [

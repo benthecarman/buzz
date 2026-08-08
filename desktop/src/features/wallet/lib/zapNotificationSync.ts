@@ -160,6 +160,7 @@ export async function hasSettledZapPayment(input: {
 }): Promise<boolean> {
   let cursor: string | undefined;
   const seenCursors = new Set<string>();
+  const expectedPayerNote = `nostr:nipB1:${input.intentEventId}`;
 
   for (
     let pageIndex = 0;
@@ -173,7 +174,8 @@ export async function hasSettledZapPayment(input: {
           transaction.direction === "inbound" &&
           transaction.status === "completed" &&
           transaction.amount === input.amount &&
-          transaction.payerNote === `nostr:nipB1:${input.intentEventId}`,
+          (transaction.payerNote === expectedPayerNote ||
+            transaction.note === expectedPayerNote),
       )
     ) {
       return true;

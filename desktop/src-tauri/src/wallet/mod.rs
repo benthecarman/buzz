@@ -33,6 +33,10 @@ mod tests {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
+            // Lexe deliberately re-exports rust-lightning. Protocol parsing
+            // may use that re-export directly without coupling wallet-domain
+            // code to Lexe's provider-specific SDK types.
+            let source = source.replace("lexe::lightning::", "lightning::");
             assert!(
                 !source.contains(&forbidden_path),
                 "Lexe SDK type leaked outside adapter: {}",
