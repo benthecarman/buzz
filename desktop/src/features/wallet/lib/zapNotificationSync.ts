@@ -3,8 +3,9 @@ import type { RelayEvent } from "@/shared/api/types";
 import { KIND_BOLT12_ZAP } from "@/shared/constants/kinds";
 import type { WalletTransactionPage } from "../types";
 
-// v2 replays events skipped by the former checksum-based BOLT12 validator.
-const CURSOR_STORAGE_PREFIX = "buzz-wallet-zap-sync.v2";
+// v3 replays proofs whose cursor was advanced before Lexe indexed the inbound
+// payment, leaving received-zap history permanently empty.
+const CURSOR_STORAGE_PREFIX = "buzz-wallet-zap-sync.v3";
 export const ZAP_SYNC_OVERLAP_SECONDS = 5;
 export const ZAP_SYNC_PAGE_LIMIT = 500;
 const MAX_ZAP_SYNC_PAGES = 10_000;

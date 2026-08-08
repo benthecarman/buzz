@@ -1,12 +1,14 @@
 use std::{
     io::Write,
     path::{Path, PathBuf},
+    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use atomic_write_file::AtomicWriteFile;
 use buzz_conformance_pkg::wallet::{WalletAbstractState, WalletAttemptStatus, WalletTraceAction};
 use buzz_core_pkg::kind::{KIND_BOLT12_OFFER, KIND_BOLT12_ZAP, KIND_BOLT12_ZAP_INTENT};
+use lexe::lightning::offers::payer_proof::PayerProof;
 use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -165,13 +167,6 @@ fn matching_optional_tag(outer: &Event, intent: &Event, name: &str) -> Result<()
     Ok(())
 }
 
-fn valid_payer_proof_envelope(value: &str) -> bool {
-    const BOLT12_ALPHABET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-    value
-        .strip_prefix("lnp1")
-        .is_some_and(|data| !data.is_empty() && data.chars().all(|ch| BOLT12_ALPHABET.contains(ch)))
-}
-
 /// Validate a NIP-B1 proof chain and parse every embedded BOLT12 offer through
 /// rust-lightning (via Lexe's `Offer` newtype adapter).
 pub(crate) fn parse_tagged_zap_event(
@@ -191,12 +186,13 @@ pub(crate) fn parse_tagged_zap_event(
     let description = exact_event_tag(&event, "description")?;
     let offer_event_json = exact_event_tag(&event, "offer_event")?;
     let proof = exact_event_tag(&event, "proof")?;
-    if proof != PLACEHOLDER_PAYER_PROOF && !valid_payer_proof_envelope(proof) {
-        return Err(WalletError::new(
-            "invalid_zap",
-            "zap has an invalid payer-proof envelope",
-        ));
-    }
+    let payer_proof = (proof != PLACEHOLDER_PAYER_PROOF)
+        .then(|| {
+            PayerProof::from_str(proof).map_err(|error| {
+                WalletError::new("invalid_zap", format!("invalid payer proof: {error:?}"))
+            })
+        })
+        .transpose()?;
 
     let amount_msats = amount_text
         .parse::<u64>()
@@ -205,6 +201,16 @@ pub(crate) fn parse_tagged_zap_event(
         return Err(WalletError::new(
             "invalid_zap",
             "zap amount must be a positive whole-satoshi value",
+        ));
+    }
+    if payer_proof
+        .as_ref()
+        .and_then(PayerProof::invoice_amount_msats)
+        .is_some_and(|proof_amount| proof_amount != amount_msats)
+    {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap amount does not match its payer proof",
         ));
     }
 
@@ -974,7 +980,7 @@ mod tests {
         recipient_offer(&event, &keys.public_key().to_hex()).unwrap()
     }
 
-    fn tagged_zap_with_offer(offer: &str) -> (Event, Event) {
+    fn tagged_zap_with_offer_and_proof(offer: &str, proof: &str) -> (Event, Event) {
         let payer = Keys::generate();
         let recipient = Keys::generate();
         let offer_event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
@@ -1002,13 +1008,17 @@ mod tests {
         proof_tags.extend([
             Tag::parse(["description", intent.as_json().as_str()]).unwrap(),
             Tag::parse(["P", payer.public_key().to_hex().as_str()]).unwrap(),
-            Tag::parse(["proof", PLACEHOLDER_PAYER_PROOF]).unwrap(),
+            Tag::parse(["proof", proof]).unwrap(),
         ]);
         let zap = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), "nice work")
             .tags(proof_tags)
             .sign_with_keys(&payer)
             .unwrap();
         (intent, zap)
+    }
+
+    fn tagged_zap_with_offer(offer: &str) -> (Event, Event) {
+        tagged_zap_with_offer_and_proof(offer, PLACEHOLDER_PAYER_PROOF)
     }
 
     #[test]
@@ -1106,6 +1116,18 @@ mod tests {
         assert_eq!(
             parse_tagged_zap_event(&raw).unwrap_err().code,
             "offer_invalid"
+        );
+    }
+
+    #[test]
+    fn tagged_zap_rejects_payer_proof_that_rust_lightning_cannot_parse() {
+        // The former prefix/alphabet check accepted this despite it containing
+        // no payer-proof TLV stream or valid signatures.
+        let (_, zap) = tagged_zap_with_offer_and_proof(VALID_OFFER, "lnp1qqqq");
+        let raw = serde_json::from_str(&zap.as_json()).unwrap();
+        assert_eq!(
+            parse_tagged_zap_event(&raw).unwrap_err().code,
+            "invalid_zap"
         );
     }
 
@@ -1225,6 +1247,10 @@ mod tests {
             .tags
             .iter()
             .any(|tag| tag.as_slice() == ["h", "channel-id"]));
+        let raw_proof = serde_json::from_str(&proof.as_json()).unwrap();
+        let parsed_proof = parse_tagged_zap_event(&raw_proof).unwrap();
+        assert_eq!(parsed_proof.target_event_id, Some(target_event_id.clone()));
+        assert_eq!(parsed_proof.amount, 21);
         let persisted = store
             .prepare_placeholder_proof(&mut attempt, &payer, None)
             .unwrap();

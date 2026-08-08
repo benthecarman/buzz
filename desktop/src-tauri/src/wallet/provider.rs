@@ -1,4 +1,8 @@
+use std::str::FromStr;
+
 use async_trait::async_trait;
+use lexe::types::bitcoin::{Amount, Invoice, Offer};
+use lexe_payment_uri_core::Bip321Uri;
 
 use super::models::{
     WalletDestinationAnalysis, WalletError, WalletFundingRequest, WalletOfferSendRequest,
@@ -10,17 +14,6 @@ pub(crate) struct WalletPaymentMatch<'a> {
     pub personal_note: Option<&'a str>,
     pub expected_amount: Option<u64>,
     pub expected_offer: Option<&'a str>,
-}
-
-fn bitcoin_amount(amount: u64) -> String {
-    let whole = amount / 100_000_000;
-    let fractional = amount % 100_000_000;
-    if fractional == 0 {
-        return whole.to_string();
-    }
-
-    let fractional = format!("{fractional:08}");
-    format!("{whole}.{}", fractional.trim_end_matches('0'))
 }
 
 pub(super) fn bip321_uri(
@@ -35,8 +28,16 @@ pub(super) fn bip321_uri(
         ));
     }
 
-    let bolt11_invoice = bolt11_invoice.filter(|value| !value.is_empty());
-    let bolt12_offer = bolt12_offer.filter(|value| !value.is_empty());
+    let bolt11_invoice = bolt11_invoice
+        .filter(|value| !value.is_empty())
+        .map(Invoice::from_str)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_funding_request", error.to_string()))?;
+    let bolt12_offer = bolt12_offer
+        .filter(|value| !value.is_empty())
+        .map(Offer::from_str)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_funding_request", error.to_string()))?;
     if bolt11_invoice.is_none() && bolt12_offer.is_none() {
         return Err(WalletError::new(
             "invalid_funding_request",
@@ -44,17 +45,17 @@ pub(super) fn bip321_uri(
         ));
     }
 
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    if let Some(amount) = amount {
-        query.append_pair("amount", &bitcoin_amount(amount));
+    let amount = amount
+        .map(Amount::try_from_sats_u64)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_amount", error.to_string()))?;
+    Ok(Bip321Uri {
+        invoice: bolt11_invoice,
+        offer: bolt12_offer,
+        amount,
+        ..Default::default()
     }
-    if let Some(invoice) = bolt11_invoice {
-        query.append_pair("lightning", invoice);
-    }
-    if let Some(offer) = bolt12_offer {
-        query.append_pair("lno", offer);
-    }
-    Ok(format!("bitcoin:?{}", query.finish()))
+    .to_string())
 }
 
 /// Provider-neutral operations needed by the current wallet UI.

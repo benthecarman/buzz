@@ -42,7 +42,7 @@ use buzz_core::kind::{
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
 use buzz_core::CommunityId;
-use nostr::Event;
+use nostr::{Event, EventId, PublicKey};
 
 use crate::state::AppState;
 
@@ -68,6 +68,12 @@ fn validate_agent_runtime_pricing(event: &Event) -> Result<(), IngestError> {
         .map_err(|error| IngestError::Rejected(format!("invalid: {error}")))
 }
 
+fn parse_nostr_pubkey(value: &str) -> Option<PublicKey> {
+    PublicKey::from_hex(value)
+        .ok()
+        .filter(|public_key| public_key.xonly().is_ok())
+}
+
 fn validate_agent_runtime_ephemeral_envelope(event: &Event) -> Result<(), IngestError> {
     let mut payer_count = 0usize;
     let mut expiration_count = 0usize;
@@ -77,9 +83,9 @@ fn validate_agent_runtime_ephemeral_envelope(event: &Event) -> Result<(), Ingest
         match parts.first().map(String::as_str) {
             Some("p") => {
                 if parts.len() != 2
-                    || parts[1].len() != 64
-                    || parts[1] != parts[1].to_ascii_lowercase()
-                    || hex::decode(parts[1].as_str()).is_err()
+                    || parse_nostr_pubkey(parts[1].as_str())
+                        .map(|pubkey| pubkey.to_hex() != parts[1])
+                        .unwrap_or(true)
                 {
                     return Err(IngestError::Rejected(
                         "invalid: runtime request/response p tag must contain one canonical pubkey"
@@ -125,10 +131,7 @@ fn validate_agent_runtime_ledger_envelope(event: &Event, kind: u32) -> Result<()
         let parts = tag.as_slice();
         match parts.first().map(|value| value.as_str()) {
             Some("p") => {
-                if parts.len() != 2
-                    || parts[1].as_str().len() != 64
-                    || hex::decode(parts[1].as_str()).is_err()
-                {
+                if parts.len() != 2 || parse_nostr_pubkey(parts[1].as_str()).is_none() {
                     return Err(IngestError::Rejected(
                         "invalid: runtime ledger p tag must contain one hex pubkey".into(),
                     ));
@@ -160,8 +163,7 @@ fn validate_agent_runtime_ledger_envelope(event: &Event, kind: u32) -> Result<()
                     let parts = tag.as_slice();
                     parts.first().map(String::as_str) == Some(required)
                         && parts.len() == 2
-                        && parts[1].len() == 64
-                        && parts[1].bytes().all(|byte| byte.is_ascii_hexdigit())
+                        && EventId::from_hex(parts[1].as_str()).is_ok()
                 })
                 .count();
             if count != 1 {
@@ -201,9 +203,7 @@ fn validate_agent_runtime_ledger_envelope(event: &Event, kind: u32) -> Result<()
                     .ok()
                     .is_some_and(|value| value > 0)
         } else {
-            reference.len() == 2
-                && reference[1].len() == 64
-                && reference[1].bytes().all(|byte| byte.is_ascii_hexdigit())
+            reference.len() == 2 && EventId::from_hex(reference[1].as_str()).is_ok()
         };
         if !valid_reference {
             return Err(IngestError::Rejected(format!(

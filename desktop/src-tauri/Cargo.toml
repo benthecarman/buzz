@@ -23,7 +23,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = ["bitcoin", "system-keyring"]
-bitcoin = ["dep:async-trait", "dep:bip39", "dep:buzz_conformance_pkg", "dep:hkdf", "dep:lexe", "dep:sha2_10"]
+bitcoin = ["dep:async-trait", "dep:bip39", "dep:buzz_conformance_pkg", "dep:hkdf", "dep:lexe", "dep:lexe-payment-uri-core", "dep:sha2_10"]
 mesh-llm = ["dep:iroh", "dep:mesh-llm-sdk", "dep:mesh-llm-host-runtime", "dep:mesh-llm-client", "dep:mesh-llm-node", "dep:mesh-llm-system", "dep:mesh-llm-events"]
 # OS keyring backing for desktop secret storage (nsec private keys). When
 # disabled, secrets fall back to 0o600 files. On by default for real builds.
@@ -76,6 +76,7 @@ bip39 = { version = "2", default-features = false, features = ["std", "zeroize"]
 dirs = "6"
 hkdf = { version = "0.12", optional = true }
 lexe = { version = "=0.1.20", optional = true }
+lexe-payment-uri-core = { version = "=0.1.20", optional = true }
 sha2_10 = { package = "sha2", version = "0.10", optional = true }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-deep-link = "2"

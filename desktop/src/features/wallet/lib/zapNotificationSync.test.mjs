@@ -91,6 +91,19 @@ test("wallet correlation searches later transaction pages", async () => {
   ]);
 });
 
+test("wallet correlation stays unresolved until the inbound payment is indexed", async () => {
+  const found = await hasSettledZapPayment({
+    amount: 21,
+    intentEventId: "intent",
+    listTransactions: async () => ({
+      transactions: [],
+      nextCursor: null,
+    }),
+  });
+
+  assert.equal(found, false);
+});
+
 test("zap sync cursor is validated and scoped by relay and recipient", () => {
   assert.equal(parseZapSyncCursor(null), 0);
   assert.equal(parseZapSyncCursor("invalid"), 0);
@@ -103,7 +116,7 @@ test("zap sync cursor is validated and scoped by relay and recipient", () => {
   };
   assert.match(
     zapSyncCursorStorageKey(ownerScope),
-    /^buzz-wallet-zap-sync\.v2:/,
+    /^buzz-wallet-zap-sync\.v3:/,
   );
   assert.notEqual(
     zapSyncCursorStorageKey(ownerScope),

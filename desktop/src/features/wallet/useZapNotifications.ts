@@ -80,7 +80,11 @@ export function useZapNotifications(
           }))
         ) {
           return {
-            status: "processed",
+            // The proof commonly reaches the relay before Lexe's inbound
+            // payment index catches up. Do not advance the durable relay
+            // cursor until the wallet can correlate it, or the received zap
+            // disappears permanently from history.
+            status: "retry",
             recipientPubkey: zap.recipientPubkey,
           };
         }

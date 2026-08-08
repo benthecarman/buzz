@@ -17,9 +17,9 @@ before rendering or counting a zap.
 Lexe 0.1.20 does not expose the settled `lnp` payer proof required by the
 proposal. During this experimental phase, Desktop publishes the literal value
 `placeholder` in the kind `9736` `proof` tag after the payment settles. Buzz
-clients accept only that exact temporary marker or a syntactically valid `lnp`
-proof. Placeholder proofs are payment claims and do not provide NIP-B1's
-cryptographic settlement guarantee.
+clients accept only that exact temporary marker or a payer proof that
+rust-lightning can parse and cryptographically verify. Placeholder proofs are
+payment claims and do not provide NIP-B1's cryptographic settlement guarantee.
 
 ## Managed-agent payments
 
@@ -50,9 +50,10 @@ agent. It validates the signed Nostr envelope, intent, and offer announcement,
 then correlates the intent with settled inbound wallet history before it adds a
 local Inbox and zap-history record. A relay-and-recipient cursor pages stored
 proofs after an offline period, with a five-second overlap and event-ID
-deduplication at the local history boundary. This notification path validates
-the `lnp` Bech32 encoding but does not yet validate its payer-proof
-cryptography, so these records must not be used for public zap totals.
+deduplication at the local history boundary. Real `lnp` proofs are parsed with
+rust-lightning, which validates their TLV structure, payment preimage, invoice
+signature, and payer signature. Temporary placeholder records must not be used
+for public zap totals.
 
 ## Units
 

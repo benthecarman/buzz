@@ -24,6 +24,7 @@ buzz-persona = { path = "../buzz-persona" }
 
 # Nostr
 nostr = { workspace = true }
+lightning = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
