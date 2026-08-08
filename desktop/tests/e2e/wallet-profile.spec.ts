@@ -43,10 +43,61 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   const dialog = page.getByTestId("send-bitcoin-dialog");
   await expect(dialog).toBeVisible();
 
-  const amount = dialog.getByLabel("Amount in ₿");
+  const amount = dialog.getByLabel("Amount");
   await expect(amount).toBeEnabled();
+  await expect(amount).toHaveValue("");
+  await expect(amount).not.toHaveAttribute("placeholder");
+  await expect(dialog.getByTestId("profile-bitcoin-amount-prefix")).toHaveText(
+    "₿",
+  );
+  const comment = dialog.getByLabel("Comment");
+  await expect(comment).not.toHaveAttribute("placeholder");
+  const commentAnnotation = dialog.getByTestId(
+    "profile-bitcoin-comment-annotation",
+  );
+  await expect(commentAnnotation).toHaveText("(Optional)");
+  await expect(commentAnnotation).toHaveClass(
+    "text-xs text-muted-foreground/70",
+  );
+  const balanceAnnotation = dialog.getByTestId(
+    "profile-bitcoin-available-balance",
+  );
+  await expect(balanceAnnotation).toHaveText("Available: ₿20,000");
+  await expect(balanceAnnotation).toHaveClass(
+    "text-xs text-muted-foreground/70",
+  );
+  await expect(dialog).toHaveCSS("max-width", "320px");
+  const cancelButton = dialog.getByRole("button", {
+    exact: true,
+    name: "Cancel",
+  });
+  const sendButton = dialog.getByRole("button", { exact: true, name: "Send" });
+  const [amountBox, commentBox, cancelButtonBox, sendButtonBox] =
+    await Promise.all([
+      amount.boundingBox(),
+      comment.boundingBox(),
+      cancelButton.boundingBox(),
+      sendButton.boundingBox(),
+    ]);
+  if (!amountBox || !commentBox || !cancelButtonBox || !sendButtonBox) {
+    throw new Error("Send bitcoin controls must be visible");
+  }
+  expect(amountBox.width).toBeGreaterThan(160);
+  expect(commentBox.width).toBeGreaterThan(160);
+  expect(amountBox.x + amountBox.width).toBeCloseTo(
+    sendButtonBox.x + sendButtonBox.width,
+    0,
+  );
+  expect(commentBox.x + commentBox.width).toBeCloseTo(
+    sendButtonBox.x + sendButtonBox.width,
+    0,
+  );
+  expect(sendButtonBox.width).toBeCloseTo(cancelButtonBox.width, 0);
+  await expect(
+    dialog.getByText("Pay bob's BOLT12 offer from your Buzz wallet."),
+  ).toHaveCount(0);
   await amount.fill("21");
-  await dialog.getByRole("button", { name: "Send bitcoin" }).click();
+  await sendButton.click();
 
   await expect(dialog).toHaveCount(0);
   await expect(
