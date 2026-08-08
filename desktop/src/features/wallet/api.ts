@@ -8,7 +8,6 @@ import type {
   WalletFundingRequest,
   WalletOfferPublicationResult,
   WalletPaymentResult,
-  WalletPlaceholderMessageZap,
   WalletNwcRequest,
   WalletProfileZapDraft,
   WalletProfileZapRequest,
@@ -17,6 +16,7 @@ import type {
   WalletSendRequest,
   WalletStatus,
   WalletTransactionPage,
+  WalletVerifiedZapEvent,
 } from "./types";
 import type { RelayEvent } from "@/shared/api/types";
 
@@ -110,6 +110,22 @@ export function pollWalletUpdates(): Promise<boolean> {
   return invoke<boolean>("wallet_poll_updates");
 }
 
+export function setWalletPollingEnabled(enabled: boolean): Promise<void> {
+  return invoke<void>("wallet_set_polling_enabled", { enabled });
+}
+
+export function parseWalletZapEvents(
+  events: RelayEvent[],
+  allowedRecipientPubkeys?: readonly string[],
+): Promise<WalletVerifiedZapEvent[]> {
+  return invoke<WalletVerifiedZapEvent[]>("wallet_parse_zap_events", {
+    events,
+    allowedRecipientPubkeys: allowedRecipientPubkeys
+      ? [...allowedRecipientPubkeys]
+      : null,
+  });
+}
+
 export function revealWalletRecoveryPhrase(): Promise<string> {
   return invoke<string>("wallet_reveal_recovery_phrase");
 }
@@ -132,14 +148,6 @@ export function getPendingProfileZap(
       recipientPubkey,
       targetEventId: targetEventId ?? null,
     },
-  );
-}
-
-export function listPlaceholderMessageZaps(): Promise<
-  WalletPlaceholderMessageZap[]
-> {
-  return invoke<WalletPlaceholderMessageZap[]>(
-    "wallet_list_placeholder_message_zaps",
   );
 }
 

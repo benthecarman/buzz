@@ -75,6 +75,16 @@ export interface WalletRecipientOffer {
   offerEventId: string;
 }
 
+/** A NIP-B1 zap validated natively, including rust-lightning offer parsing. */
+export interface WalletVerifiedZapEvent {
+  eventId: string;
+  amount: number;
+  comment: string;
+  intentEventId: string;
+  recipientPubkey: string;
+  targetEventId: string | null;
+}
+
 export interface WalletProfileZapRequest {
   recipientPubkey: string;
   amount: number;
@@ -97,15 +107,6 @@ export interface WalletAgentRuntimeZapRequest {
   quoteEventJson: string;
   /** UUID reused for retries of this exact quote. */
   idempotencyKey: string;
-}
-
-export interface WalletPlaceholderMessageZap {
-  intentEventId: string;
-  targetEventId: string;
-  recipientPubkey: string;
-  amount: number;
-  comment: string | null;
-  settledAtMs: number;
 }
 
 export interface WalletNwcRequest {

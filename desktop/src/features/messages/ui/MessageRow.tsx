@@ -6,6 +6,7 @@ import {
   numberArrayEqual,
   reactionsEqual,
   tagsEqual,
+  zapsEqual,
 } from "@/features/messages/lib/messageRowEquality";
 import {
   assertCanSendMessageToChannel,
@@ -48,6 +49,7 @@ import { MessageActionBar } from "./MessageActionBar";
 import { editMessage } from "@/shared/api/tauri";
 import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelineMessages";
 import { toast } from "sonner";
+import type { PendingZapDisplay } from "@/features/wallet/ui/SendBitcoinDialog";
 import { MessageAgentOwner } from "./MessageAgentOwner";
 import {
   MessageAuthorText,
@@ -61,6 +63,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 const DiffMessage = React.lazy(() => import("./DiffMessage"));
 const DiffMessageExpanded = React.lazy(() => import("./DiffMessageExpanded"));
+
+type OptimisticMessageZap = PendingZapDisplay & {
+  baselineIntentEventIds: readonly string[];
+};
 
 export type ThreadDepthGuideAction = {
   active?: boolean;
@@ -196,6 +202,38 @@ export const MessageRow = React.memo(
     const [badgeBurstEmoji, setBadgeBurstEmoji] = React.useState<string | null>(
       null,
     );
+    const [optimisticZap, setOptimisticZap] =
+      React.useState<OptimisticMessageZap | null>(null);
+    const handlePendingZapChange = React.useCallback(
+      (next: PendingZapDisplay | null) => {
+        if (!next) {
+          setOptimisticZap(null);
+          return;
+        }
+        setOptimisticZap((current) => ({
+          ...next,
+          baselineIntentEventIds:
+            current?.idempotencyKey === next.idempotencyKey
+              ? current.baselineIntentEventIds
+              : (message.zaps?.map((zap) => zap.intentEventId) ?? []),
+        }));
+      },
+      [message.zaps],
+    );
+    const optimisticProofArrived = Boolean(
+      optimisticZap &&
+        message.zaps?.some((zap) =>
+          optimisticZap.intentEventId
+            ? zap.intentEventId === optimisticZap.intentEventId
+            : !optimisticZap.baselineIntentEventIds.includes(
+                zap.intentEventId,
+              ) && zap.amount === optimisticZap.amount,
+        ),
+    );
+    React.useEffect(() => {
+      if (!optimisticProofArrived) return;
+      setOptimisticZap(null);
+    }, [optimisticProofArrived]);
     const handleEntranceAnimationEnd = React.useCallback(
       (event: React.AnimationEvent<HTMLElement>) => {
         if (
@@ -562,6 +600,7 @@ export const MessageRow = React.memo(
           onFollowThread={onFollowThread}
           onMarkUnread={onMarkUnread}
           onMarkRead={onMarkRead}
+          onPendingZapChange={handlePendingZapChange}
           onReactionBadgeBurstRequest={
             reactionPending ? undefined : setBadgeBurstEmoji
           }
@@ -667,6 +706,9 @@ export const MessageRow = React.memo(
           messageId={message.id}
           reactions={reactions}
           zaps={message.zaps}
+          pendingZapAmount={
+            optimisticProofArrived ? null : optimisticZap?.amount
+          }
           canToggle={canToggleReactions}
           pending={reactionPending}
           burstEmojiOnRender={badgeBurstEmoji}
@@ -932,6 +974,7 @@ export const MessageRow = React.memo(
     // checks made every row re-render on every streamed event in an open
     // thread (see messageRowEquality.ts).
     reactionsEqual(prev.message.reactions, next.message.reactions) &&
+    zapsEqual(prev.message.zaps, next.message.zaps) &&
     tagsEqual(prev.message.tags, next.message.tags) &&
     prev.message.role === next.message.role &&
     prev.message.personaDisplayName === next.message.personaDisplayName &&

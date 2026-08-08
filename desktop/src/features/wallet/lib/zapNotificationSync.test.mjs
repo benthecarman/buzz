@@ -4,8 +4,8 @@ import test from "node:test";
 import {
   buildZapCatchupFilter,
   fetchZapCatchupEvents,
-  hasSettledZapPayment,
   parseZapSyncCursor,
+  zapCatchupProgress,
   zapSyncCursorStorageKey,
 } from "./zapNotificationSync.ts";
 
@@ -56,39 +56,22 @@ test("zap catch-up pages backward, deduplicates, and returns oldest first", asyn
   assert.equal(events.at(-1).id, "new-499");
 });
 
-test("wallet correlation searches later transaction pages", async () => {
-  const calls = [];
-  const found = await hasSettledZapPayment({
-    amount: 21,
-    intentEventId: "intent",
-    listTransactions: async (cursor, sync) => {
-      calls.push({ cursor, sync });
-      if (!cursor) return { transactions: [], nextCursor: "page-2" };
-      return {
-        transactions: [
-          {
-            id: "transaction",
-            direction: "inbound",
-            status: "completed",
-            statusMessage: "",
-            amount: 21,
-            fees: 0,
-            note: null,
-            payerNote: "nostr:nipB1:intent",
-            createdAtMs: 0,
-            finalizedAtMs: 0,
-          },
-        ],
-        nextCursor: null,
-      };
-    },
-  });
-
-  assert.equal(found, true);
-  assert.deepEqual(calls, [
-    { cursor: undefined, sync: true },
-    { cursor: "page-2", sync: false },
-  ]);
+test("zap catch-up processes later proofs without skipping an unresolved proof", () => {
+  assert.deepEqual(
+    zapCatchupProgress(50, [
+      { createdAt: 80, status: "processed" },
+      { createdAt: 100, status: "retry" },
+      { createdAt: 120, status: "processed" },
+    ]),
+    { cursor: 100, hasPending: true },
+  );
+  assert.deepEqual(
+    zapCatchupProgress(50, [
+      { createdAt: 80, status: "processed" },
+      { createdAt: 120, status: "processed" },
+    ]),
+    { cursor: 120, hasPending: false },
+  );
 });
 
 test("zap sync cursor is validated and scoped by relay and recipient", () => {
@@ -101,6 +84,10 @@ test("zap sync cursor is validated and scoped by relay and recipient", () => {
     recipientPubkey: "recipient-a",
     relayUrl: "wss://relay.example/",
   };
+  assert.match(
+    zapSyncCursorStorageKey(ownerScope),
+    /^buzz-wallet-zap-sync\.v3:/,
+  );
   assert.notEqual(
     zapSyncCursorStorageKey(ownerScope),
     zapSyncCursorStorageKey({

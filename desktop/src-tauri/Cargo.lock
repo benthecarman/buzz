@@ -1236,6 +1236,7 @@ dependencies = [
  "iroh",
  "keyring",
  "lexe",
+ "lexe-payment-uri-core",
  "libc",
  "mesh-llm-client",
  "mesh-llm-events",

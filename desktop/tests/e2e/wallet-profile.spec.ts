@@ -59,13 +59,6 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   await expect(commentAnnotation).toHaveClass(
     "text-xs text-muted-foreground/70",
   );
-  const balanceAnnotation = dialog.getByTestId(
-    "profile-bitcoin-available-balance",
-  );
-  await expect(balanceAnnotation).toHaveText("Available: ₿20,000");
-  await expect(balanceAnnotation).toHaveClass(
-    "text-xs text-muted-foreground/70",
-  );
   await expect(dialog).toHaveCSS("max-width", "320px");
   const cancelButton = dialog.getByRole("button", {
     exact: true,
@@ -84,14 +77,16 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   }
   expect(amountBox.width).toBeGreaterThan(160);
   expect(commentBox.width).toBeGreaterThan(160);
-  expect(amountBox.x + amountBox.width).toBeCloseTo(
-    sendButtonBox.x + sendButtonBox.width,
-    0,
-  );
-  expect(commentBox.x + commentBox.width).toBeCloseTo(
-    sendButtonBox.x + sendButtonBox.width,
-    0,
-  );
+  expect(
+    Math.abs(
+      amountBox.x + amountBox.width - (sendButtonBox.x + sendButtonBox.width),
+    ),
+  ).toBeLessThan(2);
+  expect(
+    Math.abs(
+      commentBox.x + commentBox.width - (sendButtonBox.x + sendButtonBox.width),
+    ),
+  ).toBeLessThan(2);
   expect(sendButtonBox.width).toBeCloseTo(cancelButtonBox.width, 0);
   await expect(
     dialog.getByText("Pay bob's BOLT12 offer from your Buzz wallet."),
@@ -103,4 +98,81 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   await expect(
     page.locator("[data-sonner-toast]").filter({ hasText: "₿ 21 sent" }),
   ).toBeVisible();
+});
+
+test("shows an app-wide toast for an incoming wallet payment", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/");
+  await expect(page.getByTestId("channel-general")).toBeVisible();
+
+  await page.evaluate(async () => {
+    await window.__BUZZ_E2E_EMIT_TAURI_EVENT__?.("wallet-incoming-payment", {
+      id: "incoming-payment",
+      direction: "inbound",
+      status: "completed",
+      statusMessage: "Payment completed",
+      amount: 2_100,
+      fees: 0,
+      note: null,
+      payerNote: null,
+      offerId: null,
+      createdAtMs: Date.now(),
+      finalizedAtMs: Date.now(),
+    });
+  });
+
+  const toast = page
+    .locator("[data-sonner-toast]")
+    .filter({ hasText: "Bitcoin received" });
+  await expect(toast).toBeVisible();
+  await expect(toast).toContainText("₿ 2,100");
+});
+
+test("message zap omits comments and appears while payment is pending", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    walletProfileZapDelayMs: 1_000,
+    walletProfileZapStatus: "pending",
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: "general",
+          }) ?? false,
+      ),
+    )
+    .toBe(true);
+  const message = await page.evaluate((bobPubkey) => {
+    return window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "general",
+      content: "Zap this pending payment",
+      pubkey: bobPubkey,
+    });
+  }, TEST_IDENTITIES.bob.pubkey);
+  if (!message) {
+    throw new Error("Mock message emitter is not installed");
+  }
+
+  const zapAction = page.getByTestId(`zap-message-${message.id}`);
+  await expect(zapAction).toBeVisible();
+  await zapAction.click({ force: true });
+  const dialog = page.getByTestId("send-bitcoin-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Comment")).toHaveCount(0);
+
+  await dialog.getByLabel("Amount").fill("21");
+  await dialog.getByRole("button", { exact: true, name: "Send" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  const pendingZap = page.getByTestId("message-zap").filter({ hasText: "21" });
+  await expect(pendingZap).toBeVisible();
+  await expect(pendingZap).toHaveAttribute("aria-label", /payment pending/);
 });

@@ -1,16 +1,13 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { Bitcoin, LoaderCircle, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import {
-  getWalletStatus,
   getPendingProfileZap,
   getRecipientWalletOffer,
   sendProfileZap,
 } from "../api";
 import { formatBitcoin } from "../lib/formatBitcoin";
-import { placeholderMessageZapsQueryKey } from "../lib/placeholderMessageZaps";
 import { parseWholeBitcoinAmount } from "../lib/profileZap";
 import { walletCommandError } from "../lib/walletError";
 import { Button } from "@/shared/ui/button";
@@ -23,11 +20,18 @@ import {
 } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
 
+export type PendingZapDisplay = {
+  amount: number;
+  idempotencyKey: string;
+  intentEventId?: string;
+};
+
 export function SendBitcoinDialog({
   onOpenChange,
   open,
   recipientName,
   recipientPubkey,
+  onPendingZapChange,
   targetEventId = null,
   targetEventKind = null,
 }: {
@@ -35,10 +39,10 @@ export function SendBitcoinDialog({
   open: boolean;
   recipientName: string;
   recipientPubkey: string;
+  onPendingZapChange?: (pending: PendingZapDisplay | null) => void;
   targetEventId?: string | null;
   targetEventKind?: number | null;
 }) {
-  const queryClient = useQueryClient();
   const [amount, setAmount] = useState("");
   const [comment, setComment] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState<string>(
@@ -53,7 +57,6 @@ export function SendBitcoinDialog({
   >("loading");
   const [sending, setSending] = useState(false);
   const [reconciling, setReconciling] = useState(false);
-  const [availableBalance, setAvailableBalance] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -61,14 +64,6 @@ export function SendBitcoinDialog({
     setOfferState("loading");
     setOfferError(null);
     setPendingState("loading");
-    setAvailableBalance(null);
-    getWalletStatus()
-      .then((status) => {
-        if (!cancelled) setAvailableBalance(status.spendableBalance);
-      })
-      .catch(() => {
-        // The send flow remains usable if the balance preview cannot refresh.
-      });
     getRecipientWalletOffer(recipientPubkey)
       .then(() => {
         if (!cancelled) setOfferState("ready");
@@ -111,6 +106,7 @@ export function SendBitcoinDialog({
 
   const parsedAmount = parseWholeBitcoinAmount(amount);
   const validAmount = parsedAmount !== null;
+  const isMessageZap = targetEventId !== null;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -122,21 +118,25 @@ export function SendBitcoinDialog({
     )
       return;
     setSending(true);
+    onPendingZapChange?.({ amount: parsedAmount, idempotencyKey });
+    if (isMessageZap) {
+      onOpenChange(false);
+    }
     try {
       const result = await sendProfileZap({
         recipientPubkey,
         amount: parsedAmount,
-        comment: comment.trim() || null,
+        comment: isMessageZap ? null : comment.trim() || null,
         idempotencyKey,
         targetEventId,
         targetEventKind,
       });
       if (result.payment.status === "completed") {
-        if (targetEventId) {
-          await queryClient.invalidateQueries({
-            queryKey: placeholderMessageZapsQueryKey,
-          });
-        }
+        onPendingZapChange?.({
+          amount: parsedAmount,
+          idempotencyKey,
+          intentEventId: result.intentEventId,
+        });
         toast.success(
           `${formatBitcoin(result.payment.amount ?? parsedAmount)} sent`,
           {
@@ -146,22 +146,38 @@ export function SendBitcoinDialog({
         setReconciling(false);
         onOpenChange(false);
       } else if (result.payment.status === "failed") {
+        onPendingZapChange?.(null);
         setReconciling(false);
         setIdempotencyKey(crypto.randomUUID());
         toast.error(
           result.payment.statusMessage || "The Bitcoin payment failed.",
         );
       } else {
+        onPendingZapChange?.({
+          amount: parsedAmount,
+          idempotencyKey,
+          intentEventId: result.intentEventId,
+        });
         setReconciling(true);
         toast.warning("The payment is still pending. Buzz will reconcile it.");
+        onOpenChange(false);
       }
     } catch (error) {
       const commandError = walletCommandError(error);
       if (commandError.code === "payment_status_unknown") {
         setReconciling(true);
+        onOpenChange(false);
       } else if (commandError.code === "payment_failed") {
+        onPendingZapChange?.(null);
         setReconciling(false);
         setIdempotencyKey(crypto.randomUUID());
+      } else if (commandError.code === "relay_publish_failed") {
+        // The payment is terminal; the same idempotency key now retries only
+        // its public receipt and can never dispatch a second payment.
+        setReconciling(true);
+        onOpenChange(false);
+      } else {
+        onPendingZapChange?.(null);
       }
       toast.error(commandError.message ?? "The Bitcoin payment failed.");
     } finally {
@@ -234,7 +250,7 @@ export function SendBitcoinDialog({
             >
               Amount
             </label>
-            <div className="space-y-1">
+            <div>
               <div className="relative">
                 <span
                   aria-hidden="true"
@@ -261,39 +277,37 @@ export function SendBitcoinDialog({
                   value={amount}
                 />
               </div>
-              <p
-                className="text-xs text-muted-foreground/70"
-                data-testid="profile-bitcoin-available-balance"
-              >
-                Available: {formatBitcoin(availableBalance).replace("₿ ", "₿")}
-              </p>
             </div>
-            <label
-              className="pt-2 text-sm font-medium"
-              htmlFor="profile-bitcoin-comment"
-            >
-              Comment
-            </label>
-            <div className="space-y-1">
-              <Input
-                disabled={
-                  sending ||
-                  reconciling ||
-                  offerState !== "ready" ||
-                  pendingState !== "ready"
-                }
-                id="profile-bitcoin-comment"
-                maxLength={280}
-                onChange={(event) => setComment(event.target.value)}
-                value={comment}
-              />
-              <p
-                className="text-xs text-muted-foreground/70"
-                data-testid="profile-bitcoin-comment-annotation"
-              >
-                (Optional)
-              </p>
-            </div>
+            {!isMessageZap ? (
+              <>
+                <label
+                  className="pt-2 text-sm font-medium"
+                  htmlFor="profile-bitcoin-comment"
+                >
+                  Comment
+                </label>
+                <div className="space-y-1">
+                  <Input
+                    disabled={
+                      sending ||
+                      reconciling ||
+                      offerState !== "ready" ||
+                      pendingState !== "ready"
+                    }
+                    id="profile-bitcoin-comment"
+                    maxLength={280}
+                    onChange={(event) => setComment(event.target.value)}
+                    value={comment}
+                  />
+                  <p
+                    className="text-xs text-muted-foreground/70"
+                    data-testid="profile-bitcoin-comment-annotation"
+                  >
+                    (Optional)
+                  </p>
+                </div>
+              </>
+            ) : null}
           </div>
           {validAmount ? (
             <p className="text-sm text-muted-foreground">

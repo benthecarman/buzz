@@ -10,7 +10,7 @@ import type {
   TimelineReaction,
   TimelineZap,
 } from "@/features/messages/types";
-import { parseTaggedZapEvent } from "@/features/wallet/lib/zapEvents";
+import type { WalletVerifiedZapEvent } from "@/features/wallet/types";
 import {
   getThreadReference,
   isBroadcastReply,
@@ -229,6 +229,8 @@ export function formatTimelineMessages(
   relaySelfPubkey?: string | null,
   /** Profiles for verified agent owners, fetched in one batch by the surface. */
   ownerProfiles?: UserProfileLookup,
+  /** Zap proofs whose BOLT12 offers passed the native rust-lightning parser. */
+  verifiedZapEvents?: ReadonlyMap<string, WalletVerifiedZapEvent>,
 ): TimelineMessage[] {
   const currentPubkeyLower = currentPubkey?.toLowerCase();
   const roleByPubkey = new Map<string, string>();
@@ -257,7 +259,7 @@ export function formatTimelineMessages(
     if (event.kind !== KIND_BOLT12_ZAP || deletedEventIds.has(event.id)) {
       continue;
     }
-    const zap = parseTaggedZapEvent(event);
+    const zap = verifiedZapEvents?.get(event.id);
     if (!zap?.targetEventId || deletedEventIds.has(zap.targetEventId)) {
       continue;
     }

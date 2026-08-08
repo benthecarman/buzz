@@ -432,7 +432,8 @@ export function useHomeFeedNotificationState(
     silentChannelIds,
   );
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
-  const zapHistory = useZapHistory(normalizedPubkey);
+  const relayUrl = useCommunities().activeCommunity?.relayUrl;
+  const zapHistory = useZapHistory(normalizedPubkey, relayUrl);
   const zapFeedItems = React.useMemo(
     () => zapHistoryFeedItems(zapHistory),
     [zapHistory],
@@ -537,13 +538,17 @@ export function useHomeFeedNotificationState(
   ]);
 }
 
-export function useHomeFeedNotifications(pubkey: string | undefined) {
+export function useHomeFeedNotifications(
+  pubkey: string | undefined,
+  channels: readonly Channel[],
+) {
   const { activeCommunity } = useCommunities();
   const notificationSettings = useNotificationSettings(pubkey);
   useZapNotifications(
     pubkey,
     notificationSettings.settings,
     activeCommunity?.relayUrl,
+    channels.filter((channel) => channel.isMember).map((channel) => channel.id),
   );
   useAgentWalletRequests(pubkey);
   const homeFeedQuery = useHomeFeedQuery();

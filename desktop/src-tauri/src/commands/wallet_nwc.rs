@@ -6,6 +6,7 @@ mod enabled {
             build_pay_response, decrypt_pay_request, NwcErrorBody, NwcPayResponse, NwcPayResult,
         },
     };
+    use lexe_payment_uri_core::Bip321Uri;
     use nostr::{Event, EventBuilder, JsonUtil, Kind, Tag};
     use tauri::{AppHandle, State};
 
@@ -159,7 +160,18 @@ mod enabled {
                 "payment must select exactly one BOLT12 offer",
             ));
         }
-        let selected_offer = &selected_offers[0];
+        let parsed_payment = Bip321Uri::parse(&request.params.payment)
+            .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+        let selected_offer = parsed_payment
+            .offer
+            .ok_or_else(|| WalletError::new("invalid_zap", "payment has no valid BOLT12 offer"))?;
+        let selected_offer = selected_offer.to_string();
+        if selected_offer != selected_offers[0] {
+            return Err(WalletError::new(
+                "invalid_zap",
+                "payment must contain a canonical BOLT12 offer",
+            ));
+        }
         let offer_event_json = event_tag(&intent, "offer_event")
             .ok_or_else(|| WalletError::new("invalid_zap", "zap intent has no offer event"))?;
         let offer_event = Event::from_json(offer_event_json)

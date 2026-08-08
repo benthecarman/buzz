@@ -535,7 +535,7 @@ pub fn run() {
             }
 
             if !recovery_mode {
-                commands::start_agent_runtime_wallet_reconciler(app_handle.clone());
+                commands::start_wallet_reconciler(app_handle.clone());
             }
 
             // Periodic sweep: reap orphaned agents from dead instances every 60s.
@@ -930,9 +930,10 @@ pub fn run() {
             wallet_send,
             wallet_list_transactions,
             wallet_poll_updates,
+            wallet_set_polling_enabled,
+            wallet_parse_zap_events,
             wallet_get_recipient_offer,
             wallet_get_pending_profile_zap,
-            wallet_list_placeholder_message_zaps,
             wallet_send_profile_zap,
             wallet_send_agent_runtime_zap,
             agent_runtime_request_reservation,

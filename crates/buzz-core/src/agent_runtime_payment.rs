@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use nostr::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -634,11 +635,14 @@ fn validate_request_id(request_id: &str) -> Result<(), RuntimePaymentError> {
 }
 
 fn validate_hex_pubkey(pubkey: &str) -> Result<(), RuntimePaymentError> {
-    if pubkey.len() == 64 && pubkey.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if PublicKey::from_hex(pubkey)
+        .and_then(|public_key| public_key.xonly())
+        .is_ok()
+    {
         Ok(())
     } else {
         Err(RuntimePaymentError::InvalidQuote(
-            "agent and payer pubkeys must be 64 hexadecimal characters",
+            "agent and payer pubkeys must be valid x-only secp256k1 public keys",
         ))
     }
 }
@@ -655,6 +659,33 @@ mod tests {
         assert!(RuntimePricing::enabled(0).is_err());
         assert!(RuntimePricing::enabled(MAX_RUNTIME_RATE_SATS_PER_MINUTE).is_ok());
         assert!(RuntimePricing::enabled(MAX_RUNTIME_RATE_SATS_PER_MINUTE + 1).is_err());
+    }
+
+    #[test]
+    fn runtime_quote_rejects_hex_that_is_not_a_secp256k1_pubkey() {
+        let payer = nostr::Keys::generate().public_key().to_hex();
+        let quote = RuntimeQuote {
+            version: VERSION,
+            request_id: "request".into(),
+            // secp256k1 field modulus: 32-byte hex, but not a valid x
+            // coordinate because field elements must be strictly smaller.
+            agent_pubkey: "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f".into(),
+            payer_pubkey: payer,
+            channel_id: "channel".into(),
+            cap_minutes: 15,
+            pack_minutes: 15,
+            price_per_minute_sats: 20,
+            amount_sats: 300,
+            offer_event: serde_json::json!({}),
+            expires_at: 1,
+        };
+
+        assert!(matches!(
+            quote.validate(),
+            Err(RuntimePaymentError::InvalidQuote(
+                "agent and payer pubkeys must be valid x-only secp256k1 public keys"
+            ))
+        ));
     }
 
     #[test]

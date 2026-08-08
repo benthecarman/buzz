@@ -8,32 +8,137 @@ pub fn bitcoin_compile_enabled() -> bool {
 pub(crate) mod enabled {
     mod zap_commands;
     use std::{
-        collections::HashSet,
-        sync::{Arc, OnceLock},
+        collections::{HashMap, HashSet},
+        sync::{atomic::Ordering, Arc, OnceLock},
     };
     pub use zap_commands::{
-        wallet_get_pending_profile_zap, wallet_get_recipient_offer,
-        wallet_list_placeholder_message_zaps, wallet_poll_updates, wallet_send_agent_runtime_zap,
+        wallet_get_pending_profile_zap, wallet_get_recipient_offer, wallet_send_agent_runtime_zap,
         wallet_send_profile_zap,
     };
 
-    /// Start recipient-side runtime-payment reconciliation for the lifetime of
-    /// the application. This task is intentionally owned by Tauri rather than
-    /// a React settings panel: paid Agents must mint verified deposits while
-    /// the app is open regardless of which screen is visible.
-    pub fn start_agent_runtime_wallet_reconciler(app: AppHandle) {
+    const INCOMING_PAYMENT_EVENT: &str = "wallet-incoming-payment";
+    const INCOMING_PAYMENT_POLL_SECS: u64 = 5;
+
+    #[derive(Default)]
+    struct IncomingPaymentTracker {
+        completed_by_wallet: HashMap<String, HashSet<String>>,
+    }
+
+    impl IncomingPaymentTracker {
+        fn observe(
+            &mut self,
+            wallet_pubkey: &str,
+            transactions: &[WalletTransaction],
+        ) -> Vec<WalletTransaction> {
+            let completed = transactions
+                .iter()
+                .filter(|transaction| {
+                    transaction.direction == "inbound" && transaction.status == "completed"
+                })
+                .collect::<Vec<_>>();
+            let Some(seen) = self.completed_by_wallet.get_mut(wallet_pubkey) else {
+                self.completed_by_wallet.insert(
+                    wallet_pubkey.to_string(),
+                    completed
+                        .into_iter()
+                        .map(|transaction| transaction.id.clone())
+                        .collect(),
+                );
+                return Vec::new();
+            };
+
+            completed
+                .into_iter()
+                .filter(|transaction| seen.insert(transaction.id.clone()))
+                .cloned()
+                .collect()
+        }
+
+        fn clear(&mut self) {
+            self.completed_by_wallet.clear();
+        }
+
+        fn has_baseline(&self, wallet_pubkey: &str) -> bool {
+            self.completed_by_wallet.contains_key(wallet_pubkey)
+        }
+    }
+
+    fn incoming_payment_tracker() -> &'static tokio::sync::Mutex<IncomingPaymentTracker> {
+        static TRACKER: OnceLock<tokio::sync::Mutex<IncomingPaymentTracker>> = OnceLock::new();
+        TRACKER.get_or_init(Default::default)
+    }
+
+    async fn ensure_incoming_payment_baseline(
+        wallet_pubkey: &str,
+        provider: &Arc<dyn WalletProvider>,
+    ) -> Result<(), WalletError> {
+        if incoming_payment_tracker()
+            .lock()
+            .await
+            .has_baseline(wallet_pubkey)
+        {
+            return Ok(());
+        }
+        provider.poll_updates().await?;
+        let page = provider.transactions(None, 100, false).await?;
+        // A concurrent baseline can win between the check and this write. In
+        // that case observe is idempotent and its empty/new result is ignored.
+        incoming_payment_tracker()
+            .lock()
+            .await
+            .observe(wallet_pubkey, &page.transactions);
+        Ok(())
+    }
+
+    async fn poll_incoming_payments_once(
+        app: &AppHandle,
+        state: &AppState,
+    ) -> Result<(), WalletError> {
+        if !state.wallet_polling_enabled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+        let wallet_pubkey = keys.public_key().to_hex();
+        let provider = wallet_manager()
+            .provider_for(&keys, &app_data_dir(app)?)
+            .await?;
+        provider.poll_updates().await?;
+        // Always inspect the provider's current snapshot. Another caller may
+        // have performed the sync first, in which case poll_updates reports no
+        // change even though this listener has not observed the payment yet.
+        let page = provider.transactions(None, 100, false).await?;
+        let incoming = incoming_payment_tracker()
+            .lock()
+            .await
+            .observe(&wallet_pubkey, &page.transactions);
+        if !state.wallet_polling_enabled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        for transaction in incoming {
+            if let Err(error) = app.emit(INCOMING_PAYMENT_EVENT, &transaction) {
+                tracing::warn!(error = %error, "emit incoming wallet payment");
+            }
+        }
+        Ok(())
+    }
+
+    /// Start wallet reconciliation for the lifetime of the application.
+    /// Tauri owns these tasks so outgoing zap recovery and ordinary incoming
+    /// payment detection do not depend on which React screen is visible.
+    pub fn start_wallet_reconciler(app: AppHandle) {
+        let zap_app = app.clone();
         tauri::async_runtime::spawn(async move {
             let mut consecutive_failures = 0u32;
             loop {
-                let state = app.state::<AppState>();
-                match zap_commands::reconcile_agent_runtime_background_once(&app, &state).await {
+                let state = zap_app.state::<AppState>();
+                match zap_commands::reconcile_wallet_background_once(&zap_app, &state).await {
                     Ok(_) => consecutive_failures = 0,
                     Err(error) => {
                         consecutive_failures = consecutive_failures.saturating_add(1);
                         tracing::warn!(
                             code = error.code,
                             error = %error.message,
-                            "background Agent runtime payment reconciliation failed"
+                            "background wallet reconciliation failed"
                         );
                     }
                 }
@@ -44,12 +149,41 @@ pub(crate) mod enabled {
                 .await;
             }
         });
+        tauri::async_runtime::spawn(async move {
+            let mut consecutive_failures = 0u32;
+            loop {
+                let state = app.state::<AppState>();
+                let enabled = state.wallet_polling_enabled.load(Ordering::Acquire);
+                if enabled {
+                    match poll_incoming_payments_once(&app, &state).await {
+                        Ok(()) => consecutive_failures = 0,
+                        Err(error) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            tracing::warn!(
+                                code = error.code,
+                                error = %error.message,
+                                "incoming wallet payment poll failed"
+                            );
+                        }
+                    }
+                } else {
+                    consecutive_failures = 0;
+                }
+                let multiplier = 1u64 << consecutive_failures.min(4);
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    INCOMING_PAYMENT_POLL_SECS
+                        .saturating_mul(multiplier)
+                        .min(60),
+                ))
+                .await;
+            }
+        });
     }
 
     use buzz_core_pkg::kind::KIND_BOLT12_OFFER;
     use futures_util::future::join_all;
     use nostr::Event;
-    use tauri::{AppHandle, Manager, State};
+    use tauri::{AppHandle, Emitter, Manager, State};
 
     use crate::{
         app_state::AppState,
@@ -61,14 +195,15 @@ pub(crate) mod enabled {
             models::{
                 WalletDestinationAnalysis, WalletEnableResult, WalletError, WalletFundingRequest,
                 WalletOfferPublicationResult, WalletPaymentResult, WalletProfileZapResult,
-                WalletRecipientOffer, WalletSendRequest, WalletStatus, WalletTransactionPage,
+                WalletRecipientOffer, WalletSendRequest, WalletStatus, WalletTransaction,
+                WalletTransactionPage, WalletVerifiedZapEvent,
             },
             offer_conformance::OfferPublicationTrace,
             provider::{WalletPaymentMatch, WalletProvider},
             send::{SendAttempt, SendAttemptState, SendAttemptStore},
             zap::{
-                build_offer_announcement, build_offer_withdrawal, recipient_offer,
-                validate_offer_event, ZapAttempt, ZapAttemptStore,
+                build_offer_announcement, build_offer_withdrawal, parse_tagged_zap_event,
+                recipient_offer, validate_offer_event, ZapAttempt, ZapAttemptStore,
             },
             WalletManager,
         },
@@ -94,6 +229,44 @@ pub(crate) mod enabled {
     fn wallet_manager() -> &'static WalletManager {
         static MANAGER: OnceLock<WalletManager> = OnceLock::new();
         MANAGER.get_or_init(WalletManager::default)
+    }
+
+    /// Validate untrusted relay zap events in one native call. Invalid events
+    /// are omitted because they are normal noise on a public relay.
+    #[tauri::command]
+    pub fn wallet_parse_zap_events(
+        events: Vec<serde_json::Value>,
+        allowed_recipient_pubkeys: Option<Vec<String>>,
+    ) -> Vec<WalletVerifiedZapEvent> {
+        let allowed = allowed_recipient_pubkeys.map(|pubkeys| {
+            pubkeys
+                .into_iter()
+                .map(|pubkey| pubkey.trim().to_ascii_lowercase())
+                .collect::<HashSet<_>>()
+        });
+        events
+            .iter()
+            .filter_map(|event| match parse_tagged_zap_event(event) {
+                Ok(zap) => Some(zap),
+                Err(error) => {
+                    tracing::warn!(
+                        event_id = event
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown"),
+                        code = error.code,
+                        error = %error.message,
+                        "rejected received zap proof"
+                    );
+                    None
+                }
+            })
+            .filter(|zap| {
+                allowed
+                    .as_ref()
+                    .is_none_or(|pubkeys| pubkeys.contains(&zap.recipient_pubkey))
+            })
+            .collect()
     }
 
     fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, WalletError> {
@@ -413,6 +586,7 @@ pub(crate) mod enabled {
         state: &AppState,
         keys: &nostr::Keys,
         attempt: &ZapAttempt,
+        relay: &str,
     ) -> Result<Option<String>, WalletError> {
         let (Some(target_event_id), Some(target_event_kind)) = (
             attempt.target_event_id.as_deref(),
@@ -420,10 +594,9 @@ pub(crate) mod enabled {
         ) else {
             return Ok(None);
         };
-        let active_relay = relay_api_base_url_with_override(state);
         let events = query_relay_at_with_keys(
             state,
-            &active_relay,
+            relay,
             &[serde_json::json!({
                 "ids": [target_event_id],
                 "kinds": [target_event_kind],
@@ -457,14 +630,17 @@ pub(crate) mod enabled {
         store.record_payment(attempt, payment.clone())?;
         match payment.status.as_str() {
             "completed" => {
+                let relay = attempt
+                    .relay_url
+                    .clone()
+                    .unwrap_or_else(|| relay_api_base_url_with_override(state));
                 let channel_id = match channel_override {
                     Some(channel_id) => Some(channel_id.to_string()),
-                    None => zap_target_channel_id(state, keys, attempt).await?,
+                    None => zap_target_channel_id(state, keys, attempt, &relay).await?,
                 };
                 let event =
                     store.prepare_placeholder_proof(attempt, keys, channel_id.as_deref())?;
-                let active_relay = relay_api_base_url_with_override(state);
-                submit_signed_event_at_with_keys(&event, state, &active_relay, keys)
+                submit_signed_event_at_with_keys(&event, state, &relay, keys)
                     .await
                     .map_err(|error| {
                         WalletError::new(
@@ -505,6 +681,7 @@ pub(crate) mod enabled {
         let provider = wallet_manager().provider_for(&keys, &app_data_dir).await?;
         provider.provision().await?;
         let status = provider.status().await?;
+        ensure_incoming_payment_baseline(&keys.public_key().to_hex(), &provider).await?;
         let offer = provider.offer(false).await?;
         let relay_api_base_urls =
             wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
@@ -518,6 +695,7 @@ pub(crate) mod enabled {
             provision_managed_agent_offers(&app, &state, &keys, &provider, &relay_api_base_urls)
                 .await,
         );
+        state.wallet_polling_enabled.store(true, Ordering::Release);
         Ok(WalletEnableResult {
             status,
             publication_warnings,
@@ -564,6 +742,8 @@ pub(crate) mod enabled {
         );
         publication_warnings
             .extend(withdraw_managed_agent_offers(&app, &state, &relay_api_base_urls).await);
+        state.wallet_polling_enabled.store(false, Ordering::Release);
+        incoming_payment_tracker().lock().await.clear();
         Ok(WalletOfferPublicationResult {
             offer: None,
             publication_warnings,
@@ -775,6 +955,45 @@ pub(crate) mod enabled {
     }
 
     #[tauri::command]
+    pub async fn wallet_poll_updates(
+        app: AppHandle,
+        state: State<'_, AppState>,
+    ) -> Result<bool, WalletError> {
+        let reconciled_zaps = zap_commands::reconcile_wallet_background_once(&app, &state).await?;
+        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+        let provider = wallet_manager()
+            .provider_for(&keys, &app_data_dir(&app)?)
+            .await?;
+        let changed = provider.poll_updates().await?;
+        Ok(changed || reconciled_zaps)
+    }
+
+    /// Restore the frontend-owned wallet feature setting after startup. This
+    /// does not provision or disable a wallet; those remain explicit commands.
+    #[tauri::command]
+    pub async fn wallet_set_polling_enabled(
+        app: AppHandle,
+        enabled: bool,
+        state: State<'_, AppState>,
+    ) -> Result<(), WalletError> {
+        if enabled {
+            let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+            let provider = wallet_manager()
+                .provider_for(&keys, &app_data_dir(&app)?)
+                .await?;
+            // Baseline before activation so a payment received immediately
+            // after this command is observed as new by the next cycle.
+            let baseline =
+                ensure_incoming_payment_baseline(&keys.public_key().to_hex(), &provider).await;
+            state.wallet_polling_enabled.store(true, Ordering::Release);
+            return baseline;
+        }
+        state.wallet_polling_enabled.store(false, Ordering::Release);
+        incoming_payment_tracker().lock().await.clear();
+        Ok(())
+    }
+
+    #[tauri::command]
     pub fn wallet_reveal_recovery_phrase(
         state: State<'_, AppState>,
     ) -> Result<String, WalletError> {
@@ -788,8 +1007,24 @@ pub(crate) mod enabled {
     mod tests {
         use super::{
             is_unsupported_wallet_event_kind, paying_attempt_expired, wallet_relay_api_base_urls,
-            PAYING_ATTEMPT_GRACE_MS,
+            IncomingPaymentTracker, WalletTransaction, PAYING_ATTEMPT_GRACE_MS,
         };
+
+        fn transaction(id: &str, direction: &str, status: &str) -> WalletTransaction {
+            WalletTransaction {
+                id: id.to_string(),
+                direction: direction.to_string(),
+                status: status.to_string(),
+                status_message: status.to_string(),
+                amount: Some(21),
+                fees: 0,
+                note: None,
+                payer_note: None,
+                offer_id: None,
+                created_at_ms: 1,
+                finalized_at_ms: (status == "completed").then_some(2),
+            }
+        }
 
         #[test]
         fn wallet_relays_include_active_and_deduplicate_all_communities() {
@@ -836,6 +1071,38 @@ pub(crate) mod enabled {
                 now.saturating_sub(PAYING_ATTEMPT_GRACE_MS)
             ));
         }
+
+        #[test]
+        fn incoming_payment_tracker_baselines_then_emits_each_completed_inbound_once() {
+            let mut tracker = IncomingPaymentTracker::default();
+            let existing = transaction("existing", "inbound", "completed");
+            assert!(tracker
+                .observe("wallet", std::slice::from_ref(&existing))
+                .is_empty());
+
+            let pending = transaction("new", "inbound", "pending");
+            let outbound = transaction("outbound", "outbound", "completed");
+            assert!(tracker
+                .observe("wallet", &[existing.clone(), pending, outbound])
+                .is_empty());
+
+            let completed = transaction("new", "inbound", "completed");
+            assert_eq!(
+                tracker.observe("wallet", &[existing.clone(), completed.clone()]),
+                vec![completed.clone()]
+            );
+            assert!(tracker.observe("wallet", &[existing, completed]).is_empty());
+        }
+
+        #[test]
+        fn incoming_payment_tracker_uses_an_independent_baseline_per_wallet() {
+            let mut tracker = IncomingPaymentTracker::default();
+            let payment = transaction("same-provider-id", "inbound", "completed");
+            assert!(tracker
+                .observe("alice", std::slice::from_ref(&payment))
+                .is_empty());
+            assert!(tracker.observe("bob", &[payment]).is_empty());
+        }
     }
 }
 
@@ -859,7 +1126,7 @@ mod disabled {
         }
     }
 
-    pub fn start_agent_runtime_wallet_reconciler(_app: tauri::AppHandle) {}
+    pub fn start_wallet_reconciler(_app: tauri::AppHandle) {}
 
     macro_rules! disabled_async_command {
         ($name:ident ( $($argument:ident : $type:ty),* $(,)? ) -> $result:ty) => {
@@ -887,6 +1154,15 @@ mod disabled {
         ) -> serde_json::Value
     );
     disabled_async_command!(wallet_poll_updates() -> bool);
+    disabled_async_command!(wallet_set_polling_enabled(enabled: bool) -> ());
+    #[tauri::command]
+    pub fn wallet_parse_zap_events(
+        events: Vec<serde_json::Value>,
+        allowed_recipient_pubkeys: Option<Vec<String>>,
+    ) -> Vec<serde_json::Value> {
+        let _ = (events, allowed_recipient_pubkeys);
+        Vec::new()
+    }
     disabled_async_command!(
         wallet_get_recipient_offer(recipient_pubkey: String) -> serde_json::Value
     );
@@ -896,7 +1172,6 @@ mod disabled {
             target_event_id: Option<String>,
         ) -> serde_json::Value
     );
-    disabled_async_command!(wallet_list_placeholder_message_zaps() -> serde_json::Value);
     disabled_async_command!(
         wallet_send_profile_zap(request: serde_json::Value) -> serde_json::Value
     );

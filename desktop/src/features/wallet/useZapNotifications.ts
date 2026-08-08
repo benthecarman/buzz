@@ -9,17 +9,17 @@ import {
 import type { NotificationSettings } from "@/features/notifications/hooks";
 import { relayClient } from "@/shared/api/relayClient";
 import type { RelayEvent } from "@/shared/api/types";
-import { useFeatureEnabled } from "@/shared/features";
-import { listWalletTransactions } from "./api";
+import type { WalletVerifiedZapEvent } from "./types";
+import { parseWalletZapEvents } from "./api";
 import { formatBitcoin } from "./lib/formatBitcoin";
-import { parseTaggedZapEvent, zapSubscriptionFilter } from "./lib/zapEvents";
+import { zapLiveSubscriptionFilters } from "./lib/zapEvents";
 import { persistZapHistoryItem } from "./lib/zapHistory";
 import {
   fetchZapCatchupEvents,
-  hasSettledZapPayment,
   readZapSyncCursor,
   type ZapSyncScope,
   ZAP_SYNC_OVERLAP_SECONDS,
+  zapCatchupProgress,
   writeZapSyncCursor,
 } from "./lib/zapNotificationSync";
 
@@ -35,10 +35,9 @@ export function useZapNotifications(
   ownerPubkey: string | undefined,
   notificationSettings: NotificationSettings,
   relayUrl: string | undefined,
+  channelIds: readonly string[],
 ) {
-  const walletEnabled = useFeatureEnabled("bitcoin");
-  const managedAgents =
-    useManagedAgentsQuery({ enabled: walletEnabled }).data ?? [];
+  const managedAgents = useManagedAgentsQuery().data ?? [];
   const recipientNames = React.useMemo(() => {
     const names = new Map<string, string>();
     const owner = ownerPubkey?.trim().toLowerCase();
@@ -52,34 +51,27 @@ export function useZapNotifications(
     return names;
   }, [managedAgents, ownerPubkey]);
   const recipientKey = [...recipientNames.keys()].sort().join(",");
+  const channelKey = [...new Set(channelIds.map((id) => id.trim()))]
+    .filter(Boolean)
+    .sort()
+    .join(",");
 
   const handleZap = React.useEffectEvent(
     async (event: RelayEvent): Promise<ZapProcessingResult> => {
       const owner = ownerPubkey?.trim().toLowerCase();
       if (!owner) return { status: "processed", recipientPubkey: null };
-      const zap = parseTaggedZapEvent(event, new Set(recipientNames.keys()));
-      if (!zap) return { status: "processed", recipientPubkey: null };
-
+      let parsedZaps: WalletVerifiedZapEvent[];
       try {
-        if (
-          !(await hasSettledZapPayment({
-            amount: zap.amount,
-            intentEventId: zap.intentEventId,
-            listTransactions: listWalletTransactions,
-          }))
-        ) {
-          return {
-            status: "processed",
-            recipientPubkey: zap.recipientPubkey,
-          };
-        }
-      } catch (error) {
-        console.error(
-          "Failed to correlate tagged zap with wallet history",
-          error,
+        parsedZaps = await parseWalletZapEvents(
+          [event],
+          [...recipientNames.keys()],
         );
-        return { status: "retry", recipientPubkey: zap.recipientPubkey };
+      } catch (error) {
+        console.error("Failed to validate tagged zap", error);
+        return { status: "retry", recipientPubkey: null };
       }
+      const [zap] = parsedZaps;
+      if (!zap) return { status: "processed", recipientPubkey: null };
 
       const recipientName = recipientNames.get(zap.recipientPubkey) ?? "You";
       const title =
@@ -89,7 +81,8 @@ export function useZapNotifications(
       const body = zap.comment.trim()
         ? `${formatBitcoin(zap.amount)} · ${zap.comment.trim().slice(0, 160)}`
         : formatBitcoin(zap.amount);
-      const didPersist = persistZapHistoryItem(owner, {
+      const historyRelayUrl = relayUrl?.trim().replace(/\/$/, "") ?? "";
+      const persistResult = persistZapHistoryItem(owner, historyRelayUrl, {
         amount: zap.amount,
         comment: zap.comment,
         createdAt: event.created_at,
@@ -100,7 +93,13 @@ export function useZapNotifications(
         recipientPubkey: zap.recipientPubkey,
         targetEventId: zap.targetEventId,
       });
-      if (!didPersist) {
+      if (persistResult === "failed") {
+        return {
+          status: "retry",
+          recipientPubkey: zap.recipientPubkey,
+        };
+      }
+      if (persistResult === "duplicate") {
         return {
           status: "processed",
           recipientPubkey: zap.recipientPubkey,
@@ -142,14 +141,14 @@ export function useZapNotifications(
   React.useEffect(() => {
     const owner = ownerPubkey?.trim().toLowerCase();
     const normalizedRelayUrl = relayUrl?.trim().replace(/\/$/, "") ?? "";
-    if (!walletEnabled || !owner || !normalizedRelayUrl || !recipientKey)
-      return;
+    if (!owner || !normalizedRelayUrl || !recipientKey) return;
     let cancelled = false;
     let disposer: (() => Promise<void>) | null = null;
     let retryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
     let retryAttempt = 0;
     let generation = 0;
     const recipients = recipientKey.split(",");
+    const channels = channelKey ? channelKey.split(",") : [];
 
     const scopeFor = (recipientPubkey: string): ZapSyncScope => ({
       ownerPubkey: owner,
@@ -197,7 +196,7 @@ export function useZapNotifications(
         if (!isCurrent()) return;
         if (result.status === "retry") {
           bufferedEvents.set(event.id, event);
-          throw new Error("Zap wallet correlation is temporarily unavailable.");
+          throw new Error("Zap processing is temporarily unavailable.");
         }
         if (result.recipientPubkey) {
           writeZapSyncCursor(
@@ -213,20 +212,39 @@ export function useZapNotifications(
       };
 
       try {
-        const nextDisposer = await relayClient.subscribeLive(
-          zapSubscriptionFilter(
-            recipients,
-            Math.max(0, syncUntil - ZAP_SYNC_OVERLAP_SECONDS),
-          ),
-          (event) => {
-            if (!isCurrent()) return;
-            if (!caughtUp) {
-              bufferedEvents.set(event.id, event);
-              return;
-            }
-            enqueueLiveEvent(event);
-          },
+        let pendingProcessingError: Error | null = null;
+        const liveFilters = zapLiveSubscriptionFilters(
+          recipients,
+          Math.max(0, syncUntil - ZAP_SYNC_OVERLAP_SECONDS),
+          channels,
         );
+        const onLiveEvent = (event: RelayEvent) => {
+          if (!isCurrent()) return;
+          if (!caughtUp) {
+            bufferedEvents.set(event.id, event);
+            return;
+          }
+          enqueueLiveEvent(event);
+        };
+        // The relay intentionally fans channel events only to subscriptions
+        // indexed by one exact #h. Keep the global subscription for profile
+        // zaps and add one subscription per accessible channel for message
+        // zaps; a single filter with several #h values is indexed globally and
+        // would miss the same events.
+        const nextDisposers: Array<() => Promise<void>> = [];
+        try {
+          for (const liveFilter of liveFilters) {
+            nextDisposers.push(
+              await relayClient.subscribeLive(liveFilter, onLiveEvent),
+            );
+          }
+        } catch (error) {
+          await Promise.allSettled(nextDisposers.map((dispose) => dispose()));
+          throw error;
+        }
+        const nextDisposer = async () => {
+          await Promise.allSettled(nextDisposers.map((dispose) => dispose()));
+        };
         if (!isCurrent()) {
           await nextDisposer();
           return;
@@ -236,6 +254,10 @@ export function useZapNotifications(
         for (const recipient of recipients) {
           const scope = scopeFor(recipient);
           const cursor = readZapSyncCursor(scope);
+          const outcomes: Array<{
+            createdAt: number;
+            status: "processed" | "retry";
+          }> = [];
           const events = await fetchZapCatchupEvents({
             recipientPubkey: recipient,
             since: cursor,
@@ -245,19 +267,31 @@ export function useZapNotifications(
           for (const event of events) {
             if (!isCurrent()) return;
             const result = await handleZap(event);
+            outcomes.push({
+              createdAt: event.created_at,
+              status: result.status,
+            });
             if (result.status === "retry") {
-              throw new Error(
-                "Zap wallet correlation is temporarily unavailable.",
+              pendingProcessingError ??= new Error(
+                "Zap processing is temporarily unavailable.",
               );
+              // One failed event must not prevent later zaps from reaching
+              // history. Keep the durable cursor pinned here so this event is
+              // included in the next overlap replay.
+              bufferedEvents.delete(event.id);
+              continue;
             }
-            writeZapSyncCursor(scope, event.created_at);
             bufferedEvents.delete(event.id);
+          }
+          const progress = zapCatchupProgress(cursor, outcomes);
+          if (progress.cursor > cursor) {
+            writeZapSyncCursor(scope, progress.cursor);
           }
         }
 
         if (!isCurrent()) return;
         caughtUp = true;
-        retryAttempt = 0;
+        if (!pendingProcessingError) retryAttempt = 0;
         const buffered = [...bufferedEvents.values()].sort(
           (left, right) =>
             left.created_at - right.created_at ||
@@ -265,6 +299,10 @@ export function useZapNotifications(
         );
         bufferedEvents.clear();
         for (const event of buffered) enqueueLiveEvent(event);
+        await processing;
+        if (pendingProcessingError) {
+          await stopAttempt(pendingProcessingError);
+        }
       } catch (error) {
         await stopAttempt(error);
       }
@@ -276,5 +314,5 @@ export function useZapNotifications(
       if (retryTimer) globalThis.clearTimeout(retryTimer);
       void disposer?.();
     };
-  }, [ownerPubkey, recipientKey, relayUrl, walletEnabled]);
+  }, [channelKey, ownerPubkey, recipientKey, relayUrl]);
 }

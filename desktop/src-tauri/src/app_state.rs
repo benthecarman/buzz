@@ -41,6 +41,10 @@ pub struct AppState {
     pub managed_agent_restore_pending: AtomicBool,
     /// Disabled by agent-managed profiles so agent profile updates survive start/restore.
     pub managed_agent_profile_reconcile_enabled: AtomicBool,
+    /// Whether the user-facing Bitcoin wallet is enabled. The frontend
+    /// restores this preview-feature setting after startup; wallet enable and
+    /// disable commands also update it immediately after succeeding.
+    pub wallet_polling_enabled: AtomicBool,
     /// Shared shutdown signal checked by launch-time agent restoration.
     pub shutdown_started: AtomicBool,
     /// Serializes every managed-runtime transition that changes the protected
@@ -208,6 +212,7 @@ pub fn build_app_state() -> AppState {
         relay_url_override: Mutex::new(None),
         managed_agent_restore_pending: AtomicBool::new(false),
         managed_agent_profile_reconcile_enabled: AtomicBool::new(true),
+        wallet_polling_enabled: AtomicBool::new(false),
         shutdown_started: AtomicBool::new(false),
         managed_agent_runtime_transition: Mutex::new(()),
         identity_mutation: Mutex::new(()),

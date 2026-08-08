@@ -1,6 +1,9 @@
 //! Agent-facing NWC wallet requests.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    str::FromStr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use buzz_core::{
     kind::{
@@ -10,7 +13,10 @@ use buzz_core::{
     nwc::{build_pay_request, decrypt_pay_response, NwcPayParams, NwcPayResult},
 };
 use buzz_ws_client::{NostrWsConnection, RelayMessage};
-use nostr::{Event, EventBuilder, JsonUtil, Kind, PublicKey, Tag};
+use lexe_api_core::types::offer::Offer as LexeOffer;
+use lexe_payment_uri_core::Bip321Uri;
+use lightning::offers::offer::Offer;
+use nostr::{Event, EventBuilder, EventId, JsonUtil, Kind, PublicKey, Tag};
 use serde_json::json;
 
 use crate::{client::BuzzClient, error::CliError, WalletCmd};
@@ -96,7 +102,7 @@ fn ws_url(http_url: &str) -> String {
         .replacen("http://", "ws://", 1)
 }
 
-async fn latest_offer(client: &BuzzClient, recipient: &str) -> Result<(Event, String), CliError> {
+async fn latest_offer(client: &BuzzClient, recipient: &str) -> Result<(Event, Offer), CliError> {
     let raw = client
         .query(&json!({
             "kinds": [KIND_BOLT12_OFFER],
@@ -119,20 +125,41 @@ async fn latest_offer(client: &BuzzClient, recipient: &str) -> Result<(Event, St
             "offer announcement does not match the recipient".into(),
         ));
     }
-    let offer = event
+    let offers = event
         .tags
         .iter()
-        .find_map(|tag| {
+        .filter_map(|tag| {
             let parts = tag.as_slice();
             (parts.first().map(String::as_str) == Some("offer"))
                 .then(|| parts.get(1).cloned())
                 .flatten()
         })
-        .filter(|offer| offer.starts_with("lno1") && offer == &offer.to_ascii_lowercase())
-        .ok_or_else(|| {
-            CliError::Other("recipient withdrew or published an invalid offer".into())
-        })?;
+        .collect::<Vec<_>>();
+    if offers.len() != 1 {
+        return Err(CliError::Other(
+            "recipient withdrew or published an invalid offer".into(),
+        ));
+    }
+    let offer_text = offers.into_iter().next().ok_or_else(|| {
+        CliError::Other("recipient withdrew or published an invalid offer".into())
+    })?;
+    let offer = Offer::from_str(&offer_text).map_err(|error| {
+        CliError::Other(format!("recipient published an invalid offer: {error:?}"))
+    })?;
+    if offer.to_string() != offer_text {
+        return Err(CliError::Other(
+            "recipient published a non-canonical offer".into(),
+        ));
+    }
     Ok((event, offer))
+}
+
+fn bip321_offer_uri(offer: Offer) -> String {
+    Bip321Uri {
+        offer: Some(LexeOffer(offer)),
+        ..Default::default()
+    }
+    .to_string()
 }
 
 async fn require_nwc_pay(client: &BuzzClient, owner: &PublicKey) -> Result<(), CliError> {
@@ -228,11 +255,12 @@ async fn zap(
     let recipient = recipient_key.to_hex();
     let target = match (event.as_deref(), event_kind) {
         (None, None) => None,
-        (Some(id), Some(kind))
-            if id.len() == 64 && id.chars().all(|character| character.is_ascii_hexdigit()) =>
-        {
-            Some((id, kind))
-        }
+        (Some(id), Some(kind)) => Some((
+            EventId::from_hex(id)
+                .map_err(|error| CliError::Usage(format!("invalid event id: {error}")))?
+                .to_hex(),
+            kind,
+        )),
         _ => {
             return Err(CliError::Usage(
                 "--event and --event-kind must be supplied together".into(),
@@ -246,7 +274,15 @@ async fn zap(
         .map_err(|error| CliError::Auth(format!("invalid owner pubkey: {error}")))?;
     require_nwc_pay(client, &owner).await?;
     let (offer_event, offer) = latest_offer(client, &recipient).await?;
-    let intent = build_intent(client, &recipient, amount, &comment, &offer_event, target)?;
+    let target_ref = target.as_ref().map(|(id, kind)| (id.as_str(), *kind));
+    let intent = build_intent(
+        client,
+        &recipient,
+        amount,
+        &comment,
+        &offer_event,
+        target_ref,
+    )?;
     let amount_msats = amount
         .checked_mul(1_000)
         .ok_or_else(|| CliError::Usage("--amount is too large".into()))?;
@@ -255,7 +291,7 @@ async fn zap(
         client.keys(),
         &owner,
         NwcPayParams {
-            payment: format!("bitcoin:?lno={offer}"),
+            payment: bip321_offer_uri(offer),
             amount: amount_msats,
             payer_note: Some(payer_note),
             metadata: serde_json::Map::from_iter([
@@ -336,7 +372,8 @@ async fn zap(
         let result = response
             .result
             .ok_or_else(|| CliError::Other("wallet returned no result".into()))?;
-        let channel_id = target_channel_id(client, target).await?;
+        let target_ref = target.as_ref().map(|(id, kind)| (id.as_str(), *kind));
+        let channel_id = target_channel_id(client, target_ref).await?;
         let proof = build_zap_proof(client, &intent, &result, channel_id.as_deref())?;
         let accepted = connection
             .send_event(proof)

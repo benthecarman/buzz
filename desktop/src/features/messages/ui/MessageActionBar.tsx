@@ -23,7 +23,10 @@ import { useCustomEmoji } from "@/features/custom-emoji/hooks";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { ReportMessageDialog } from "@/features/moderation/ui/ReportMessageDialog";
 import { useBitcoinCompileEnabled } from "@/features/wallet/hooks";
-import { SendBitcoinDialog } from "@/features/wallet/ui/SendBitcoinDialog";
+import {
+  SendBitcoinDialog,
+  type PendingZapDisplay,
+} from "@/features/wallet/ui/SendBitcoinDialog";
 import { MessageModerationMenuItems } from "@/features/moderation/ui/MessageModerationMenuItems";
 import type {
   TimelineMessage,
@@ -374,6 +377,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onFollowThread,
   onMarkUnread,
   onMarkRead,
+  onPendingZapChange,
   onReactionBadgeBurstRequest,
   onReactionSelect,
   onRemindLater,
@@ -394,6 +398,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onFollowThread?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
+  onPendingZapChange?: (pending: PendingZapDisplay | null) => void;
   onReactionBadgeBurstRequest?: (emoji: string) => void;
   onReactionSelect?: (emoji: string) => Promise<void>;
   onRemindLater?: (message: TimelineMessage) => void;
@@ -630,6 +635,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
       {hasZapAction ? (
         <SendBitcoinDialog
           onOpenChange={setIsZapDialogOpen}
+          onPendingZapChange={onPendingZapChange}
           open={isZapDialogOpen}
           recipientName={message.author}
           recipientPubkey={message.pubkey ?? ""}

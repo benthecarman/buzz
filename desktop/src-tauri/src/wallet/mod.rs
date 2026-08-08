@@ -8,7 +8,6 @@ mod seed;
 pub(crate) mod send;
 pub(crate) mod zap;
 
-pub(crate) use lexe_provider::canonical_offer_id;
 pub(crate) use manager::WalletManager;
 
 #[cfg(test)]
@@ -33,10 +32,53 @@ mod tests {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
+            // Lexe deliberately re-exports rust-lightning. Protocol parsing
+            // may use that re-export directly without coupling wallet-domain
+            // code to Lexe's provider-specific SDK types.
+            let source = source.replace("lexe::lightning::", "lightning::");
             assert!(
                 !source.contains(&forbidden_path),
                 "Lexe SDK type leaked outside adapter: {}",
                 path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn received_zap_paths_do_not_contact_the_wallet_provider() {
+        let source = include_str!("../commands/wallet/enabled/zap_commands.rs");
+        let deposit_start = source
+            .find("async fn reconcile_agent_runtime_deposits")
+            .expect("runtime deposit reconciler exists");
+        let deposit_end = source[deposit_start..]
+            .find("const RELAY_HISTORY_PAGE_SIZE")
+            .map(|offset| deposit_start + offset)
+            .expect("runtime deposit reconciler has a boundary");
+        let deposit_source = &source[deposit_start..deposit_end];
+        for forbidden in [
+            "provider_for(",
+            "provider.transactions(",
+            "provider.scoped_offer(",
+            "provider.poll_updates(",
+        ] {
+            assert!(
+                !deposit_source.contains(forbidden),
+                "runtime deposit reconciliation contacted the wallet through {forbidden}"
+            );
+        }
+
+        let background_start = source
+            .find("pub(crate) async fn reconcile_wallet_background_once")
+            .expect("background reconciler exists");
+        let background_end = source[background_start..]
+            .find("async fn reconcile_paying_zap_attempts")
+            .map(|offset| background_start + offset)
+            .expect("background reconciler has a boundary");
+        let background_source = &source[background_start..background_end];
+        for forbidden in ["provider_for(", "provider.poll_updates("] {
+            assert!(
+                !background_source.contains(forbidden),
+                "background zap sync contacted the wallet through {forbidden}"
             );
         }
     }

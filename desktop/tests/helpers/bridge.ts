@@ -362,6 +362,9 @@ type MockBridgeOptions = {
   /** Current mocked wallet totals, mutable by wallet polling specs. */
   walletBalance?: number;
   walletSpendableBalance?: number;
+  walletProfileZapStatus?: "completed" | "failed" | "pending";
+  /** Delay a message/profile zap result so optimistic UI can be asserted. */
+  walletProfileZapDelayMs?: number;
   /**
    * Value returned by the `observer_archive_default_enabled` mock command.
    * `true` = internal-policy build (toggle locked ON); `false`/omitted = OSS

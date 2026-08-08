@@ -34,6 +34,7 @@ import { useUnreadChannels } from "@/features/channels/useUnreadChannels";
 import { useMembershipNotifications } from "@/features/channels/useMembershipNotifications";
 import { useFeedItemState } from "@/features/home/useFeedItemState";
 import { useThreadFollows } from "@/features/messages/lib/useThreadFollows";
+import { useIncomingWalletPayments } from "@/features/wallet/useIncomingWalletPayments";
 import {
   useHomeFeedNotifications,
   useHomeFeedNotificationState,
@@ -102,6 +103,7 @@ export function AppShell() {
   useWebviewZoomShortcuts();
   useTauriWindowDrag();
   useWebviewScrollBoundaryLock();
+  useIncomingWalletPayments();
   const communitiesHook = useCommunities();
   const {
     handleHuddleCompanionOpen,
@@ -220,11 +222,11 @@ export function AppShell() {
     deferredPubkey ? [deferredPubkey] : [],
   );
   const setUserStatusMutation = useSetUserStatusMutation(deferredPubkey);
-  const { feedProfilesQuery, homeFeedQuery, notificationSettings } =
-    useHomeFeedNotifications(identityQuery.data?.pubkey);
-  const feedItemState = useFeedItemState(identityQuery.data?.pubkey);
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? [];
+  const { feedProfilesQuery, homeFeedQuery, notificationSettings } =
+    useHomeFeedNotifications(identityQuery.data?.pubkey, channels);
+  const feedItemState = useFeedItemState(identityQuery.data?.pubkey);
   useReminderNotifications(
     identityQuery.data?.pubkey,
     notificationSettings.settings,

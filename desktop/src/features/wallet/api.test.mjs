@@ -6,9 +6,9 @@ import {
   disableWallet,
   enableWallet,
   getRecipientWalletOffer,
-  listPlaceholderMessageZaps,
   refreshWalletOffer,
   sendProfileZap,
+  setWalletPollingEnabled,
 } from "./api.ts";
 
 const RECIPIENT_PUBKEY =
@@ -57,8 +57,8 @@ test("offer publication commands include every configured community relay", asyn
     await createWalletReceiveRequest();
     await refreshWalletOffer();
     await disableWallet();
+    await setWalletPollingEnabled(true);
     await getRecipientWalletOffer(RECIPIENT_PUBKEY);
-    await listPlaceholderMessageZaps();
     await sendProfileZap({
       recipientPubkey: RECIPIENT_PUBKEY,
       amount: 21,
@@ -82,13 +82,10 @@ test("offer publication commands include every configured community relay", asyn
     { command: "wallet_create_receive_request", args: {} },
     { command: "wallet_refresh_offer", args: { relayUrls } },
     { command: "wallet_disable", args: { relayUrls } },
+    { command: "wallet_set_polling_enabled", args: { enabled: true } },
     {
       command: "wallet_get_recipient_offer",
       args: { recipientPubkey: RECIPIENT_PUBKEY },
-    },
-    {
-      command: "wallet_list_placeholder_message_zaps",
-      args: {},
     },
     {
       command: "wallet_send_profile_zap",

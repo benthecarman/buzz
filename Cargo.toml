@@ -71,6 +71,12 @@ k8s-openapi = { version = "0.26", features = ["v1_31"] }
 # Nostr
 nostr = { version = "0.44", features = ["nip44", "nip98"] }
 
+# BOLT12 parsing. Keep this pinned to the rust-lightning version used by the
+# desktop Lexe SDK so every Buzz surface applies the same wire parser.
+lightning = "=0.3.0-beta1"
+lexe-api-core = "=0.1.20"
+lexe-payment-uri-core = "=0.1.20"
+
 # Serialization
 serde       = { version = "1", features = ["derive"] }
 postcard    = { version = "1", default-features = false, features = ["use-std"] }

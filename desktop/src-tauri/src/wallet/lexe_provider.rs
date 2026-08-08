@@ -5,7 +5,7 @@ use lexe::{
     config::WalletEnvConfig,
     types::{
         auth::RootSeed,
-        bitcoin::Amount,
+        bitcoin::{Amount, Invoice, Offer},
         command::{
             AnalyzeRequest, CreateInvoiceRequest, CreateOfferRequest, PayOfferRequest, PayRequest,
             PaymentSyncSummary,
@@ -14,6 +14,7 @@ use lexe::{
     },
     wallet::LexeWallet,
 };
+use lexe_payment_uri_core::Bip321Uri;
 use sha2_10::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -23,7 +24,7 @@ use super::{
         WalletPaymentResult, WalletSendRequest, WalletStatus, WalletTransaction,
         WalletTransactionPage,
     },
-    provider::{bip321_uri, WalletPaymentMatch, WalletProvider},
+    provider::{WalletPaymentMatch, WalletProvider},
     seed::WalletSeed,
 };
 
@@ -31,6 +32,48 @@ const OFFER_EXPIRATION_SECS: u32 = 60 * 60 * 24 * 365 * 50;
 // Lexe limits BOLT11 invoices to one day. The accompanying BOLT12 offer
 // remains the long-lived funding method in the BIP-321 request.
 const FUNDING_INVOICE_EXPIRATION_SECS: u32 = 60 * 60 * 24;
+
+fn bip321_uri(
+    amount: Option<u64>,
+    bolt11_invoice: Option<&str>,
+    bolt12_offer: Option<&str>,
+) -> Result<String, WalletError> {
+    if amount == Some(0) {
+        return Err(WalletError::new(
+            "invalid_amount",
+            "Bitcoin amount must be greater than zero",
+        ));
+    }
+
+    let bolt11_invoice = bolt11_invoice
+        .filter(|value| !value.is_empty())
+        .map(Invoice::from_str)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_funding_request", error.to_string()))?;
+    let bolt12_offer = bolt12_offer
+        .filter(|value| !value.is_empty())
+        .map(Offer::from_str)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_funding_request", error.to_string()))?;
+    if bolt11_invoice.is_none() && bolt12_offer.is_none() {
+        return Err(WalletError::new(
+            "invalid_funding_request",
+            "at least one Lightning payment method is required",
+        ));
+    }
+
+    let amount = amount
+        .map(Amount::try_from_sats_u64)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_amount", error.to_string()))?;
+    Ok(Bip321Uri {
+        invoice: bolt11_invoice,
+        offer: bolt12_offer,
+        amount,
+        ..Default::default()
+    }
+    .to_string())
+}
 
 fn payment_sync_changed(summary: &PaymentSyncSummary) -> bool {
     summary.num_new > 0 || summary.num_updated > 0
@@ -59,16 +102,9 @@ fn reconciliation_fields_match(
 }
 
 pub(super) fn canonical_offer(value: &str) -> bool {
-    lexe::types::bitcoin::Offer::from_str(value)
+    Offer::from_str(value)
         .map(|offer| offer.to_string() == value)
         .unwrap_or(false)
-}
-
-pub(crate) fn canonical_offer_id(value: &str) -> Option<String> {
-    lexe::types::bitcoin::Offer::from_str(value)
-        .ok()
-        .and_then(|offer| serde_json::to_value(offer.id()).ok())
-        .and_then(|value| value.as_str().map(str::to_owned))
 }
 
 fn scoped_offer_file_name(scope: &str) -> String {
@@ -332,7 +368,7 @@ impl WalletProvider for LexeProvider {
         &self,
         request: WalletOfferSendRequest,
     ) -> Result<WalletPaymentResult, WalletError> {
-        let offer = lexe::types::bitcoin::Offer::from_str(&request.offer)
+        let offer = Offer::from_str(&request.offer)
             .map_err(|error| WalletError::new("invalid_destination", error.to_string()))?;
         let payment = self
             .wallet
@@ -353,7 +389,7 @@ impl WalletProvider for LexeProvider {
     ) -> Result<Option<WalletPaymentResult>, WalletError> {
         let expected_offer_id = payment_match
             .expected_offer
-            .map(lexe::types::bitcoin::Offer::from_str)
+            .map(Offer::from_str)
             .transpose()
             .map_err(|error| WalletError::new("offer_invalid", error.to_string()))?
             .map(|offer| offer.id());
@@ -450,13 +486,66 @@ mod tests {
     };
 
     use super::{
-        payment_sync_changed, reconciliation_fields_match, scoped_offer_file_name,
+        bip321_uri, payment_sync_changed, reconciliation_fields_match, scoped_offer_file_name,
         WalletPaymentMatch,
     };
     use crate::wallet::{VALID_INVOICE, VALID_OFFER};
 
     const VALID_PAYER_NOTE: &str =
         "nostr:nipB1:c63e8667c29f5db1dbdec9ce4d720b692a15665c03530af5a978701783a073bb";
+
+    fn query_pairs(uri: &str) -> std::collections::HashMap<String, String> {
+        url::Url::parse(uri)
+            .unwrap()
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn bip321_uri_supports_both_lightning_methods() {
+        let uri = bip321_uri(Some(123_456_789), Some(VALID_INVOICE), Some(VALID_OFFER)).unwrap();
+        let pairs = query_pairs(&uri);
+        assert_eq!(pairs.get("amount").unwrap(), "1.23456789");
+        assert_eq!(pairs.get("lightning").unwrap(), VALID_INVOICE);
+        assert_eq!(pairs.get("lno").unwrap(), VALID_OFFER);
+    }
+
+    #[test]
+    fn bip321_uri_supports_either_lightning_method() {
+        let invoice_only = query_pairs(&bip321_uri(Some(100), Some(VALID_INVOICE), None).unwrap());
+        assert_eq!(invoice_only.get("amount").unwrap(), "0.000001");
+        assert_eq!(invoice_only.get("lightning").unwrap(), VALID_INVOICE);
+        assert!(!invoice_only.contains_key("lno"));
+
+        let offer_only =
+            query_pairs(&bip321_uri(Some(100_000_000), None, Some(VALID_OFFER)).unwrap());
+        assert_eq!(offer_only.get("amount").unwrap(), "1");
+        assert_eq!(offer_only.get("lno").unwrap(), VALID_OFFER);
+        assert!(!offer_only.contains_key("lightning"));
+    }
+
+    #[test]
+    fn bip321_uri_supports_amountless_funding() {
+        let pairs = query_pairs(&bip321_uri(None, Some(VALID_INVOICE), Some(VALID_OFFER)).unwrap());
+        assert!(!pairs.contains_key("amount"));
+        assert_eq!(pairs.get("lightning").unwrap(), VALID_INVOICE);
+        assert_eq!(pairs.get("lno").unwrap(), VALID_OFFER);
+    }
+
+    #[test]
+    fn bip321_uri_rejects_explicit_zero_and_no_payment_methods() {
+        assert_eq!(
+            bip321_uri(Some(0), Some(VALID_INVOICE), Some(VALID_OFFER))
+                .unwrap_err()
+                .code,
+            "invalid_amount"
+        );
+        assert_eq!(
+            bip321_uri(None, None, None).unwrap_err().code,
+            "invalid_funding_request"
+        );
+    }
 
     #[test]
     fn payment_fixtures_are_canonical() {

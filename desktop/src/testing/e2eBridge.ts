@@ -422,6 +422,10 @@ type E2eConfig = {
     /** Current mocked wallet totals, mutable by wallet polling specs. */
     walletBalance?: number;
     walletSpendableBalance?: number;
+    /** Result returned by message/profile zap payment commands. */
+    walletProfileZapStatus?: "completed" | "failed" | "pending";
+    /** Delay a message/profile zap result so optimistic UI can be asserted. */
+    walletProfileZapDelayMs?: number;
     // NIP-IA gate inputs — see tests/helpers/bridge.ts:MockBridgeOptions for
     // semantics. These three drive the archive-button gate matrix in
     // tests/e2e/identity-archive.spec.ts; they're plumbed into:
@@ -5690,15 +5694,6 @@ function walletPaymentId(kind: "fs" | "ln", id = mockEventId()): string {
   return `${Date.now().toString().padStart(19, "0")}-${kind}_${id}`;
 }
 
-const mockPlaceholderMessageZaps: Array<{
-  intentEventId: string;
-  targetEventId: string;
-  recipientPubkey: string;
-  amount: number;
-  comment: string | null;
-  settledAtMs: number;
-}> = [];
-
 async function signedWalletOffer(recipientPubkey: string) {
   if (recipientPubkey !== BOB_IDENTITY.pubkey) {
     throw new Error(`No E2E wallet signer for recipient ${recipientPubkey}`);
@@ -10293,7 +10288,6 @@ export function maybeInstallE2eTauriMocks() {
   mockWebsocketUnavailable = false;
   mockAuthResponses.length = 0;
   mockChannelHistoryCloses.length = 0;
-  mockPlaceholderMessageZaps.length = 0;
   relayWebsocketConnectAttemptStarts.length = 0;
   deferredSendMessageLiveEchoes.length = 0;
   deferredLinkPreviewMetadataQueue = [];
@@ -12196,8 +12190,6 @@ export function maybeInstallE2eTauriMocks() {
       case "wallet_get_pending_send":
       case "wallet_get_pending_profile_zap":
         return null;
-      case "wallet_list_placeholder_message_zaps":
-        return mockPlaceholderMessageZaps;
       case "wallet_list_transactions":
         return {
           transactions: [],
@@ -12205,6 +12197,11 @@ export function maybeInstallE2eTauriMocks() {
         };
       case "wallet_poll_updates":
         return activeConfig?.mock?.walletPollUpdates?.shift() ?? false;
+      case "wallet_set_polling_enabled":
+        return null;
+      case "wallet_parse_zap_events":
+        // Native rust-lightning validation is outside the browser-only bridge.
+        return [];
       case "wallet_send":
         return {
           paymentId: walletPaymentId("ln"),
@@ -12241,6 +12238,10 @@ export function maybeInstallE2eTauriMocks() {
             };
           }
         ).request;
+        const zapDelayMs = activeConfig?.mock?.walletProfileZapDelayMs;
+        if (zapDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, zapDelayMs));
+        }
         const recipientPubkey = request?.recipientPubkey ?? BOB_IDENTITY.pubkey;
         const amount = request?.amount ?? 1000;
         const offerEvent = await signedWalletOffer(recipientPubkey);
@@ -12261,28 +12262,25 @@ export function maybeInstallE2eTauriMocks() {
           ],
         });
         const settledAtMs = Date.now();
-        if (request?.targetEventId) {
-          mockPlaceholderMessageZaps.push({
-            intentEventId: intentEvent.id,
-            targetEventId: request.targetEventId,
-            recipientPubkey,
-            amount,
-            comment: request.comment ?? null,
-            settledAtMs,
-          });
-        }
+        const status =
+          activeConfig?.mock?.walletProfileZapStatus ?? "completed";
         return {
           payment: {
             paymentId: walletPaymentId("fs", intentEvent.id),
-            status: "completed",
-            statusMessage: "Payment completed",
+            status,
+            statusMessage:
+              status === "completed"
+                ? "Payment completed"
+                : status === "failed"
+                  ? "Payment failed"
+                  : "Payment pending",
             amount,
             fees: 1,
             createdAtMs: settledAtMs,
-            finalizedAtMs: settledAtMs,
+            finalizedAtMs: status === "pending" ? null : settledAtMs,
           },
           intentEventId: intentEvent.id,
-          proofPublished: true,
+          proofPublished: status === "completed",
         };
       }
       case "wallet_reveal_recovery_phrase":

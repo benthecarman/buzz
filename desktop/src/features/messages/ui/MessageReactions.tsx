@@ -1,12 +1,10 @@
-import { Bitcoin, SmilePlus } from "lucide-react";
+import { Bitcoin, LoaderCircle, SmilePlus } from "lucide-react";
 import * as React from "react";
 
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import type { TimelineReaction, TimelineZap } from "@/features/messages/types";
 import { recordQuickReactionEmoji } from "@/features/messages/ui/useQuickReactionEmojis";
 import { formatBitcoin } from "@/features/wallet/lib/formatBitcoin";
-import { usePlaceholderMessageZaps } from "@/features/wallet/lib/placeholderMessageZaps";
-import { useIdentityQuery } from "@/shared/api/hooks";
 import { cn } from "@/shared/lib/cn";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
@@ -143,6 +141,7 @@ export function MessageReactions({
   messageId,
   reactions,
   zaps = [],
+  pendingZapAmount = null,
   canToggle,
   pending,
   onSelect,
@@ -153,6 +152,7 @@ export function MessageReactions({
   messageId: string;
   reactions: TimelineReaction[];
   zaps?: TimelineZap[];
+  pendingZapAmount?: number | null;
   canToggle: boolean;
   pending: boolean;
   onSelect: (emoji: string) => void;
@@ -161,19 +161,11 @@ export function MessageReactions({
   onBurstEmojiRendered?: (emoji: string) => void;
 }) {
   const { burstEmoji } = useEmojiBurst();
-  const payerPubkey = useIdentityQuery().data?.pubkey;
-  const placeholderZaps = usePlaceholderMessageZaps(messageId, payerPubkey);
-  const publicIntentIds = new Set(zaps.map((zap) => zap.intentEventId));
-  const unpublishedPlaceholders = placeholderZaps.filter(
-    (zap) => !publicIntentIds.has(zap.intentEventId),
-  );
+  const hasPendingZap = pendingZapAmount !== null;
   const zapAmount =
     zaps.reduce((total, zap) => total + zap.amount, 0) +
-    unpublishedPlaceholders.reduce(
-      (total, receipt) => total + receipt.amount,
-      0,
-    );
-  const zapCount = zaps.length + unpublishedPlaceholders.length;
+    (pendingZapAmount ?? 0);
+  const zapCount = zaps.length + (hasPendingZap ? 1 : 0);
   const [pendingBadgeBurstEmoji, setPendingBadgeBurstEmoji] = React.useState<
     string | null
   >(null);
@@ -273,11 +265,7 @@ export function MessageReactions({
       data-testid="message-reactions"
     >
       {zapCount > 0 ? (
-        <ZapPill
-          amount={zapAmount}
-          count={zapCount}
-          hasUnpublishedPlaceholder={unpublishedPlaceholders.length > 0}
-        />
+        <ZapPill amount={zapAmount} count={zapCount} pending={hasPendingZap} />
       ) : null}
       {reactions.map((reaction) => (
         <ReactionPill
@@ -305,31 +293,36 @@ export function MessageReactions({
 function ZapPill({
   amount,
   count,
-  hasUnpublishedPlaceholder,
+  pending,
 }: {
   amount: number;
   count: number;
-  hasUnpublishedPlaceholder: boolean;
+  pending: boolean;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
-          aria-label={`${formatBitcoin(amount)} across ${count} ${count === 1 ? "zap" : "zaps"}`}
+          aria-label={
+            pending
+              ? `${formatBitcoin(amount)} across ${count} ${count === 1 ? "zap" : "zaps"}, payment pending`
+              : `${formatBitcoin(amount)} across ${count} ${count === 1 ? "zap" : "zaps"}`
+          }
           className={cn(
             REACTION_PILL_BASE_CLASSES,
             "min-w-12 cursor-help justify-center gap-1.5 border-amber-500/40 bg-amber-500/10 px-2 text-amber-700 dark:text-amber-300",
+            pending && "border-dashed",
           )}
           data-testid="message-zap"
           type="button"
         >
           <Bitcoin className="h-3.5 w-3.5" />
           <span>{amount.toLocaleString()}</span>
+          {pending ? <LoaderCircle className="h-3 w-3 animate-spin" /> : null}
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        {count === 1 ? "1 zap" : `${count} zaps`}
-        {hasUnpublishedPlaceholder ? " — publishing…" : null}
+        {pending ? "Payment pending" : count === 1 ? "1 zap" : `${count} zaps`}
       </TooltipContent>
     </Tooltip>
   );

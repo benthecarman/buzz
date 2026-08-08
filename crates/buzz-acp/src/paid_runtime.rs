@@ -5,6 +5,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
@@ -21,6 +22,7 @@ use buzz_core::kind::{
     KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_REQUEST, KIND_AGENT_RUNTIME_RESERVATION,
     KIND_AGENT_RUNTIME_RESPONSE, KIND_AGENT_RUNTIME_SETTLEMENT, KIND_BOLT12_OFFER,
 };
+use lightning::offers::offer::Offer;
 use nostr::{
     nips::nip44::{self, Version},
     Alphabet, Event, EventBuilder, EventId, JsonUtil, Kind, PublicKey, SingleLetterTag, Tag,
@@ -305,7 +307,14 @@ async fn latest_offer(rest: &RestClient, agent: PublicKey) -> anyhow::Result<Eve
             (parts.len() == 2 && parts[0].as_str() == "offer").then(|| parts[1].as_str())
         })
         .collect::<Vec<_>>();
-    if offers.len() != 1 || !offers[0].starts_with("lno1") {
+    let parsed_offer = offers
+        .first()
+        .filter(|_| offers.len() == 1)
+        .and_then(|offer| Offer::from_str(offer).ok());
+    if parsed_offer
+        .as_ref()
+        .is_none_or(|offer| offer.to_string() != offers[0])
+    {
         return Err(protocol_error(
             "agent BOLT12 offer is withdrawn or malformed",
         ));

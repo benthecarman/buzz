@@ -1,24 +1,26 @@
 use std::{
     io::Write,
     path::{Path, PathBuf},
+    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use atomic_write_file::AtomicWriteFile;
 use buzz_conformance_pkg::wallet::{WalletAbstractState, WalletAttemptStatus, WalletTraceAction};
 use buzz_core_pkg::kind::{KIND_BOLT12_OFFER, KIND_BOLT12_ZAP, KIND_BOLT12_ZAP_INTENT};
+use lexe::lightning::offers::payer_proof::PayerProof;
 use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::models::{
-    WalletError, WalletPaymentResult, WalletPlaceholderMessageZap, WalletProfileZapDraft,
-    WalletProfileZapResult, WalletRecipientOffer,
+    WalletError, WalletPaymentResult, WalletProfileZapDraft, WalletProfileZapResult,
+    WalletRecipientOffer, WalletVerifiedZapEvent,
 };
 use super::{conformance, lexe_provider::canonical_offer};
 
 const TERMINAL_ATTEMPT_RETENTION_MS: u64 = 90 * 24 * 60 * 60 * 1_000;
-/// Temporary proof marker published until the wallet exposes a real `lnp` proof.
+/// Valid compatibility proof until the wallet exposes a real `lnp` proof.
 pub(crate) const PLACEHOLDER_PAYER_PROOF: &str = "placeholder";
 
 fn tag(parts: impl IntoIterator<Item = impl Into<String>>) -> Result<Tag, WalletError> {
@@ -111,6 +113,179 @@ pub fn recipient_offer(
         offer,
         offer_event_json: event.as_json(),
         offer_event_id: event.id.to_hex(),
+    })
+}
+
+fn exact_event_tag<'a>(event: &'a Event, name: &str) -> Result<&'a str, WalletError> {
+    let matching = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().map(String::as_str) == Some(name))
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(WalletError::new(
+            "invalid_zap",
+            format!("zap must contain exactly one {name} tag"),
+        ));
+    }
+    matching[0]
+        .as_slice()
+        .get(1)
+        .map(String::as_str)
+        .ok_or_else(|| WalletError::new("invalid_zap", format!("zap {name} tag has no value")))
+}
+
+fn optional_event_tag<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, WalletError> {
+    let matching = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().map(String::as_str) == Some(name))
+        .collect::<Vec<_>>();
+    if matching.len() > 1 {
+        return Err(WalletError::new(
+            "invalid_zap",
+            format!("zap must not contain duplicate {name} tags"),
+        ));
+    }
+    matching
+        .first()
+        .map(|tag| {
+            tag.as_slice().get(1).map(String::as_str).ok_or_else(|| {
+                WalletError::new("invalid_zap", format!("zap {name} tag has no value"))
+            })
+        })
+        .transpose()
+}
+
+fn matching_optional_tag(outer: &Event, intent: &Event, name: &str) -> Result<(), WalletError> {
+    if optional_event_tag(outer, name)? != optional_event_tag(intent, name)? {
+        return Err(WalletError::new(
+            "invalid_zap",
+            format!("zap {name} tag does not match its intent"),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a NIP-B1 proof chain and parse every embedded BOLT12 offer through
+/// rust-lightning (via Lexe's `Offer` newtype adapter).
+pub(crate) fn parse_tagged_zap_event(
+    raw_event: &serde_json::Value,
+) -> Result<WalletVerifiedZapEvent, WalletError> {
+    let event = Event::from_json(raw_event.to_string())
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    event
+        .verify()
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    if event.kind != Kind::Custom(KIND_BOLT12_ZAP as u16) {
+        return Err(WalletError::new("invalid_zap", "event is not a BOLT12 zap"));
+    }
+
+    let recipient = exact_event_tag(&event, "p")?.to_ascii_lowercase();
+    let amount_text = exact_event_tag(&event, "amount")?;
+    let description = exact_event_tag(&event, "description")?;
+    let offer_event_json = exact_event_tag(&event, "offer_event")?;
+    let proof = exact_event_tag(&event, "proof")?;
+    let payer_proof = (proof != PLACEHOLDER_PAYER_PROOF)
+        .then(|| {
+            PayerProof::from_str(proof).map_err(|error| {
+                WalletError::new("invalid_zap", format!("invalid payer proof: {error:?}"))
+            })
+        })
+        .transpose()?;
+
+    let amount_msats = amount_text
+        .parse::<u64>()
+        .map_err(|_| WalletError::new("invalid_zap", "zap amount is not an integer"))?;
+    if amount_msats == 0 || !amount_msats.is_multiple_of(1_000) {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap amount must be a positive whole-satoshi value",
+        ));
+    }
+    if payer_proof
+        .as_ref()
+        .and_then(PayerProof::invoice_amount_msats)
+        .is_some_and(|proof_amount| proof_amount != amount_msats)
+    {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap amount does not match its payer proof",
+        ));
+    }
+
+    let intent = Event::from_json(description)
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    intent
+        .verify()
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    let offer_event = Event::from_json(offer_event_json)
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    offer_event
+        .verify()
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+
+    if intent.kind != Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16)
+        || intent.pubkey != event.pubkey
+        || intent.content != event.content
+        || exact_event_tag(&intent, "p")?.to_ascii_lowercase() != recipient
+        || exact_event_tag(&intent, "amount")? != amount_text
+        || exact_event_tag(&intent, "offer_event")? != offer_event_json
+    {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap does not match its signed intent",
+        ));
+    }
+
+    let zap_id = exact_event_tag(&intent, "zap_id")?;
+    if zap_id.len() < 32
+        || !zap_id.len().is_multiple_of(2)
+        || !zap_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+    {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap intent has an invalid zap_id",
+        ));
+    }
+
+    for name in ["e", "a", "k"] {
+        matching_optional_tag(&event, &intent, name)?;
+    }
+    let target_event_id = optional_event_tag(&event, "e")?.map(str::to_string);
+    let address_target = optional_event_tag(&event, "a")?;
+    if target_event_id.is_some() && address_target.is_some() {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap cannot target both an event and an address",
+        ));
+    }
+
+    recipient_offer(&offer_event, &recipient)?;
+    if offer_event.created_at > intent.created_at {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap intent predates its offer announcement",
+        ));
+    }
+    if optional_event_tag(&event, "P")?
+        .is_some_and(|payer| payer.to_ascii_lowercase() != event.pubkey.to_hex())
+    {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap payer tag does not match its signer",
+        ));
+    }
+
+    Ok(WalletVerifiedZapEvent {
+        event_id: event.id.to_hex(),
+        amount: amount_msats / 1_000,
+        comment: intent.content,
+        intent_event_id: intent.id.to_hex(),
+        recipient_pubkey: recipient,
+        target_event_id,
     })
 }
 
@@ -254,6 +429,11 @@ pub struct ZapAttempt {
     pub runtime_quote_event_json: Option<String>,
     /// Intent reference sent in the BOLT12 payer note for reconciliation.
     pub payer_note: String,
+    /// Relay where the recipient offer was resolved and the proof belongs.
+    /// Legacy attempts omit this and remain manual-only so a community switch
+    /// cannot publish their proof to the wrong relay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
     pub state: ZapAttemptState,
     pub payment: Option<WalletPaymentResult>,
     /// Exact signed kind `9736` event retained for idempotent relay retries.
@@ -342,7 +522,7 @@ impl ZapAttempt {
             .map(|(id, kind)| (Some(id), Some(kind)))
             .unwrap_or((None, None));
         Ok(Self {
-            version: 4,
+            version: 5,
             idempotency_key,
             recipient_pubkey: recipient.recipient_pubkey,
             amount,
@@ -355,6 +535,7 @@ impl ZapAttempt {
             runtime_quote_event_json,
             payer_note: format!("nostr:nipB1:{intent_event_id}"),
             intent_event_id,
+            relay_url: None,
             state: ZapAttemptState::Prepared,
             payment: None,
             proof_event_json: None,
@@ -487,6 +668,20 @@ impl ZapAttemptStore {
                 "open zap attempt: {error}"
             ))),
         }
+    }
+
+    /// Bind a legacy attempt to the relay selected by an explicit user retry.
+    pub fn bind_relay_if_missing(
+        &self,
+        attempt: &mut ZapAttempt,
+        relay_url: &str,
+    ) -> Result<(), WalletError> {
+        if attempt.relay_url.is_some() {
+            return Ok(());
+        }
+        attempt.version = 5;
+        attempt.relay_url = Some(relay_url.to_string());
+        self.save(attempt)
     }
 
     fn save(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
@@ -680,6 +875,7 @@ impl ZapAttemptStore {
         &self,
         recipient_pubkey: &str,
         target_event_id: Option<&str>,
+        relay_url: &str,
     ) -> Result<Option<WalletProfileZapDraft>, WalletError> {
         let entries = match std::fs::read_dir(&self.directory) {
             Ok(entries) => entries,
@@ -698,12 +894,17 @@ impl ZapAttemptStore {
             let Ok(attempt) = serde_json::from_slice::<ZapAttempt>(&bytes) else {
                 continue;
             };
+            let needs_reconciliation = matches!(
+                attempt.state,
+                ZapAttemptState::Prepared | ZapAttemptState::Paying
+            ) || (attempt.state == ZapAttemptState::PaidWithoutProof
+                && !attempt.proof_published);
             if attempt.recipient_pubkey == recipient_pubkey
                 && attempt.target_event_id.as_deref() == target_event_id
-                && matches!(
-                    attempt.state,
-                    ZapAttemptState::Prepared | ZapAttemptState::Paying
-                )
+                && attempt.relay_url.as_deref().is_none_or(|relay| {
+                    relay.trim_end_matches('/') == relay_url.trim_end_matches('/')
+                })
+                && needs_reconciliation
                 && latest
                     .as_ref()
                     .is_none_or(|current| attempt.updated_at_ms > current.updated_at_ms)
@@ -714,8 +915,11 @@ impl ZapAttemptStore {
         Ok(latest.map(|attempt| attempt.draft()))
     }
 
-    /// List settled event-targeted payments for local placeholder rendering.
-    pub fn settled_message_zaps(&self) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
+    /// List settled proofs that can be retried safely on the specified relay.
+    pub fn unpublished_proofs_for_relay(
+        &self,
+        relay_url: &str,
+    ) -> Result<Vec<ZapAttempt>, WalletError> {
         let entries = match std::fs::read_dir(&self.directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -725,28 +929,62 @@ impl ZapAttemptStore {
                 )))
             }
         };
-        let mut receipts = entries
+        let relay_url = relay_url.trim_end_matches('/');
+        let mut attempts = entries
             .flatten()
             .filter_map(|entry| std::fs::read(entry.path()).ok())
             .filter_map(|bytes| serde_json::from_slice::<ZapAttempt>(&bytes).ok())
-            .filter_map(|attempt| {
-                let target_event_id = attempt.target_event_id?;
-                let payment = attempt.payment?;
-                (attempt.state == ZapAttemptState::PaidWithoutProof
+            .filter(|attempt| {
+                attempt.state == ZapAttemptState::PaidWithoutProof
                     && !attempt.proof_published
-                    && payment.status == "completed")
-                    .then(|| WalletPlaceholderMessageZap {
-                        intent_event_id: attempt.intent_event_id,
-                        target_event_id,
-                        recipient_pubkey: attempt.recipient_pubkey,
-                        amount: payment.amount.unwrap_or(attempt.amount),
-                        comment: attempt.comment,
-                        settled_at_ms: payment.finalized_at_ms.unwrap_or(payment.created_at_ms),
-                    })
+                    && attempt
+                        .payment
+                        .as_ref()
+                        .is_some_and(|payment| payment.status == "completed")
+                    && attempt
+                        .relay_url
+                        .as_deref()
+                        .is_some_and(|relay| relay.trim_end_matches('/') == relay_url)
             })
             .collect::<Vec<_>>();
-        receipts.sort_by_key(|receipt| receipt.settled_at_ms);
-        Ok(receipts)
+        attempts.sort_by_key(|attempt| attempt.updated_at_ms);
+        Ok(attempts)
+    }
+
+    /// List dispatched payments that still need a terminal provider result.
+    ///
+    /// A provider call can return or be recovered while the payment is still
+    /// pending. These checkpoints must be revisited in the background: the
+    /// recipient cannot discover a settled zap until the payer publishes its
+    /// kind-9736 proof.
+    pub fn paying_attempts_for_relay(
+        &self,
+        relay_url: &str,
+    ) -> Result<Vec<ZapAttempt>, WalletError> {
+        let entries = match std::fs::read_dir(&self.directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(WalletError::unavailable(format!(
+                    "read zap attempt directory: {error}"
+                )))
+            }
+        };
+        let relay_url = relay_url.trim_end_matches('/');
+        let mut attempts = entries
+            .flatten()
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<ZapAttempt>(&bytes).ok())
+            .filter(|attempt| {
+                attempt.state == ZapAttemptState::Paying
+                    && attempt
+                        .relay_url
+                        .as_deref()
+                        .is_some_and(|relay| relay.trim_end_matches('/') == relay_url)
+            })
+            .collect::<Vec<_>>();
+        attempts.sort_by_key(|attempt| attempt.updated_at_ms);
+        Ok(attempts)
     }
 
     /// Remove terminal checkpoints after the documented 90-day retention
@@ -796,6 +1034,47 @@ mod tests {
             .sign_with_keys(keys)
             .unwrap();
         recipient_offer(&event, &keys.public_key().to_hex()).unwrap()
+    }
+
+    fn tagged_zap_with_offer_and_proof(offer: &str, proof: &str) -> (Event, Event) {
+        let payer = Keys::generate();
+        let recipient = Keys::generate();
+        let offer_event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
+            .tag(Tag::parse(["offer", offer]).unwrap())
+            .sign_with_keys(&recipient)
+            .unwrap();
+        let target_event_id = "ab".repeat(32);
+        let intent = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), "nice work")
+            .tags([
+                Tag::parse(["p", recipient.public_key().to_hex().as_str()]).unwrap(),
+                Tag::parse(["amount", "21000"]).unwrap(),
+                Tag::parse(["offer_event", offer_event.as_json().as_str()]).unwrap(),
+                Tag::parse(["zap_id", "00112233445566778899aabbccddeeff"]).unwrap(),
+                Tag::parse(["e", target_event_id.as_str()]).unwrap(),
+                Tag::parse(["k", "40002"]).unwrap(),
+            ])
+            .sign_with_keys(&payer)
+            .unwrap();
+        let mut proof_tags = intent
+            .tags
+            .iter()
+            .filter(|tag| tag.as_slice().first().map(String::as_str) != Some("zap_id"))
+            .cloned()
+            .collect::<Vec<_>>();
+        proof_tags.extend([
+            Tag::parse(["description", intent.as_json().as_str()]).unwrap(),
+            Tag::parse(["P", payer.public_key().to_hex().as_str()]).unwrap(),
+            Tag::parse(["proof", proof]).unwrap(),
+        ]);
+        let zap = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), "nice work")
+            .tags(proof_tags)
+            .sign_with_keys(&payer)
+            .unwrap();
+        (intent, zap)
+    }
+
+    fn tagged_zap_with_offer(offer: &str) -> (Event, Event) {
+        tagged_zap_with_offer_and_proof(offer, PLACEHOLDER_PAYER_PROOF)
     }
 
     #[test]
@@ -875,6 +1154,40 @@ mod tests {
     }
 
     #[test]
+    fn parses_tagged_zap_with_rust_lightning_offer() {
+        let (intent, zap) = tagged_zap_with_offer(VALID_OFFER);
+        let raw = serde_json::from_str(&zap.as_json()).unwrap();
+        let parsed = parse_tagged_zap_event(&raw).unwrap();
+        assert_eq!(parsed.event_id, zap.id.to_hex());
+        assert_eq!(parsed.intent_event_id, intent.id.to_hex());
+        assert_eq!(parsed.amount, 21);
+        assert_eq!(parsed.comment, "nice work");
+        assert_eq!(parsed.target_event_id, Some("ab".repeat(32)));
+    }
+
+    #[test]
+    fn tagged_zap_rejects_offer_that_rust_lightning_cannot_parse() {
+        let (_, zap) = tagged_zap_with_offer(&VALID_OFFER[..VALID_OFFER.len() - 1]);
+        let raw = serde_json::from_str(&zap.as_json()).unwrap();
+        assert_eq!(
+            parse_tagged_zap_event(&raw).unwrap_err().code,
+            "offer_invalid"
+        );
+    }
+
+    #[test]
+    fn tagged_zap_rejects_payer_proof_that_rust_lightning_cannot_parse() {
+        // The former prefix/alphabet check accepted this despite it containing
+        // no payer-proof TLV stream or valid signatures.
+        let (_, zap) = tagged_zap_with_offer_and_proof(VALID_OFFER, "lnp1qqqq");
+        let raw = serde_json::from_str(&zap.as_json()).unwrap();
+        assert_eq!(
+            parse_tagged_zap_event(&raw).unwrap_err().code,
+            "invalid_zap"
+        );
+    }
+
+    #[test]
     fn rejects_announcement_when_any_offer_is_not_canonical() {
         let keys = Keys::generate();
         let event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
@@ -921,7 +1234,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .pending_for_recipient(&attempt.recipient_pubkey, None)
+                .pending_for_recipient(&attempt.recipient_pubkey, None, "https://relay.example",)
                 .unwrap()
                 .unwrap()
                 .idempotency_key,
@@ -930,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn settled_message_zaps_restore_local_placeholder_receipts() {
+    fn settled_message_zap_builds_a_relay_proof() {
         let temp = tempfile::tempdir().unwrap();
         let payer = Keys::generate();
         let recipient_keys = Keys::generate();
@@ -963,12 +1276,32 @@ mod tests {
             )
             .unwrap();
 
-        let receipts = store.settled_message_zaps().unwrap();
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0].intent_event_id, attempt.intent_event_id);
-        assert_eq!(receipts[0].target_event_id, target_event_id);
-        assert_eq!(receipts[0].amount, 21);
-        assert_eq!(receipts[0].settled_at_ms, 200);
+        store
+            .bind_relay_if_missing(&mut attempt, "https://relay.example/")
+            .unwrap();
+        assert_eq!(
+            store
+                .unpublished_proofs_for_relay("https://relay.example")
+                .unwrap(),
+            vec![attempt.clone()]
+        );
+        assert!(store
+            .unpublished_proofs_for_relay("https://other.example")
+            .unwrap()
+            .is_empty());
+
+        assert_eq!(
+            store
+                .pending_for_recipient(
+                    &attempt.recipient_pubkey,
+                    Some(&target_event_id),
+                    "https://relay.example",
+                )
+                .unwrap()
+                .unwrap()
+                .idempotency_key,
+            attempt.idempotency_key
+        );
 
         let proof = store
             .prepare_placeholder_proof(&mut attempt, &payer, Some("channel-id"))
@@ -982,12 +1315,73 @@ mod tests {
             .tags
             .iter()
             .any(|tag| tag.as_slice() == ["h", "channel-id"]));
+        let raw_proof = serde_json::from_str(&proof.as_json()).unwrap();
+        let parsed_proof = parse_tagged_zap_event(&raw_proof).unwrap();
+        assert_eq!(parsed_proof.target_event_id, Some(target_event_id.clone()));
+        assert_eq!(parsed_proof.amount, 21);
         let persisted = store
             .prepare_placeholder_proof(&mut attempt, &payer, None)
             .unwrap();
         assert_eq!(persisted.id, proof.id);
         store.mark_proof_published(&mut attempt).unwrap();
-        assert!(store.settled_message_zaps().unwrap().is_empty());
+        assert!(store
+            .unpublished_proofs_for_relay("https://relay.example")
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .pending_for_recipient(
+                &attempt.recipient_pubkey,
+                Some(&target_event_id),
+                "https://relay.example",
+            )
+            .unwrap()
+            .is_none());
         assert!(attempt.result().unwrap().proof_published);
+    }
+
+    #[test]
+    fn paying_attempts_are_relay_scoped_for_background_reconciliation() {
+        let temp = tempfile::tempdir().unwrap();
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let mut attempt = ZapAttempt::prepare(
+            Uuid::new_v4().to_string(),
+            recipient(&recipient_keys),
+            21,
+            None,
+            None,
+            None,
+            &payer,
+        )
+        .unwrap();
+        attempt.relay_url = Some("https://relay.example/".to_string());
+        let store = ZapAttemptStore::new(temp.path(), &payer.public_key().to_hex());
+        store.save_prepared(&mut attempt).unwrap();
+        store.begin_dispatch(&mut attempt).unwrap();
+        store
+            .record_payment(
+                &mut attempt,
+                WalletPaymentResult {
+                    payment_id: "payment".to_string(),
+                    status: "pending".to_string(),
+                    status_message: String::new(),
+                    amount: Some(21),
+                    fees: 0,
+                    created_at_ms: 100,
+                    finalized_at_ms: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .paying_attempts_for_relay("https://relay.example")
+                .unwrap(),
+            vec![attempt]
+        );
+        assert!(store
+            .paying_attempts_for_relay("https://other.example")
+            .unwrap()
+            .is_empty());
     }
 }

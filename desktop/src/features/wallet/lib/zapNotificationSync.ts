@@ -1,19 +1,43 @@
 import type { RelaySubscriptionFilter } from "@/shared/api/relayClientShared";
 import type { RelayEvent } from "@/shared/api/types";
 import { KIND_BOLT12_ZAP } from "@/shared/constants/kinds";
-import type { WalletTransactionPage } from "../types";
 
-const CURSOR_STORAGE_PREFIX = "buzz-wallet-zap-sync.v1";
+// v3 replays proofs whose cursor was advanced before Lexe indexed the inbound
+// payment, leaving received-zap history permanently empty.
+const CURSOR_STORAGE_PREFIX = "buzz-wallet-zap-sync.v3";
 export const ZAP_SYNC_OVERLAP_SECONDS = 5;
 export const ZAP_SYNC_PAGE_LIMIT = 500;
 const MAX_ZAP_SYNC_PAGES = 10_000;
-const MAX_WALLET_TRANSACTION_PAGES = 500;
 
 export type ZapSyncScope = {
   ownerPubkey: string;
   recipientPubkey: string;
   relayUrl: string;
 };
+
+export type ZapCatchupOutcome = {
+  createdAt: number;
+  status: "processed" | "retry";
+};
+
+/**
+ * Advance through a catch-up batch without skipping the first unresolved proof.
+ * Later proofs may still be processed and persisted while the cursor remains
+ * pinned close enough for the unresolved proof to be replayed.
+ */
+export function zapCatchupProgress(
+  currentCursor: number,
+  outcomes: readonly ZapCatchupOutcome[],
+): { cursor: number; hasPending: boolean } {
+  let cursor = currentCursor;
+  for (const outcome of outcomes) {
+    cursor = Math.max(cursor, outcome.createdAt);
+    if (outcome.status === "retry") {
+      return { cursor, hasPending: true };
+    }
+  }
+  return { cursor, hasPending: false };
+}
 
 function normalizedScopePart(value: string) {
   return encodeURIComponent(value.trim().toLowerCase());
@@ -121,44 +145,4 @@ export async function fetchZapCatchupEvents(input: {
   }
 
   throw new Error("Zap history exceeded the page safety limit.");
-}
-
-/** Correlate a proof against the complete inbound wallet transaction history. */
-export async function hasSettledZapPayment(input: {
-  amount: number;
-  intentEventId: string;
-  listTransactions: (
-    cursor?: string,
-    sync?: boolean,
-  ) => Promise<WalletTransactionPage>;
-}): Promise<boolean> {
-  let cursor: string | undefined;
-  const seenCursors = new Set<string>();
-
-  for (
-    let pageIndex = 0;
-    pageIndex < MAX_WALLET_TRANSACTION_PAGES;
-    pageIndex += 1
-  ) {
-    const page = await input.listTransactions(cursor, cursor === undefined);
-    if (
-      page.transactions.some(
-        (transaction) =>
-          transaction.direction === "inbound" &&
-          transaction.status === "completed" &&
-          transaction.amount === input.amount &&
-          transaction.payerNote === `nostr:nipB1:${input.intentEventId}`,
-      )
-    ) {
-      return true;
-    }
-    if (!page.nextCursor) return false;
-    if (seenCursors.has(page.nextCursor)) {
-      throw new Error("Wallet transaction history repeated a cursor.");
-    }
-    seenCursors.add(page.nextCursor);
-    cursor = page.nextCursor;
-  }
-
-  throw new Error("Wallet transaction history exceeded the page safety limit.");
 }

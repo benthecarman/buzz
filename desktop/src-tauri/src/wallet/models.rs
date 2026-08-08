@@ -116,8 +116,7 @@ pub struct WalletTransaction {
     pub amount: Option<u64>,
     pub fees: u64,
     pub note: Option<String>,
-    /// Public payer metadata supplied with an inbound BOLT12 payment. Zap
-    /// notifications use this to bind a settled payment to its signed intent.
+    /// Public payer metadata supplied with an inbound BOLT12 payment.
     pub payer_note: Option<String>,
     /// Provider-canonical identifier of the BOLT12 offer used by the payment.
     pub offer_id: Option<String>,
@@ -148,6 +147,21 @@ pub struct WalletRecipientOffer {
     pub offer: String,
     pub offer_event_json: String,
     pub offer_event_id: String,
+}
+
+/// A signed NIP-B1 zap whose embedded offer was parsed by rust-lightning.
+///
+/// Amounts are whole satoshis. Renderer code must use this native result
+/// instead of interpreting BOLT12 strings itself.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletVerifiedZapEvent {
+    pub event_id: String,
+    pub amount: u64,
+    pub comment: String,
+    pub intent_event_id: String,
+    pub recipient_pubkey: String,
+    pub target_event_id: Option<String>,
 }
 
 /// A request to send an attributed profile or event zap.
@@ -190,8 +204,8 @@ pub struct WalletProfileZapDraft {
 
 /// Result of the experimental profile-payment flow.
 ///
-/// No public kind `9736` is emitted until the provider exposes the settled
-/// `lnp` payer proof required by the proposal.
+/// The current provider publishes a temporary placeholder receipt after local
+/// settlement; `proof_published` reports whether the relay accepted it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletProfileZapResult {
@@ -213,20 +227,6 @@ pub struct WalletNwcRequest {
     pub destination: String,
     pub payer_note: String,
     pub request_id: String,
-}
-
-/// A settled message payment retained locally until a payer proof is available.
-///
-/// This is display-only state. It is not a NIP-B1 proof and is never published.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WalletPlaceholderMessageZap {
-    pub intent_event_id: String,
-    pub target_event_id: String,
-    pub recipient_pubkey: String,
-    pub amount: u64,
-    pub comment: Option<String>,
-    pub settled_at_ms: u64,
 }
 
 /// A stable, serializable wallet error returned through Tauri.
