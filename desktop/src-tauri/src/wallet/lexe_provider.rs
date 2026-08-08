@@ -5,7 +5,7 @@ use lexe::{
     config::WalletEnvConfig,
     types::{
         auth::RootSeed,
-        bitcoin::Amount,
+        bitcoin::{Amount, Offer},
         command::{
             AnalyzeRequest, CreateInvoiceRequest, CreateOfferRequest, PayOfferRequest, PayRequest,
             PaymentSyncSummary,
@@ -59,13 +59,13 @@ fn reconciliation_fields_match(
 }
 
 pub(super) fn canonical_offer(value: &str) -> bool {
-    lexe::types::bitcoin::Offer::from_str(value)
+    Offer::from_str(value)
         .map(|offer| offer.to_string() == value)
         .unwrap_or(false)
 }
 
 pub(crate) fn canonical_offer_id(value: &str) -> Option<String> {
-    lexe::types::bitcoin::Offer::from_str(value)
+    Offer::from_str(value)
         .ok()
         .and_then(|offer| serde_json::to_value(offer.id()).ok())
         .and_then(|value| value.as_str().map(str::to_owned))
@@ -332,7 +332,7 @@ impl WalletProvider for LexeProvider {
         &self,
         request: WalletOfferSendRequest,
     ) -> Result<WalletPaymentResult, WalletError> {
-        let offer = lexe::types::bitcoin::Offer::from_str(&request.offer)
+        let offer = Offer::from_str(&request.offer)
             .map_err(|error| WalletError::new("invalid_destination", error.to_string()))?;
         let payment = self
             .wallet
@@ -353,7 +353,7 @@ impl WalletProvider for LexeProvider {
     ) -> Result<Option<WalletPaymentResult>, WalletError> {
         let expected_offer_id = payment_match
             .expected_offer
-            .map(lexe::types::bitcoin::Offer::from_str)
+            .map(Offer::from_str)
             .transpose()
             .map_err(|error| WalletError::new("offer_invalid", error.to_string()))?
             .map(|offer| offer.id());

@@ -17,6 +17,7 @@ import type {
   WalletSendRequest,
   WalletStatus,
   WalletTransactionPage,
+  WalletVerifiedZapEvent,
 } from "./types";
 import type { RelayEvent } from "@/shared/api/types";
 
@@ -108,6 +109,18 @@ export function listWalletTransactions(
 
 export function pollWalletUpdates(): Promise<boolean> {
   return invoke<boolean>("wallet_poll_updates");
+}
+
+export function parseWalletZapEvents(
+  events: RelayEvent[],
+  allowedRecipientPubkeys?: readonly string[],
+): Promise<WalletVerifiedZapEvent[]> {
+  return invoke<WalletVerifiedZapEvent[]>("wallet_parse_zap_events", {
+    events,
+    allowedRecipientPubkeys: allowedRecipientPubkeys
+      ? [...allowedRecipientPubkeys]
+      : null,
+  });
 }
 
 export function revealWalletRecoveryPhrase(): Promise<string> {

@@ -150,6 +150,21 @@ pub struct WalletRecipientOffer {
     pub offer_event_id: String,
 }
 
+/// A signed NIP-B1 zap whose embedded offer was parsed by rust-lightning.
+///
+/// Amounts are whole satoshis. Renderer code must use this native result
+/// instead of interpreting BOLT12 strings itself.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletVerifiedZapEvent {
+    pub event_id: String,
+    pub amount: u64,
+    pub comment: String,
+    pub intent_event_id: String,
+    pub recipient_pubkey: String,
+    pub target_event_id: Option<String>,
+}
+
 /// A request to send an attributed profile or event zap.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]

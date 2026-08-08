@@ -11778,6 +11778,9 @@ export function maybeInstallE2eTauriMocks() {
         };
       case "wallet_poll_updates":
         return activeConfig?.mock?.walletPollUpdates?.shift() ?? false;
+      case "wallet_parse_zap_events":
+        // Native rust-lightning validation is outside the browser-only bridge.
+        return [];
       case "wallet_send":
         return {
           paymentId: walletPaymentId("ln"),

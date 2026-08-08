@@ -75,6 +75,16 @@ export interface WalletRecipientOffer {
   offerEventId: string;
 }
 
+/** A NIP-B1 zap validated natively, including rust-lightning offer parsing. */
+export interface WalletVerifiedZapEvent {
+  eventId: string;
+  amount: number;
+  comment: string;
+  intentEventId: string;
+  recipientPubkey: string;
+  targetEventId: string | null;
+}
+
 export interface WalletProfileZapRequest {
   recipientPubkey: string;
   amount: number;

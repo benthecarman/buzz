@@ -3,7 +3,8 @@ import type { RelayEvent } from "@/shared/api/types";
 import { KIND_BOLT12_ZAP } from "@/shared/constants/kinds";
 import type { WalletTransactionPage } from "../types";
 
-const CURSOR_STORAGE_PREFIX = "buzz-wallet-zap-sync.v1";
+// v2 replays events skipped by the former checksum-based BOLT12 validator.
+const CURSOR_STORAGE_PREFIX = "buzz-wallet-zap-sync.v2";
 export const ZAP_SYNC_OVERLAP_SECONDS = 5;
 export const ZAP_SYNC_PAGE_LIMIT = 500;
 const MAX_ZAP_SYNC_PAGES = 10_000;

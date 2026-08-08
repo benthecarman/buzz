@@ -101,6 +101,10 @@ test("zap sync cursor is validated and scoped by relay and recipient", () => {
     recipientPubkey: "recipient-a",
     relayUrl: "wss://relay.example/",
   };
+  assert.match(
+    zapSyncCursorStorageKey(ownerScope),
+    /^buzz-wallet-zap-sync\.v2:/,
+  );
   assert.notEqual(
     zapSyncCursorStorageKey(ownerScope),
     zapSyncCursorStorageKey({

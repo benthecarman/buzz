@@ -130,6 +130,62 @@ test("a far-future deletion still hides an old message", () => {
   );
 });
 
+test("message zaps render only from native-verified results", () => {
+  const message = streamMessage();
+  const zapEvent = {
+    id: HEX64_B,
+    pubkey: PUBKEY_B,
+    kind: 9736,
+    created_at: 1_700_000_001,
+    content: "nice work",
+    tags: [["e", message.id]],
+    sig: "sig",
+  };
+  const withoutNativeValidation = formatTimelineMessages(
+    [message, zapEvent],
+    null,
+    undefined,
+    null,
+  );
+  assert.equal(withoutNativeValidation[0].zaps, undefined);
+
+  const verifiedZapEvents = new Map([
+    [
+      zapEvent.id,
+      {
+        eventId: zapEvent.id,
+        amount: 21,
+        comment: "nice work",
+        intentEventId: "intent-id",
+        recipientPubkey: PUBKEY_A,
+        targetEventId: message.id,
+      },
+    ],
+  ]);
+  const withNativeValidation = formatTimelineMessages(
+    [message, zapEvent],
+    null,
+    undefined,
+    null,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    verifiedZapEvents,
+  );
+  assert.deepEqual(withNativeValidation[0].zaps, [
+    {
+      amount: 21,
+      comment: "nice work",
+      intentEventId: "intent-id",
+      payerPubkey: PUBKEY_B,
+      recipientPubkey: PUBKEY_A,
+    },
+  ]);
+});
+
 test("kind:5 (NIP-09) deletion hides the target message", () => {
   const events = [streamMessage(), deletionEvent(5, HEX64_A)];
   const out = formatTimelineMessages(events, null, undefined, null);

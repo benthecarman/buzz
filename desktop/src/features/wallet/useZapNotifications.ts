@@ -10,9 +10,10 @@ import type { NotificationSettings } from "@/features/notifications/hooks";
 import { relayClient } from "@/shared/api/relayClient";
 import type { RelayEvent } from "@/shared/api/types";
 import { useFeatureEnabled } from "@/shared/features";
-import { listWalletTransactions } from "./api";
+import type { WalletVerifiedZapEvent } from "./types";
+import { listWalletTransactions, parseWalletZapEvents } from "./api";
 import { formatBitcoin } from "./lib/formatBitcoin";
-import { parseTaggedZapEvent, zapSubscriptionFilter } from "./lib/zapEvents";
+import { zapSubscriptionFilter } from "./lib/zapEvents";
 import { persistZapHistoryItem } from "./lib/zapHistory";
 import {
   fetchZapCatchupEvents,
@@ -57,7 +58,17 @@ export function useZapNotifications(
     async (event: RelayEvent): Promise<ZapProcessingResult> => {
       const owner = ownerPubkey?.trim().toLowerCase();
       if (!owner) return { status: "processed", recipientPubkey: null };
-      const zap = parseTaggedZapEvent(event, new Set(recipientNames.keys()));
+      let parsedZaps: WalletVerifiedZapEvent[];
+      try {
+        parsedZaps = await parseWalletZapEvents(
+          [event],
+          [...recipientNames.keys()],
+        );
+      } catch (error) {
+        console.error("Failed to validate tagged zap", error);
+        return { status: "retry", recipientPubkey: null };
+      }
+      const [zap] = parsedZaps;
       if (!zap) return { status: "processed", recipientPubkey: null };
 
       try {

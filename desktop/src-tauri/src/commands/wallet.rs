@@ -62,13 +62,14 @@ pub(crate) mod enabled {
                 WalletDestinationAnalysis, WalletEnableResult, WalletError, WalletFundingRequest,
                 WalletOfferPublicationResult, WalletPaymentResult, WalletProfileZapResult,
                 WalletRecipientOffer, WalletSendRequest, WalletStatus, WalletTransactionPage,
+                WalletVerifiedZapEvent,
             },
             offer_conformance::OfferPublicationTrace,
             provider::{WalletPaymentMatch, WalletProvider},
             send::{SendAttempt, SendAttemptState, SendAttemptStore},
             zap::{
-                build_offer_announcement, build_offer_withdrawal, recipient_offer,
-                validate_offer_event, ZapAttempt, ZapAttemptStore,
+                build_offer_announcement, build_offer_withdrawal, parse_tagged_zap_event,
+                recipient_offer, validate_offer_event, ZapAttempt, ZapAttemptStore,
             },
             WalletManager,
         },
@@ -94,6 +95,30 @@ pub(crate) mod enabled {
     fn wallet_manager() -> &'static WalletManager {
         static MANAGER: OnceLock<WalletManager> = OnceLock::new();
         MANAGER.get_or_init(WalletManager::default)
+    }
+
+    /// Validate untrusted relay zap events in one native call. Invalid events
+    /// are omitted because they are normal noise on a public relay.
+    #[tauri::command]
+    pub fn wallet_parse_zap_events(
+        events: Vec<serde_json::Value>,
+        allowed_recipient_pubkeys: Option<Vec<String>>,
+    ) -> Vec<WalletVerifiedZapEvent> {
+        let allowed = allowed_recipient_pubkeys.map(|pubkeys| {
+            pubkeys
+                .into_iter()
+                .map(|pubkey| pubkey.trim().to_ascii_lowercase())
+                .collect::<HashSet<_>>()
+        });
+        events
+            .iter()
+            .filter_map(|event| parse_tagged_zap_event(event).ok())
+            .filter(|zap| {
+                allowed
+                    .as_ref()
+                    .is_none_or(|pubkeys| pubkeys.contains(&zap.recipient_pubkey))
+            })
+            .collect()
     }
 
     fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, WalletError> {
@@ -887,6 +912,14 @@ mod disabled {
         ) -> serde_json::Value
     );
     disabled_async_command!(wallet_poll_updates() -> bool);
+    #[tauri::command]
+    pub fn wallet_parse_zap_events(
+        events: Vec<serde_json::Value>,
+        allowed_recipient_pubkeys: Option<Vec<String>>,
+    ) -> Vec<serde_json::Value> {
+        let _ = (events, allowed_recipient_pubkeys);
+        Vec::new()
+    }
     disabled_async_command!(
         wallet_get_recipient_offer(recipient_pubkey: String) -> serde_json::Value
     );

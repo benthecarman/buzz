@@ -9,6 +9,7 @@ import { formatTimelineMessages } from "@/features/messages/lib/formatTimelineMe
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 import { KIND_REACTION } from "@/shared/constants/kinds";
+import { useVerifiedZapEvents } from "@/features/wallet/lib/useVerifiedZapEvents";
 
 type UseHomeInboxContextMessagesOptions = {
   channelMessages?: RelayEvent[];
@@ -37,11 +38,9 @@ export function useHomeInboxContextMessages({
   selectedItem,
   structuralEvents = [],
 }: UseHomeInboxContextMessagesOptions): InboxContextMessage[] {
-  return React.useMemo(() => {
+  const timelineEvents = React.useMemo(() => {
     if (!selectedItem) return [];
-
-    const eventById = new Map(events.map((event) => [event.id, event]));
-    const contextEventIds = new Set(eventById.keys());
+    const contextEventIds = new Set(events.map((event) => event.id));
     const contextReactions = [
       ...(channelMessages ?? []),
       ...reactionEvents,
@@ -50,11 +49,19 @@ export function useHomeInboxContextMessages({
       const targetId = getReactionTargetId(event.tags);
       return Boolean(targetId && contextEventIds.has(targetId));
     });
+    return [...events, ...structuralEvents, ...contextReactions];
+  }, [channelMessages, events, reactionEvents, selectedItem, structuralEvents]);
+  const verifiedZapEvents = useVerifiedZapEvents(timelineEvents);
+
+  return React.useMemo(() => {
+    if (!selectedItem) return [];
+
+    const eventById = new Map(events.map((event) => [event.id, event]));
     const currentUserAvatarUrl = currentPubkey
       ? (profiles?.[currentPubkey.toLowerCase()]?.avatarUrl ?? null)
       : null;
     const timelineMessages = formatTimelineMessages(
-      [...events, ...structuralEvents, ...contextReactions],
+      timelineEvents,
       selectedChannel,
       currentPubkey,
       currentUserAvatarUrl,
@@ -64,6 +71,7 @@ export function useHomeInboxContextMessages({
       undefined,
       relaySelfPubkey,
       ownerProfiles,
+      verifiedZapEvents,
     );
 
     return timelineMessages.map((message) =>
@@ -75,16 +83,15 @@ export function useHomeInboxContextMessages({
       }),
     );
   }, [
-    channelMessages,
     currentPubkey,
     events,
     ownerProfiles,
     profiles,
-    reactionEvents,
     relaySelfPubkey,
     selectedChannel,
     selectedEventId,
     selectedItem,
-    structuralEvents,
+    timelineEvents,
+    verifiedZapEvents,
   ]);
 }

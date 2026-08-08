@@ -57,6 +57,7 @@ import { useChannelTyping } from "@/features/messages/useChannelTyping";
 import type { TimelineMessage } from "@/features/messages/types";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { useRelaySelfQuery } from "@/features/moderation/hooks";
+import { useVerifiedZapEvents } from "@/features/wallet/lib/useVerifiedZapEvents";
 import type { RelayEvent, RespondToMode, SearchHit } from "@/shared/api/types";
 import { useChannelFind } from "@/features/search/useChannelFind";
 import { ChannelScreenLoadingFallback } from "@/features/channels/ui/ChannelScreenLoadingFallback";
@@ -393,6 +394,11 @@ export function ChannelScreen({
     }
     return { personaLookup: pLookup, respondToLookup: rLookup };
   }, [managedAgentsQuery.data, personasQuery.data]);
+  const zapValidationEvents = React.useMemo(
+    () => [...resolvedMessages, ...threadReplyEvents],
+    [resolvedMessages, threadReplyEvents],
+  );
+  const verifiedZapEvents = useVerifiedZapEvents(zapValidationEvents);
   const timelineMessages = React.useMemo(
     () =>
       formatTimelineMessages(
@@ -406,6 +412,7 @@ export function ChannelScreen({
         respondToLookup,
         relaySelfPubkey,
         messageOwnerProfiles,
+        verifiedZapEvents,
       ),
     [
       activeChannel,
@@ -418,6 +425,7 @@ export function ChannelScreen({
       relaySelfPubkey,
       respondToLookup,
       resolvedMessages,
+      verifiedZapEvents,
     ],
   );
   const handleFindSearchHit = React.useCallback((hit: SearchHit) => {
@@ -448,6 +456,7 @@ export function ChannelScreen({
     personaLookup,
     respondToLookup,
     relaySelfPubkey,
+    verifiedZapEvents,
   });
   const {
     firstUnreadMessageId,

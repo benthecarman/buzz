@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::models::{
     WalletError, WalletPaymentResult, WalletPlaceholderMessageZap, WalletProfileZapDraft,
-    WalletProfileZapResult, WalletRecipientOffer,
+    WalletProfileZapResult, WalletRecipientOffer, WalletVerifiedZapEvent,
 };
 use super::{conformance, lexe_provider::canonical_offer};
 
@@ -111,6 +111,175 @@ pub fn recipient_offer(
         offer,
         offer_event_json: event.as_json(),
         offer_event_id: event.id.to_hex(),
+    })
+}
+
+fn exact_event_tag<'a>(event: &'a Event, name: &str) -> Result<&'a str, WalletError> {
+    let matching = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().map(String::as_str) == Some(name))
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(WalletError::new(
+            "invalid_zap",
+            format!("zap must contain exactly one {name} tag"),
+        ));
+    }
+    matching[0]
+        .as_slice()
+        .get(1)
+        .map(String::as_str)
+        .ok_or_else(|| WalletError::new("invalid_zap", format!("zap {name} tag has no value")))
+}
+
+fn optional_event_tag<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, WalletError> {
+    let matching = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().map(String::as_str) == Some(name))
+        .collect::<Vec<_>>();
+    if matching.len() > 1 {
+        return Err(WalletError::new(
+            "invalid_zap",
+            format!("zap must not contain duplicate {name} tags"),
+        ));
+    }
+    matching
+        .first()
+        .map(|tag| {
+            tag.as_slice().get(1).map(String::as_str).ok_or_else(|| {
+                WalletError::new("invalid_zap", format!("zap {name} tag has no value"))
+            })
+        })
+        .transpose()
+}
+
+fn matching_optional_tag(outer: &Event, intent: &Event, name: &str) -> Result<(), WalletError> {
+    if optional_event_tag(outer, name)? != optional_event_tag(intent, name)? {
+        return Err(WalletError::new(
+            "invalid_zap",
+            format!("zap {name} tag does not match its intent"),
+        ));
+    }
+    Ok(())
+}
+
+fn valid_payer_proof_envelope(value: &str) -> bool {
+    const BOLT12_ALPHABET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    value
+        .strip_prefix("lnp1")
+        .is_some_and(|data| !data.is_empty() && data.chars().all(|ch| BOLT12_ALPHABET.contains(ch)))
+}
+
+/// Validate a NIP-B1 proof chain and parse every embedded BOLT12 offer through
+/// rust-lightning (via Lexe's `Offer` newtype adapter).
+pub(crate) fn parse_tagged_zap_event(
+    raw_event: &serde_json::Value,
+) -> Result<WalletVerifiedZapEvent, WalletError> {
+    let event = Event::from_json(raw_event.to_string())
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    event
+        .verify()
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    if event.kind != Kind::Custom(KIND_BOLT12_ZAP as u16) {
+        return Err(WalletError::new("invalid_zap", "event is not a BOLT12 zap"));
+    }
+
+    let recipient = exact_event_tag(&event, "p")?.to_ascii_lowercase();
+    let amount_text = exact_event_tag(&event, "amount")?;
+    let description = exact_event_tag(&event, "description")?;
+    let offer_event_json = exact_event_tag(&event, "offer_event")?;
+    let proof = exact_event_tag(&event, "proof")?;
+    if proof != PLACEHOLDER_PAYER_PROOF && !valid_payer_proof_envelope(proof) {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap has an invalid payer-proof envelope",
+        ));
+    }
+
+    let amount_msats = amount_text
+        .parse::<u64>()
+        .map_err(|_| WalletError::new("invalid_zap", "zap amount is not an integer"))?;
+    if amount_msats == 0 || !amount_msats.is_multiple_of(1_000) {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap amount must be a positive whole-satoshi value",
+        ));
+    }
+
+    let intent = Event::from_json(description)
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    intent
+        .verify()
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    let offer_event = Event::from_json(offer_event_json)
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+    offer_event
+        .verify()
+        .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+
+    if intent.kind != Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16)
+        || intent.pubkey != event.pubkey
+        || intent.content != event.content
+        || exact_event_tag(&intent, "p")?.to_ascii_lowercase() != recipient
+        || exact_event_tag(&intent, "amount")? != amount_text
+        || exact_event_tag(&intent, "offer_event")? != offer_event_json
+    {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap does not match its signed intent",
+        ));
+    }
+
+    let zap_id = exact_event_tag(&intent, "zap_id")?;
+    if zap_id.len() < 32
+        || !zap_id.len().is_multiple_of(2)
+        || !zap_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+    {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap intent has an invalid zap_id",
+        ));
+    }
+
+    for name in ["e", "a", "k"] {
+        matching_optional_tag(&event, &intent, name)?;
+    }
+    let target_event_id = optional_event_tag(&event, "e")?.map(str::to_string);
+    let address_target = optional_event_tag(&event, "a")?;
+    if target_event_id.is_some() && address_target.is_some() {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap cannot target both an event and an address",
+        ));
+    }
+
+    recipient_offer(&offer_event, &recipient)?;
+    if offer_event.created_at > intent.created_at {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap intent predates its offer announcement",
+        ));
+    }
+    if optional_event_tag(&event, "P")?
+        .is_some_and(|payer| payer.to_ascii_lowercase() != event.pubkey.to_hex())
+    {
+        return Err(WalletError::new(
+            "invalid_zap",
+            "zap payer tag does not match its signer",
+        ));
+    }
+
+    Ok(WalletVerifiedZapEvent {
+        event_id: event.id.to_hex(),
+        amount: amount_msats / 1_000,
+        comment: intent.content,
+        intent_event_id: intent.id.to_hex(),
+        recipient_pubkey: recipient,
+        target_event_id,
     })
 }
 
@@ -805,6 +974,43 @@ mod tests {
         recipient_offer(&event, &keys.public_key().to_hex()).unwrap()
     }
 
+    fn tagged_zap_with_offer(offer: &str) -> (Event, Event) {
+        let payer = Keys::generate();
+        let recipient = Keys::generate();
+        let offer_event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
+            .tag(Tag::parse(["offer", offer]).unwrap())
+            .sign_with_keys(&recipient)
+            .unwrap();
+        let target_event_id = "ab".repeat(32);
+        let intent = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), "nice work")
+            .tags([
+                Tag::parse(["p", recipient.public_key().to_hex().as_str()]).unwrap(),
+                Tag::parse(["amount", "21000"]).unwrap(),
+                Tag::parse(["offer_event", offer_event.as_json().as_str()]).unwrap(),
+                Tag::parse(["zap_id", "00112233445566778899aabbccddeeff"]).unwrap(),
+                Tag::parse(["e", target_event_id.as_str()]).unwrap(),
+                Tag::parse(["k", "40002"]).unwrap(),
+            ])
+            .sign_with_keys(&payer)
+            .unwrap();
+        let mut proof_tags = intent
+            .tags
+            .iter()
+            .filter(|tag| tag.as_slice().first().map(String::as_str) != Some("zap_id"))
+            .cloned()
+            .collect::<Vec<_>>();
+        proof_tags.extend([
+            Tag::parse(["description", intent.as_json().as_str()]).unwrap(),
+            Tag::parse(["P", payer.public_key().to_hex().as_str()]).unwrap(),
+            Tag::parse(["proof", PLACEHOLDER_PAYER_PROOF]).unwrap(),
+        ]);
+        let zap = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), "nice work")
+            .tags(proof_tags)
+            .sign_with_keys(&payer)
+            .unwrap();
+        (intent, zap)
+    }
+
     #[test]
     fn intent_matches_protocol_shape_and_uses_nip_b1_note() {
         let payer = Keys::generate();
@@ -879,6 +1085,28 @@ mod tests {
         assert!(build_offer_announcement(&VALID_OFFER.to_ascii_uppercase()).is_err());
         assert!(build_offer_announcement(&VALID_OFFER[..VALID_OFFER.len() - 1]).is_err());
         assert!(build_offer_announcement(&format!("{VALID_OFFER} ")).is_err());
+    }
+
+    #[test]
+    fn parses_tagged_zap_with_rust_lightning_offer() {
+        let (intent, zap) = tagged_zap_with_offer(VALID_OFFER);
+        let raw = serde_json::from_str(&zap.as_json()).unwrap();
+        let parsed = parse_tagged_zap_event(&raw).unwrap();
+        assert_eq!(parsed.event_id, zap.id.to_hex());
+        assert_eq!(parsed.intent_event_id, intent.id.to_hex());
+        assert_eq!(parsed.amount, 21);
+        assert_eq!(parsed.comment, "nice work");
+        assert_eq!(parsed.target_event_id, Some("ab".repeat(32)));
+    }
+
+    #[test]
+    fn tagged_zap_rejects_offer_that_rust_lightning_cannot_parse() {
+        let (_, zap) = tagged_zap_with_offer(&VALID_OFFER[..VALID_OFFER.len() - 1]);
+        let raw = serde_json::from_str(&zap.as_json()).unwrap();
+        assert_eq!(
+            parse_tagged_zap_event(&raw).unwrap_err().code,
+            "offer_invalid"
+        );
     }
 
     #[test]
