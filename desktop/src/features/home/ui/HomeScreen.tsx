@@ -3,6 +3,10 @@ import * as React from "react";
 import { useAppShell } from "@/app/AppShellContext";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { HomeView } from "@/features/home/ui/HomeView";
+import {
+  useZapHistory,
+  zapHistoryFeedItems,
+} from "@/features/wallet/lib/zapHistory";
 import type { HomeFeedResponse } from "@/shared/api/types";
 import {
   isRelayUnreachableError,
@@ -26,24 +30,43 @@ export function HomeScreen({
 }: HomeScreenProps) {
   const homeFeedQuery = useHomeFeedQuery();
   const { threadActivityFeedItems } = useAppShell();
+  const zapHistory = useZapHistory(currentPubkey);
+  const zapFeedItems = React.useMemo(
+    () => zapHistoryFeedItems(zapHistory),
+    [zapHistory],
+  );
 
   const augmentedFeed = React.useMemo((): HomeFeedResponse | undefined => {
-    if (!homeFeedQuery.data) return undefined;
-    if (threadActivityFeedItems.length === 0) {
+    const extraActivity = [...threadActivityFeedItems, ...zapFeedItems];
+    if (!homeFeedQuery.data && extraActivity.length === 0) return undefined;
+    if (homeFeedQuery.data && extraActivity.length === 0) {
       return homeFeedQuery.data;
     }
 
-    return {
-      ...homeFeedQuery.data,
+    const base = homeFeedQuery.data ?? {
       feed: {
-        ...homeFeedQuery.data.feed,
+        mentions: [],
+        needsAction: [],
+        activity: [],
+        agentActivity: [],
+      },
+      meta: { since: 0, total: 0, generatedAt: 0 },
+    };
+    const existingActivityIds = new Set(
+      base.feed.activity.map((item) => item.id),
+    );
+
+    return {
+      ...base,
+      feed: {
+        ...base.feed,
         activity: [
-          ...homeFeedQuery.data.feed.activity,
-          ...threadActivityFeedItems,
+          ...base.feed.activity,
+          ...extraActivity.filter((item) => !existingActivityIds.has(item.id)),
         ],
       },
     };
-  }, [homeFeedQuery.data, threadActivityFeedItems]);
+  }, [homeFeedQuery.data, threadActivityFeedItems, zapFeedItems]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">

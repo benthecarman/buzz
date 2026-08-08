@@ -927,6 +927,8 @@ pub async fn create_managed_agent(
     profile_sync_error =
         super::agent_models::flush_managed_agent_policy(&app, &state, profile_sync_error).await;
 
+    super::agents_wallet::provision_agent_offer(&app, &state, &agent_keys, &pubkey, &input).await;
+    // ── Phase 5: provider deploy (async, outside lock) ───────────────────────
     let spawn_error = if input.spawn_after_create && input.backend != BackendKind::Local {
         if let BackendKind::Provider { ref id, ref config } = input.backend {
             let agent_json = {

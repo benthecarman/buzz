@@ -1,7 +1,8 @@
 ----------------------- MODULE WalletPaymentAttempts -----------------------
 (***************************************************************************)
 (* Durable payment-attempt state machine used by the experimental desktop  *)
-(* wallet. The safety boundary is persistence before provider dispatch:     *)
+(* wallet, including approved NWC-321 requests from managed agents. The     *)
+(* safety boundary is persistence before provider dispatch:                 *)
 (* after status becomes Paying, retries may only reconcile.                 *)
 (*                                                                         *)
 (* The runtime checker validates a product of these single-attempt          *)

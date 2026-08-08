@@ -127,6 +127,10 @@ test("Inbox All includes each personally relevant message source", () => {
         tags: [["a", `30617:${"a".repeat(64)}:buzz`]],
       },
     },
+    {
+      categories: ["activity"],
+      item: { channelType: null, kind: 9736, pubkey: "human", tags: [] },
+    },
   ];
 
   for (const item of cases) {

@@ -131,9 +131,7 @@ export function SendBitcoinDialog({
         toast.success(
           `${formatBitcoin(result.payment.amount ?? parsedAmount)} sent`,
           {
-            description: targetEventId
-              ? "The payment settled. A local placeholder receipt now appears under the message while payer proofs are unavailable."
-              : "The payment settled. Buzz kept the intent local because the wallet cannot produce an lnp payer proof yet.",
+            description: "The payment settled and its zap was published.",
           },
         );
         setReconciling(false);

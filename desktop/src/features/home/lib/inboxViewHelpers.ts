@@ -16,7 +16,7 @@ import type {
   RelayEvent,
   UserProfileSummary,
 } from "@/shared/api/types";
-import { KIND_REMINDER } from "@/shared/constants/kinds";
+import { KIND_BOLT12_ZAP, KIND_REMINDER } from "@/shared/constants/kinds";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 
@@ -93,6 +93,7 @@ export function matchesInboxAllView(
     [item.item, ...(item.groupItems ?? [])].some(
       (groupItem) => groupItem && isProjectInboxItem(groupItem),
     ) ||
+    representative?.kind === KIND_BOLT12_ZAP ||
     item.categories.includes("needs_action") ||
     Boolean(
       representative &&

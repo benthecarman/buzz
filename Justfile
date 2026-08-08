@@ -335,9 +335,11 @@ test-unit:
         ./scripts/run-tests.sh unit
     fi
 
-# Model-check the wallet's durable payment-attempt transition system.
+# Model-check and replay the wallet payment and offer transition systems.
 wallet-formal:
     ./scripts/check-wallet-payment-model.sh
+    cargo test -p buzz-conformance --test wallet_offer_replay_fixtures
+    cargo test -p buzz-conformance --test wallet_offer_proptest
 
 # Run integration tests only (starts services if needed)
 test-integration:

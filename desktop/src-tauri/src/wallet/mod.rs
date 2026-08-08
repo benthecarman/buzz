@@ -2,6 +2,7 @@ pub(crate) mod conformance;
 mod lexe_provider;
 mod manager;
 pub mod models;
+pub(crate) mod offer_conformance;
 pub(crate) mod provider;
 mod seed;
 pub(crate) mod send;

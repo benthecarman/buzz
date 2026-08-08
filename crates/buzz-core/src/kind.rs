@@ -70,6 +70,8 @@ pub const KIND_BOLT12_ZAP: u32 = 9736;
 pub const KIND_BOLT12_ZAP_INTENT: u32 = 9737;
 /// Draft BOLT12 zaps: recipient-authored replaceable offer announcement.
 pub const KIND_BOLT12_OFFER: u32 = 10058;
+/// NIP-47: replaceable wallet-service capability announcement.
+pub const KIND_NWC_INFO: u32 = 13194;
 /// NIP-17: Outer envelope for private DMs — hides sender, content, timestamp.
 pub const KIND_GIFT_WRAP: u32 = 1059;
 /// NIP-94: File metadata attachment.
@@ -171,6 +173,8 @@ pub const RESULT_GATED_KINDS: &[u32] = &[KIND_DM_VISIBILITY, KIND_AGENT_TURN_MET
 /// included for filter-layer enforcement but are never stored, so the
 /// storage-layer search defense does not apply to them.
 pub const P_GATED_KINDS: &[u32] = &[
+    KIND_NWC_REQUEST,
+    KIND_NWC_RESPONSE,
     KIND_AGENT_OBSERVER_FRAME,
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
@@ -481,6 +485,10 @@ pub const KIND_PAIRING: u32 = 24134;
 pub const KIND_TYPING_INDICATOR: u32 = 20002;
 /// Ephemeral: owner-scoped encrypted agent observer telemetry and control frame.
 pub const KIND_AGENT_OBSERVER_FRAME: u32 = 24200;
+/// NIP-47: encrypted client-to-wallet-service request.
+pub const KIND_NWC_REQUEST: u32 = 23194;
+/// NIP-47: encrypted wallet-service-to-client response.
+pub const KIND_NWC_RESPONSE: u32 = 23195;
 /// Ephemeral: huddle emoji reaction burst. Channel-scoped to the ephemeral
 /// huddle channel with an `h` tag; never stored in the timeline.
 pub const KIND_HUDDLE_REACTION: u32 = 24810;
@@ -664,6 +672,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_BOLT12_ZAP,
     KIND_BOLT12_ZAP_INTENT,
     KIND_BOLT12_OFFER,
+    KIND_NWC_INFO,
     KIND_GIFT_WRAP,
     KIND_FILE_METADATA,
     KIND_AGENT_PROFILE,
@@ -715,6 +724,8 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_BLOSSOM_AUTH,
     KIND_PAIRING,
     KIND_AGENT_OBSERVER_FRAME,
+    KIND_NWC_REQUEST,
+    KIND_NWC_RESPONSE,
     KIND_HTTP_AUTH,
     KIND_STREAM_MESSAGE,
     KIND_STREAM_MESSAGE_V2,

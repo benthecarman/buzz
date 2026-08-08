@@ -424,7 +424,6 @@ export function AppShell() {
     markChannelRead,
     unreadThreadFeedItems,
   ]);
-
   const { homeBadgeCount, homeBadgeCountExcludingHighPriority } =
     useHomeFeedNotificationState(
       homeFeedQuery.data,

@@ -5,8 +5,11 @@ pub fn bitcoin_compile_enabled() -> bool {
 }
 
 #[cfg(feature = "bitcoin")]
-mod enabled {
-    use std::{collections::HashSet, sync::OnceLock};
+pub(crate) mod enabled {
+    use std::{
+        collections::HashSet,
+        sync::{Arc, OnceLock},
+    };
 
     use buzz_core_pkg::kind::KIND_BOLT12_OFFER;
     use futures_util::future::join_all;
@@ -27,7 +30,8 @@ mod enabled {
                 WalletProfileZapResult, WalletRecipientOffer, WalletSendRequest, WalletStatus,
                 WalletTransactionPage,
             },
-            provider::WalletPaymentMatch,
+            offer_conformance::OfferPublicationTrace,
+            provider::{WalletPaymentMatch, WalletProvider},
             send::{SendAttempt, SendAttemptState, SendAttemptStore},
             zap::{
                 build_offer_announcement, build_offer_withdrawal, recipient_offer,
@@ -41,7 +45,6 @@ mod enabled {
     /// it is declared failed. Generous on purpose: Lightning HTLC expiry
     /// resolves in-flight payments within hours, so a payment the provider
     /// still cannot see a full day after dispatch never left the wallet.
-    /// Failing the attempt un-bricks the UI; it never resends.
     const PAYING_ATTEMPT_GRACE_MS: u64 = 24 * 60 * 60 * 1_000;
 
     fn now_ms() -> u64 {
@@ -66,12 +69,11 @@ mod enabled {
             .map_err(|error| WalletError::unavailable(format!("resolve app data path: {error}")))
     }
 
-    fn is_unsupported_wallet_event_kind(error: &str) -> bool {
+    pub(crate) fn is_unsupported_wallet_event_kind(error: &str) -> bool {
         error.to_ascii_lowercase().contains("unknown event kind")
     }
 
-    /// Resolve the active relay plus every configured community relay to
-    /// deduplicated HTTP API bases. The active relay is always first.
+    /// Resolve deduplicated community HTTP API bases, with the active relay first.
     fn wallet_relay_api_base_urls(
         active_relay_api_base_url: &str,
         relay_urls: Option<Vec<String>>,
@@ -85,15 +87,14 @@ mod enabled {
             .collect()
     }
 
-    /// Publish our own wallet event to the active workspace relay and every
-    /// configured community relay: our own offer announcement must reach
-    /// every community we joined. An "unknown event kind" rejection only
+    /// Publish to each community relay. An "unknown event kind" rejection only
     /// warns: that community does not support wallet events yet. A failure
     /// on the active relay fails the command; failures on the other
     /// community relays only warn.
     async fn publish_wallet_event(
         state: &AppState,
         keys: &nostr::Keys,
+        offer_issuer: Option<&nostr::Keys>,
         relay_api_base_urls: &[String],
         event: &Event,
     ) -> Result<Vec<String>, WalletError> {
@@ -103,11 +104,20 @@ mod enabled {
                 "no community relay is configured",
             ));
         };
+        let wallet_owner = state.signing_keys().map_err(WalletError::unavailable)?;
+        let publication_trace = OfferPublicationTrace::start(
+            event,
+            keys,
+            offer_issuer,
+            &wallet_owner,
+            relay_api_base_urls,
+        );
 
         let mut warnings = Vec::new();
         match submit_signed_event_at_with_keys(event, state, active_relay, keys).await {
-            Ok(_) => {}
+            Ok(_) => publication_trace.relay_result(active_relay, true),
             Err(error) if is_unsupported_wallet_event_kind(&error) => {
+                publication_trace.relay_result(active_relay, false);
                 tracing::warn!(
                     relay = active_relay,
                     error,
@@ -117,10 +127,12 @@ mod enabled {
                 warnings.push(format!("{active_relay}: {error}"));
             }
             Err(error) => {
+                publication_trace.relay_result(active_relay, false);
+                publication_trace.abort();
                 return Err(WalletError::new(
                     "relay_publish_failed",
                     format!("publish wallet event to active community {active_relay}: {error}"),
-                ))
+                ));
             }
         }
 
@@ -134,6 +146,7 @@ mod enabled {
         }))
         .await;
         warnings.extend(results.into_iter().filter_map(|(relay, result)| {
+            publication_trace.relay_result(relay, result.is_ok());
             result.err().map(|error| {
                 tracing::warn!(
                     relay,
@@ -144,12 +157,14 @@ mod enabled {
                 format!("{relay}: {error}")
             })
         }));
+        publication_trace.finish();
         Ok(warnings)
     }
 
     async fn publish_offer(
         state: &AppState,
         keys: &nostr::Keys,
+        offer_issuer: &nostr::Keys,
         relay_api_base_urls: &[String],
         offer: &str,
     ) -> Result<Vec<String>, WalletError> {
@@ -161,7 +176,156 @@ mod enabled {
                     format!("sign BOLT12 offer announcement: {error}"),
                 )
             })?;
-        publish_wallet_event(state, keys, relay_api_base_urls, &event).await
+        publish_wallet_event(state, keys, Some(offer_issuer), relay_api_base_urls, &event).await
+    }
+
+    /// Reuse or create an agent-scoped offer in the user's wallet, then
+    /// broadcast an announcement signed by the agent identity.
+    async fn publish_managed_agent_offer(
+        state: &AppState,
+        agent_keys: &nostr::Keys,
+        user_keys: &nostr::Keys,
+        user_provider: &Arc<dyn WalletProvider>,
+        relay_api_base_urls: &[String],
+    ) -> Result<Vec<String>, WalletError> {
+        let agent_pubkey = agent_keys.public_key().to_hex();
+        let offer = user_provider.scoped_offer(agent_pubkey, false).await?;
+        publish_offer(state, agent_keys, user_keys, relay_api_base_urls, &offer).await
+    }
+
+    /// Give every existing managed agent a distinct offer from the user's
+    /// wallet. This is best-effort per agent: enabling the user's wallet must
+    /// not fail after it has already published because one agent key or relay
+    /// is temporarily unavailable.
+    async fn provision_managed_agent_offers(
+        app: &AppHandle,
+        state: &AppState,
+        user_keys: &nostr::Keys,
+        user_provider: &Arc<dyn WalletProvider>,
+        relay_api_base_urls: &[String],
+    ) -> Vec<String> {
+        let records = {
+            let Ok(_guard) = state.managed_agents_store_lock.lock() else {
+                return vec!["managed agents: agent store lock is unavailable".to_string()];
+            };
+            match crate::managed_agents::load_managed_agents(app) {
+                Ok(records) => records,
+                Err(error) => return vec![format!("managed agents: {error}")],
+            }
+        };
+
+        let results = join_all(records.into_iter().map(|record| async move {
+            let pubkey = record.pubkey;
+            let keys = nostr::Keys::parse(record.private_key_nsec.trim()).map_err(|error| {
+                WalletError::unavailable(format!("load agent {pubkey} signing key: {error}"))
+            })?;
+            if keys.public_key().to_hex() != pubkey {
+                return Err(WalletError::unavailable(format!(
+                    "agent {pubkey} signing key does not match its public key"
+                )));
+            }
+            publish_managed_agent_offer(state, &keys, user_keys, user_provider, relay_api_base_urls)
+                .await
+                .map(|warnings| (pubkey, warnings))
+        }))
+        .await;
+
+        results
+            .into_iter()
+            .flat_map(|result| match result {
+                Ok((pubkey, warnings)) => warnings
+                    .into_iter()
+                    .map(move |warning| format!("agent {pubkey}: {warning}"))
+                    .collect::<Vec<_>>(),
+                Err(error) => vec![error.message],
+            })
+            .collect()
+    }
+
+    /// Withdraw every managed agent's replaceable offer when the owner turns
+    /// the wallet feature off. A failed agent withdrawal is reported alongside
+    /// the existing relay publication warnings and does not prevent the other
+    /// identities from being withdrawn.
+    async fn withdraw_managed_agent_offers(
+        app: &AppHandle,
+        state: &AppState,
+        relay_api_base_urls: &[String],
+    ) -> Vec<String> {
+        let records = {
+            let Ok(_guard) = state.managed_agents_store_lock.lock() else {
+                return vec!["managed agents: agent store lock is unavailable".to_string()];
+            };
+            match crate::managed_agents::load_managed_agents(app) {
+                Ok(records) => records,
+                Err(error) => return vec![format!("managed agents: {error}")],
+            }
+        };
+
+        join_all(records.into_iter().map(|record| async move {
+            let pubkey = record.pubkey;
+            let result = async {
+                let keys = nostr::Keys::parse(record.private_key_nsec.trim()).map_err(|error| {
+                    WalletError::unavailable(format!("load signing key: {error}"))
+                })?;
+                if keys.public_key().to_hex() != pubkey {
+                    return Err(WalletError::unavailable(
+                        "signing key does not match its public key",
+                    ));
+                }
+                let event = build_offer_withdrawal()
+                    .sign_with_keys(&keys)
+                    .map_err(|error| {
+                        WalletError::new(
+                            "relay_publish_failed",
+                            format!("sign BOLT12 offer withdrawal: {error}"),
+                        )
+                    })?;
+                publish_wallet_event(state, &keys, None, relay_api_base_urls, &event).await
+            }
+            .await;
+            (pubkey, result)
+        }))
+        .await
+        .into_iter()
+        .flat_map(|(pubkey, result)| match result {
+            Ok(warnings) => warnings
+                .into_iter()
+                .map(move |warning| format!("agent {pubkey}: {warning}"))
+                .collect::<Vec<_>>(),
+            Err(error) => vec![format!("agent {pubkey}: {}", error.message)],
+        })
+        .collect()
+    }
+
+    /// Create an offer from the user's wallet and publish it for a newly
+    /// created managed agent. The caller supplies the agent signing keys.
+    pub(crate) async fn provision_new_managed_agent_offer(
+        app: &AppHandle,
+        state: &AppState,
+        keys: &nostr::Keys,
+        relay_urls: Vec<String>,
+    ) -> Result<Vec<String>, String> {
+        let relay_api_base_urls =
+            wallet_relay_api_base_urls(&relay_api_base_url_with_override(state), Some(relay_urls));
+        let app_data_dir = app_data_dir(app).map_err(|error| error.message)?;
+        let user_keys = state.signing_keys()?;
+        let user_provider = wallet_manager()
+            .provider_for(&user_keys, &app_data_dir)
+            .await
+            .map_err(|error| error.message)?;
+        user_provider
+            .provision()
+            .await
+            .map_err(|error| error.message)?;
+        publish_managed_agent_offer(
+            state,
+            keys,
+            &user_keys,
+            &user_provider,
+            &relay_api_base_urls,
+        )
+        .await
+        .map_err(|error| error.message)
     }
 
     async fn resolve_recipient_offer(
@@ -212,16 +376,70 @@ mod enabled {
         WalletError::new("payment_failed", payment.status_message.clone())
     }
 
-    fn profile_payment_result(
+    async fn zap_target_channel_id(
+        state: &AppState,
+        keys: &nostr::Keys,
+        attempt: &ZapAttempt,
+    ) -> Result<Option<String>, WalletError> {
+        let (Some(target_event_id), Some(target_event_kind)) = (
+            attempt.target_event_id.as_deref(),
+            attempt.target_event_kind,
+        ) else {
+            return Ok(None);
+        };
+        let active_relay = relay_api_base_url_with_override(state);
+        let events = query_relay_at_with_keys(
+            state,
+            &active_relay,
+            &[serde_json::json!({
+                "ids": [target_event_id],
+                "kinds": [target_event_kind],
+                "limit": 1
+            })],
+            keys,
+            None,
+        )
+        .await
+        .map_err(|error| {
+            WalletError::unavailable(format!("resolve zap target channel: {error}"))
+        })?;
+        Ok(events.into_iter().find_map(|event| {
+            event.tags.iter().find_map(|tag| {
+                let parts = tag.as_slice();
+                (parts.first().map(String::as_str) == Some("h"))
+                    .then(|| parts.get(1).cloned())
+                    .flatten()
+            })
+        }))
+    }
+
+    async fn profile_payment_result(
+        state: &AppState,
+        keys: &nostr::Keys,
         store: &ZapAttemptStore,
         attempt: &mut ZapAttempt,
         payment: WalletPaymentResult,
     ) -> Result<WalletProfileZapResult, WalletError> {
         store.record_payment(attempt, payment.clone())?;
         match payment.status.as_str() {
-            "completed" => attempt
-                .result()
-                .ok_or_else(|| WalletError::unavailable("profile payment result is incomplete")),
+            "completed" => {
+                let channel_id = zap_target_channel_id(state, keys, attempt).await?;
+                let event =
+                    store.prepare_placeholder_proof(attempt, keys, channel_id.as_deref())?;
+                let active_relay = relay_api_base_url_with_override(state);
+                submit_signed_event_at_with_keys(&event, state, &active_relay, keys)
+                    .await
+                    .map_err(|error| {
+                        WalletError::new(
+                            "relay_publish_failed",
+                            format!("publish placeholder zap proof: {error}"),
+                        )
+                    })?;
+                store.mark_proof_published(attempt)?;
+                attempt
+                    .result()
+                    .ok_or_else(|| WalletError::unavailable("profile payment result is incomplete"))
+            }
             "failed" => Err(payment_error(&payment)),
             _ => Err(WalletError::new(
                 "payment_status_unknown",
@@ -253,8 +471,16 @@ mod enabled {
         let offer = provider.offer(false).await?;
         let relay_api_base_urls =
             wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
-        let publication_warnings =
-            publish_offer(&state, &keys, &relay_api_base_urls, &offer).await?;
+        let mut publication_warnings =
+            publish_offer(&state, &keys, &keys, &relay_api_base_urls, &offer).await?;
+        publication_warnings.extend(
+            super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, true)
+                .await?,
+        );
+        publication_warnings.extend(
+            provision_managed_agent_offers(&app, &state, &keys, &provider, &relay_api_base_urls)
+                .await,
+        );
         Ok(WalletEnableResult {
             status,
             publication_warnings,
@@ -263,6 +489,7 @@ mod enabled {
 
     #[tauri::command]
     pub async fn wallet_disable(
+        app: AppHandle,
         state: State<'_, AppState>,
         relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
@@ -277,8 +504,14 @@ mod enabled {
             })?;
         let relay_api_base_urls =
             wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
-        let publication_warnings =
-            publish_wallet_event(&state, &keys, &relay_api_base_urls, &event).await?;
+        let mut publication_warnings =
+            publish_wallet_event(&state, &keys, None, &relay_api_base_urls, &event).await?;
+        publication_warnings.extend(
+            super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, false)
+                .await?,
+        );
+        publication_warnings
+            .extend(withdraw_managed_agent_offers(&app, &state, &relay_api_base_urls).await);
         Ok(WalletOfferPublicationResult {
             offer: None,
             publication_warnings,
@@ -325,8 +558,12 @@ mod enabled {
             .await?;
         let relay_api_base_urls =
             wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
-        let publication_warnings =
-            publish_offer(&state, &keys, &relay_api_base_urls, &offer).await?;
+        let mut publication_warnings =
+            publish_offer(&state, &keys, &keys, &relay_api_base_urls, &offer).await?;
+        publication_warnings.extend(
+            super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, true)
+                .await?,
+        );
         Ok(WalletOfferPublicationResult {
             offer: Some(offer),
             publication_warnings,
@@ -601,6 +838,24 @@ mod enabled {
         match attempt.state {
             ZapAttemptState::PaidWithoutProof => {
                 store.record_terminal_reuse(&attempt);
+                if !attempt.proof_published {
+                    let channel_id = zap_target_channel_id(&state, &keys, &attempt).await?;
+                    let event = store.prepare_placeholder_proof(
+                        &mut attempt,
+                        &keys,
+                        channel_id.as_deref(),
+                    )?;
+                    let active_relay = relay_api_base_url_with_override(&state);
+                    submit_signed_event_at_with_keys(&event, &state, &active_relay, &keys)
+                        .await
+                        .map_err(|error| {
+                            WalletError::new(
+                                "relay_publish_failed",
+                                format!("publish placeholder zap proof: {error}"),
+                            )
+                        })?;
+                    store.mark_proof_published(&mut attempt)?;
+                }
                 return attempt.result().ok_or_else(|| {
                     WalletError::unavailable("settled profile payment is missing its result")
                 });
@@ -684,7 +939,7 @@ mod enabled {
                 ));
             }
         };
-        profile_payment_result(&store, &mut attempt, payment)
+        profile_payment_result(&state, &keys, &store, &mut attempt, payment).await
     }
 
     #[tauri::command]
@@ -700,8 +955,27 @@ mod enabled {
     #[cfg(test)]
     mod tests {
         use super::{
-            is_unsupported_wallet_event_kind, paying_attempt_expired, PAYING_ATTEMPT_GRACE_MS,
+            is_unsupported_wallet_event_kind, paying_attempt_expired, wallet_relay_api_base_urls,
+            PAYING_ATTEMPT_GRACE_MS,
         };
+
+        #[test]
+        fn wallet_relays_include_active_and_deduplicate_all_communities() {
+            assert_eq!(
+                wallet_relay_api_base_urls(
+                    "https://active.example",
+                    Some(vec![
+                        "wss://other.example".to_string(),
+                        "wss://active.example".to_string(),
+                        "wss://other.example/".to_string(),
+                    ]),
+                ),
+                vec![
+                    "https://active.example".to_string(),
+                    "https://other.example".to_string(),
+                ]
+            );
+        }
 
         #[test]
         fn only_unknown_kind_rejections_are_unsupported() {

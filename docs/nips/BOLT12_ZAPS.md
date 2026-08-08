@@ -14,10 +14,45 @@ events. It does not validate the embedded intent, recipient offer, BOLT12 payer
 proof, amount, target, or payment hash. Clients must validate that proof chain
 before rendering or counting a zap.
 
-The desktop wallet does not currently publish kind `9736`. Lexe 0.1.20 does
-not expose the settled `lnp` payer proof required by the proposal, so Buzz
-keeps the signed intent and payment result local until a valid proof is
-available.
+Lexe 0.1.20 does not expose the settled `lnp` payer proof required by the
+proposal. During this experimental phase, Desktop publishes the literal value
+`placeholder` in the kind `9736` `proof` tag after the payment settles. Buzz
+clients accept only that exact temporary marker or a syntactically valid `lnp`
+proof. Placeholder proofs are payment claims and do not provide NIP-B1's
+cryptographic settlement guarantee.
+
+## Managed-agent payments
+
+Managed agents request outgoing BOLT12 payments with NIP-47 kind `23194` and
+the optional NWC-321 `pay` method. The agent signs an unbroadcast kind `9737`
+intent first and sends its id as the BOLT12 payer note. Buzz Desktop validates
+and decrypts the request, confirms that its author is a managed agent, and asks
+the wallet owner to approve or deny it. Approval enters the same durable
+generic-send state machine as a user-initiated wallet send. Desktop returns the
+result in an encrypted kind `23195` response.
+
+Kinds `23194` and `23195` are ephemeral. The agent and Buzz Desktop must both
+be connected to the same active community relay while the approval is pending;
+Buzz does not treat the relay as a durable payment-request queue.
+
+Buzz uses the agent identity as the NWC client key and the owner identity as
+the wallet-service key in this first community-relay implementation. These are
+unique per agent connection and compatible with the relay's membership
+authentication, but they do not provide NIP-47's ideal unlinkability. A future
+relay delegation mechanism can move NWC onto opaque connection keys.
+
+Because Lexe 0.1.20 does not expose `payer_proof`, the response uses the same
+literal `placeholder` marker after settlement. The agent then publishes kind
+`9736` with that marker.
+
+The desktop subscribes to kind `9736` events that tag the user or a managed
+agent. It validates the signed Nostr envelope, intent, and offer announcement,
+then correlates the intent with settled inbound wallet history before it adds a
+local Inbox and zap-history record. A relay-and-recipient cursor pages stored
+proofs after an offline period, with a five-second overlap and event-ID
+deduplication at the local history boundary. This notification path validates
+the `lnp` Bech32 encoding but does not yet validate its payer-proof
+cryptography, so these records must not be used for public zap totals.
 
 ## Units
 
@@ -39,6 +74,6 @@ an existing offer. The `create_offer` API never invalidates prior offers.
 Without persistence, each app restart creates and publishes a new offer. The
 old offers remain payable.
 
-The POC protocol reference is the proposed
-[BOLT12 zaps NIP](https://github.com/benthecarman/nips/blob/035b3cf4d5fadb808031b94f2277ba98dc94e9ac/B1.md).
+The POC protocol reference is the latest proposed
+[NIP-B1 BOLT12 zaps draft](https://github.com/benthecarman/nips/blob/bolt12-zaps/B1.md).
 The candidate kind numbers are not final until the proposal is accepted.

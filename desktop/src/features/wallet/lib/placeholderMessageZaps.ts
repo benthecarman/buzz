@@ -11,7 +11,8 @@ export const placeholderMessageZapsQueryKey = [
 /**
  * Return local settled payments for one message and payer identity.
  *
- * These are UI placeholders, not NIP-B1 proofs. They are never published.
+ * These are UI fallbacks shown only until the matching placeholder-proof event
+ * has been published and hydrated from the relay.
  */
 export function usePlaceholderMessageZaps(
   targetEventId: string,

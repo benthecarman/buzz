@@ -8,6 +8,7 @@ import type {
   WalletOfferPublicationResult,
   WalletPaymentResult,
   WalletPlaceholderMessageZap,
+  WalletNwcRequest,
   WalletProfileZapDraft,
   WalletProfileZapRequest,
   WalletProfileZapResult,
@@ -16,6 +17,7 @@ import type {
   WalletStatus,
   WalletTransactionPage,
 } from "./types";
+import type { RelayEvent } from "@/shared/api/types";
 
 let compileEnabledPromise: Promise<boolean> | null = null;
 
@@ -70,6 +72,26 @@ export function sendWalletPayment(
   request: WalletSendRequest,
 ): Promise<WalletPaymentResult> {
   return invoke<WalletPaymentResult>("wallet_send", { request });
+}
+
+export function parseNwcWalletRequest(
+  event: RelayEvent,
+): Promise<WalletNwcRequest> {
+  return invoke<WalletNwcRequest>("wallet_parse_nwc_request", { event });
+}
+
+export function buildNwcWalletResponse(input: {
+  event: RelayEvent;
+  payment?: WalletPaymentResult | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}): Promise<RelayEvent> {
+  return invoke<RelayEvent>("wallet_build_nwc_response", {
+    event: input.event,
+    payment: input.payment ?? null,
+    errorCode: input.errorCode ?? null,
+    errorMessage: input.errorMessage ?? null,
+  });
 }
 
 export function listWalletTransactions(

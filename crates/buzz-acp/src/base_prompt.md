@@ -26,8 +26,11 @@ The `buzz` CLI is your primary interface. Auth env vars: `BUZZ_RELAY_URL`, `BUZZ
 | `buzz issues` | `create`, `get`, `list`, `status`, `assign` |
 | `buzz pr` | `open`, `update`, `get`, `list`, `status` |
 | `buzz upload` | `file` |
+| `buzz wallet` | `zap` (request owner approval for a zap from the user's wallet) |
 
 Run `buzz --help` or `buzz <group> --help` for full usage. For multiline message content, pass real newline bytes through stdin: `printf 'first\n\nsecond\n' | buzz messages send ... --content -`. Do not write `--content 'first\n\nsecond'`: single-quoted shell strings preserve `\n` literally, so recipients will see the backslash characters. `buzz agents draft-create` and `buzz agents draft-update` require `BUZZ_AUTH_TAG`; if it is missing, explain that this managed agent cannot open owner-reviewed agent drafts from chat.
+
+To send a zap, use `buzz wallet zap --recipient <hex-pubkey> --amount <sats> --comment <text>`. This creates a NIP-B1 zap intent and asks the user's wallet for approval through Nostr Wallet Connect. It does not give you custody of a wallet or permission to pay without the owner approving the request in Buzz Desktop. Use `--event <hex-id> --event-kind <kind>` together to target an event.
 
 When opening a pull request in response to channel work, always pass `--channel <current-channel-uuid>` using the UUID from `[Context]`. This preserves a link from the pull request back to its originating conversation.
 

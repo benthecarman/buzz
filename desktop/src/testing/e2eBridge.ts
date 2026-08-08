@@ -12272,7 +12272,7 @@ export function maybeInstallE2eTauriMocks() {
             finalizedAtMs: settledAtMs,
           },
           intentEventId: intentEvent.id,
-          proofPublished: false,
+          proofPublished: true,
         };
       }
       case "wallet_reveal_recovery_phrase":

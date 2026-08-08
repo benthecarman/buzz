@@ -188,6 +188,15 @@ pub struct CreateManagedAgentRequest {
     pub respond_to_allowlist: Vec<String>,
     #[serde(default)]
     pub relay_mesh: Option<RelayMeshConfig>,
+    /// Whether the desktop Bitcoin wallet feature is enabled. When true, the
+    /// newly minted agent receives a distinct offer from the user's wallet.
+    #[serde(default)]
+    pub wallet_enabled: bool,
+    /// Every configured community relay. Agent wallet announcements mirror
+    /// the owner's wallet broadcast instead of being limited to the agent's
+    /// runtime relay override.
+    #[serde(default)]
+    pub wallet_relay_urls: Vec<String>,
 }
 
 /// Patch request for updating a managed agent's mutable fields.

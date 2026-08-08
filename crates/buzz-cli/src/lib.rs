@@ -240,6 +240,34 @@ enum Cmd {
     /// Community moderation — reports queue, bans, timeouts, audit trail
     #[command(subcommand)]
     Moderation(ModerationCmd),
+    /// Request user-wallet payments through Nostr Wallet Connect
+    #[command(subcommand)]
+    Wallet(WalletCmd),
+}
+
+#[derive(Subcommand)]
+pub enum WalletCmd {
+    /// Ask the owner wallet to pay a BOLT12 zap and wait for its NWC response
+    Zap {
+        /// Recipient Nostr pubkey (hex)
+        #[arg(long)]
+        recipient: String,
+        /// Amount in whole satoshis
+        #[arg(long)]
+        amount: u64,
+        /// Optional zap comment
+        #[arg(long, default_value = "")]
+        comment: String,
+        /// Optional event id to zap
+        #[arg(long)]
+        event: Option<String>,
+        /// Kind of the event being zapped; required with --event
+        #[arg(long)]
+        event_kind: Option<u32>,
+        /// Maximum time to wait for owner approval
+        #[arg(long, default_value_t = 600)]
+        wait_seconds: u64,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -2059,6 +2087,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Upload(sub) => commands::upload::dispatch(sub, &client).await,
         Cmd::Mem(sub) => commands::mem::dispatch(sub, &client).await,
         Cmd::Moderation(sub) => commands::moderation::dispatch(sub, &client, &cli.format).await,
+        Cmd::Wallet(sub) => commands::wallet::dispatch(sub, &client).await,
         Cmd::Pack(_) => unreachable!("handled above"),
     }
 }
@@ -2167,6 +2196,7 @@ mod tests {
             "social",
             "upload",
             "users",
+            "wallet",
             "workflows",
         ];
 

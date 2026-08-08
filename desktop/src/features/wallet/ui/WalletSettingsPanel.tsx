@@ -36,6 +36,7 @@ import type {
   WalletStatus,
   WalletTransaction,
 } from "../types";
+import { ZapHistoryCard } from "./ZapHistoryCard";
 
 const WALLET_POLL_INTERVAL_MS = 5_000;
 const WALLET_POLL_MAX_BACKOFF_MS = 60_000;
@@ -824,6 +825,7 @@ export function WalletSettingsPanel() {
         />
       ) : null}
       <RecoveryCard />
+      <ZapHistoryCard />
       <TransactionHistory
         canLoadMore={nextCursor !== null}
         error={historyError}

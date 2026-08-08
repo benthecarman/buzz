@@ -8,7 +8,9 @@ import type {
 import type {
   TimelineMessage,
   TimelineReaction,
+  TimelineZap,
 } from "@/features/messages/types";
+import { parseTaggedZapEvent } from "@/features/wallet/lib/zapEvents";
 import {
   getThreadReference,
   isBroadcastReply,
@@ -26,6 +28,7 @@ import {
   KIND_JOB_PROGRESS,
   KIND_JOB_REQUEST,
   KIND_JOB_RESULT,
+  KIND_BOLT12_ZAP,
   KIND_HUDDLE_STARTED,
   KIND_DELETION,
   KIND_NIP29_DELETE_EVENT,
@@ -247,6 +250,26 @@ export function formatTimelineMessages(
     for (const targetId of getDeletionTargets(event.tags)) {
       deletedEventIds.add(targetId);
     }
+  }
+
+  const zapsByEventId = new Map<string, Map<string, TimelineZap>>();
+  for (const event of events) {
+    if (event.kind !== KIND_BOLT12_ZAP || deletedEventIds.has(event.id)) {
+      continue;
+    }
+    const zap = parseTaggedZapEvent(event);
+    if (!zap?.targetEventId || deletedEventIds.has(zap.targetEventId)) {
+      continue;
+    }
+    const current = zapsByEventId.get(zap.targetEventId) ?? new Map();
+    current.set(zap.intentEventId, {
+      amount: zap.amount,
+      comment: zap.comment,
+      intentEventId: zap.intentEventId,
+      payerPubkey: event.pubkey.toLowerCase(),
+      recipientPubkey: zap.recipientPubkey,
+    });
+    zapsByEventId.set(zap.targetEventId, current);
   }
 
   const timelineEventsById = new Map(
@@ -539,6 +562,10 @@ export function formatTimelineMessages(
               a.emoji.localeCompare(b.emoji),
           )
           .map(({ earliestCreatedAt: _drop, ...pill }) => pill);
+      })(),
+      zaps: (() => {
+        const zaps = zapsByEventId.get(event.id);
+        return zaps ? [...zaps.values()] : undefined;
       })(),
     };
   });

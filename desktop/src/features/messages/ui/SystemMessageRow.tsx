@@ -760,6 +760,7 @@ export const SystemMessageRow = React.memo(function SystemMessageRow({
       <MessageReactions
         messageId={reactionMessage.id}
         reactions={reactions}
+        zaps={reactionMessage.zaps}
         canToggle={canToggleReactions}
         pending={reactionPending}
         className="mt-0.5 pt-0.5"

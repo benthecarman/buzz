@@ -4,6 +4,7 @@ import {
   CHANNEL_TIMELINE_CONTENT_KINDS,
   HOME_MENTION_EVENT_KINDS,
   KIND_DELETION,
+  KIND_BOLT12_ZAP,
   KIND_NIP29_DELETE_EVENT,
   KIND_REACTION,
   KIND_STREAM_MESSAGE,
@@ -127,7 +128,10 @@ export function buildChannelReactionAuxFilter(
   _channelId: string,
   messageIds: string[],
 ): RelaySubscriptionFilter {
-  return buildChannelAuxKindFilter(messageIds, [KIND_REACTION]);
+  return buildChannelAuxKindFilter(messageIds, [
+    KIND_REACTION,
+    KIND_BOLT12_ZAP,
+  ]);
 }
 
 export function buildChannelAuxDeletionFilter(

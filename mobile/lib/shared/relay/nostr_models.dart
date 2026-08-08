@@ -18,9 +18,12 @@ abstract final class EventKind {
   static const relayMembership = 13534;
   static const streamMessage = 9;
   static const nip29DeleteEvent = 9005;
+  static const nwcInfo = 13194;
   static const presenceUpdate = 20001;
   static const typingIndicator = 20002;
   static const auth = 22242;
+  static const nwcRequest = 23194;
+  static const nwcResponse = 23195;
   static const agentObserverFrame = 24200;
   static const huddleReaction = 24810;
   static const readState = 30078;

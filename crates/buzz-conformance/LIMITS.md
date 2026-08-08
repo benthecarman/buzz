@@ -123,3 +123,15 @@ The integration replay is the **next** ratchet — once the read-seam
 emitter lands on Eva's integration branch the harness will drive the
 existing e2e suite with a `JsonlTracer` per request and assert
 `check_trace` for every captured trace.
+
+## Wallet offer publication limits
+
+`WalletOfferLifecycle.tla` and the offer replay checker cover the executed
+kind `10058` publication seam. They detect identity and author mismatches,
+cross-identity offer uniqueness, complete relay-result coverage, and the
+announcement/withdrawal lifecycle.
+
+They do not prove Lexe's offer derivation or Nostr cryptography. They do not
+prove relay persistence after an accepted response. The projection treats a
+secondary relay's bounded HTTP retry as one terminal relay result. Unexecuted
+publication paths remain outside runtime trace evidence.

@@ -666,6 +666,7 @@ export const MessageRow = React.memo(
         <MessageReactions
           messageId={message.id}
           reactions={reactions}
+          zaps={message.zaps}
           canToggle={canToggleReactions}
           pending={reactionPending}
           burstEmojiOnRender={badgeBurstEmoji}
