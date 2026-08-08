@@ -157,11 +157,23 @@ export function SendBitcoinDialog({
       }
     } catch (error) {
       const commandError = walletCommandError(error);
+      if (targetEventId) {
+        // The wallet can settle before proof publication completes. Refresh
+        // the durable local fallback even on an error so a paid zap never
+        // disappears from the message while publication is retried.
+        await queryClient.invalidateQueries({
+          queryKey: placeholderMessageZapsQueryKey,
+        });
+      }
       if (commandError.code === "payment_status_unknown") {
         setReconciling(true);
       } else if (commandError.code === "payment_failed") {
         setReconciling(false);
         setIdempotencyKey(crypto.randomUUID());
+      } else if (commandError.code === "relay_publish_failed") {
+        // The payment is terminal; the same idempotency key now retries only
+        // its public receipt and can never dispatch a second payment.
+        setReconciling(true);
       }
       toast.error(commandError.message ?? "The Bitcoin payment failed.");
     } finally {

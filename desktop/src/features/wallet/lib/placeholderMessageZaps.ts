@@ -11,8 +11,10 @@ export const placeholderMessageZapsQueryKey = [
 /**
  * Return local settled payments for one message and payer identity.
  *
- * These are UI fallbacks shown only until the matching placeholder-proof event
- * has been published and hydrated from the relay.
+ * These are UI fallbacks shown until the matching placeholder-proof event has
+ * been hydrated from the relay. Relay acceptance alone is not enough: the
+ * renderer deduplicates the local receipt against a hydrated proof by intent
+ * event id.
  */
 export function usePlaceholderMessageZaps(
   targetEventId: string,

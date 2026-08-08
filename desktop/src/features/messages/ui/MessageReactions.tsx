@@ -164,16 +164,13 @@ export function MessageReactions({
   const payerPubkey = useIdentityQuery().data?.pubkey;
   const placeholderZaps = usePlaceholderMessageZaps(messageId, payerPubkey);
   const publicIntentIds = new Set(zaps.map((zap) => zap.intentEventId));
-  const unpublishedPlaceholders = placeholderZaps.filter(
+  const localOnlyZaps = placeholderZaps.filter(
     (zap) => !publicIntentIds.has(zap.intentEventId),
   );
   const zapAmount =
     zaps.reduce((total, zap) => total + zap.amount, 0) +
-    unpublishedPlaceholders.reduce(
-      (total, receipt) => total + receipt.amount,
-      0,
-    );
-  const zapCount = zaps.length + unpublishedPlaceholders.length;
+    localOnlyZaps.reduce((total, receipt) => total + receipt.amount, 0);
+  const zapCount = zaps.length + localOnlyZaps.length;
   const [pendingBadgeBurstEmoji, setPendingBadgeBurstEmoji] = React.useState<
     string | null
   >(null);
@@ -276,7 +273,7 @@ export function MessageReactions({
         <ZapPill
           amount={zapAmount}
           count={zapCount}
-          hasUnpublishedPlaceholder={unpublishedPlaceholders.length > 0}
+          hasLocalFallback={localOnlyZaps.length > 0}
         />
       ) : null}
       {reactions.map((reaction) => (
@@ -305,11 +302,11 @@ export function MessageReactions({
 function ZapPill({
   amount,
   count,
-  hasUnpublishedPlaceholder,
+  hasLocalFallback,
 }: {
   amount: number;
   count: number;
-  hasUnpublishedPlaceholder: boolean;
+  hasLocalFallback: boolean;
 }) {
   return (
     <Tooltip>
@@ -329,7 +326,7 @@ function ZapPill({
       </TooltipTrigger>
       <TooltipContent>
         {count === 1 ? "1 zap" : `${count} zaps`}
-        {hasUnpublishedPlaceholder ? " — publishing…" : null}
+        {hasLocalFallback ? " — local receipt" : null}
       </TooltipContent>
     </Tooltip>
   );

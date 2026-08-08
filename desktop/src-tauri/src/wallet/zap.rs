@@ -698,12 +698,14 @@ impl ZapAttemptStore {
             let Ok(attempt) = serde_json::from_slice::<ZapAttempt>(&bytes) else {
                 continue;
             };
+            let needs_reconciliation = matches!(
+                attempt.state,
+                ZapAttemptState::Prepared | ZapAttemptState::Paying
+            ) || (attempt.state == ZapAttemptState::PaidWithoutProof
+                && !attempt.proof_published);
             if attempt.recipient_pubkey == recipient_pubkey
                 && attempt.target_event_id.as_deref() == target_event_id
-                && matches!(
-                    attempt.state,
-                    ZapAttemptState::Prepared | ZapAttemptState::Paying
-                )
+                && needs_reconciliation
                 && latest
                     .as_ref()
                     .is_none_or(|current| attempt.updated_at_ms > current.updated_at_ms)
@@ -714,7 +716,13 @@ impl ZapAttemptStore {
         Ok(latest.map(|attempt| attempt.draft()))
     }
 
-    /// List settled event-targeted payments for local placeholder rendering.
+    /// List settled event-targeted payments for local fallback rendering.
+    ///
+    /// Keep published attempts in this list. Relay acceptance and renderer
+    /// hydration are separate steps, so hiding a receipt as soon as the relay
+    /// accepts its proof creates a gap where neither the local receipt nor the
+    /// public zap is visible. The renderer deduplicates these receipts by the
+    /// intent event id once the matching public proof is hydrated.
     pub fn settled_message_zaps(&self) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
         let entries = match std::fs::read_dir(&self.directory) {
             Ok(entries) => entries,
@@ -733,7 +741,6 @@ impl ZapAttemptStore {
                 let target_event_id = attempt.target_event_id?;
                 let payment = attempt.payment?;
                 (attempt.state == ZapAttemptState::PaidWithoutProof
-                    && !attempt.proof_published
                     && payment.status == "completed")
                     .then(|| WalletPlaceholderMessageZap {
                         intent_event_id: attempt.intent_event_id,
@@ -969,6 +976,14 @@ mod tests {
         assert_eq!(receipts[0].target_event_id, target_event_id);
         assert_eq!(receipts[0].amount, 21);
         assert_eq!(receipts[0].settled_at_ms, 200);
+        assert_eq!(
+            store
+                .pending_for_recipient(&attempt.recipient_pubkey, Some(&target_event_id))
+                .unwrap()
+                .unwrap()
+                .idempotency_key,
+            attempt.idempotency_key
+        );
 
         let proof = store
             .prepare_placeholder_proof(&mut attempt, &payer, Some("channel-id"))
@@ -987,7 +1002,16 @@ mod tests {
             .unwrap();
         assert_eq!(persisted.id, proof.id);
         store.mark_proof_published(&mut attempt).unwrap();
-        assert!(store.settled_message_zaps().unwrap().is_empty());
+        let published_receipts = store.settled_message_zaps().unwrap();
+        assert_eq!(published_receipts.len(), 1);
+        assert_eq!(
+            published_receipts[0].intent_event_id,
+            attempt.intent_event_id
+        );
+        assert!(store
+            .pending_for_recipient(&attempt.recipient_pubkey, Some(&target_event_id))
+            .unwrap()
+            .is_none());
         assert!(attempt.result().unwrap().proof_published);
     }
 }
