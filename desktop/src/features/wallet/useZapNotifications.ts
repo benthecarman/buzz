@@ -105,7 +105,8 @@ export function useZapNotifications(
       const body = zap.comment.trim()
         ? `${formatBitcoin(zap.amount)} · ${zap.comment.trim().slice(0, 160)}`
         : formatBitcoin(zap.amount);
-      const didPersist = persistZapHistoryItem(owner, {
+      const historyRelayUrl = relayUrl?.trim().replace(/\/$/, "") ?? "";
+      const persistResult = persistZapHistoryItem(owner, historyRelayUrl, {
         amount: zap.amount,
         comment: zap.comment,
         createdAt: event.created_at,
@@ -116,7 +117,13 @@ export function useZapNotifications(
         recipientPubkey: zap.recipientPubkey,
         targetEventId: zap.targetEventId,
       });
-      if (!didPersist) {
+      if (persistResult === "failed") {
+        return {
+          status: "retry",
+          recipientPubkey: zap.recipientPubkey,
+        };
+      }
+      if (persistResult === "duplicate") {
         return {
           status: "processed",
           recipientPubkey: zap.recipientPubkey,

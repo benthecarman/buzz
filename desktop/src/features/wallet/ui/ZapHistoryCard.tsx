@@ -1,5 +1,6 @@
 import { Zap } from "lucide-react";
 
+import { useCommunities } from "@/features/communities/useCommunities";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { formatBitcoin } from "../lib/formatBitcoin";
 import { useZapHistory } from "../lib/zapHistory";
@@ -12,7 +13,8 @@ const timestampFormatter = new Intl.DateTimeFormat(undefined, {
 
 export function ZapHistoryCard() {
   const ownerPubkey = useIdentityQuery().data?.pubkey;
-  const history = useZapHistory(ownerPubkey);
+  const relayUrl = useCommunities().activeCommunity?.relayUrl;
+  const history = useZapHistory(ownerPubkey, relayUrl);
   const visibleHistory = history.slice(0, DISPLAY_LIMIT);
 
   return (

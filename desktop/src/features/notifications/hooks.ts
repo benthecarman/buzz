@@ -422,7 +422,8 @@ export function useHomeFeedNotificationState(
     silentChannelIds,
   );
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
-  const zapHistory = useZapHistory(normalizedPubkey);
+  const relayUrl = useCommunities().activeCommunity?.relayUrl;
+  const zapHistory = useZapHistory(normalizedPubkey, relayUrl);
   const zapFeedItems = React.useMemo(
     () => zapHistoryFeedItems(zapHistory),
     [zapHistory],

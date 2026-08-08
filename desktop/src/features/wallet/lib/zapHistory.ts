@@ -19,8 +19,14 @@ export type ZapHistoryItem = {
 const HISTORY_LIMIT = 500;
 const HISTORY_EVENT = "buzz:wallet-zap-history-updated";
 
-function storageKey(ownerPubkey: string) {
+function legacyStorageKey(ownerPubkey: string) {
   return `buzz-wallet-zap-history.v1:${ownerPubkey.trim().toLowerCase()}`;
+}
+
+function storageKey(ownerPubkey: string, relayUrl: string) {
+  return `${legacyStorageKey(ownerPubkey)}:${encodeURIComponent(
+    relayUrl.trim().replace(/\/$/, "").toLowerCase(),
+  )}`;
 }
 
 function isZapHistoryItem(value: unknown): value is ZapHistoryItem {
@@ -70,10 +76,24 @@ export function addZapHistoryItem(
   };
 }
 
-export function readZapHistory(ownerPubkey: string): ZapHistoryItem[] {
-  if (typeof window === "undefined" || !ownerPubkey.trim()) return [];
+export function readZapHistory(
+  ownerPubkey: string,
+  relayUrl: string,
+): ZapHistoryItem[] {
+  if (typeof window === "undefined" || !ownerPubkey.trim() || !relayUrl.trim())
+    return [];
   try {
-    return parseZapHistory(localStorage.getItem(storageKey(ownerPubkey)));
+    const key = storageKey(ownerPubkey, relayUrl);
+    const scoped = localStorage.getItem(key);
+    if (scoped !== null) return parseZapHistory(scoped);
+
+    // Adopt the old unscoped cache once. Future writes remain relay-scoped.
+    const legacy = parseZapHistory(
+      localStorage.getItem(legacyStorageKey(ownerPubkey)),
+    );
+    if (legacy.length > 0) localStorage.setItem(key, JSON.stringify(legacy));
+    localStorage.removeItem(legacyStorageKey(ownerPubkey));
+    return legacy;
   } catch {
     return [];
   }
@@ -81,44 +101,59 @@ export function readZapHistory(ownerPubkey: string): ZapHistoryItem[] {
 
 export function persistZapHistoryItem(
   ownerPubkey: string,
+  relayUrl: string,
   item: ZapHistoryItem,
-): boolean {
-  if (typeof window === "undefined" || !ownerPubkey.trim()) return false;
-  const result = addZapHistoryItem(readZapHistory(ownerPubkey), item);
-  if (!result.didAdd) return false;
+): "added" | "duplicate" | "failed" {
+  if (typeof window === "undefined" || !ownerPubkey.trim() || !relayUrl.trim())
+    return "failed";
+  const result = addZapHistoryItem(readZapHistory(ownerPubkey, relayUrl), item);
+  if (!result.didAdd) return "duplicate";
   try {
-    localStorage.setItem(storageKey(ownerPubkey), JSON.stringify(result.items));
+    localStorage.setItem(
+      storageKey(ownerPubkey, relayUrl),
+      JSON.stringify(result.items),
+    );
   } catch {
-    return false;
+    return "failed";
   }
   window.dispatchEvent(
     new CustomEvent(HISTORY_EVENT, {
-      detail: { ownerPubkey: ownerPubkey.trim().toLowerCase() },
+      detail: {
+        ownerPubkey: ownerPubkey.trim().toLowerCase(),
+        relayUrl: relayUrl.trim().replace(/\/$/, "").toLowerCase(),
+      },
     }),
   );
-  return true;
+  return "added";
 }
 
-export function useZapHistory(ownerPubkey: string | undefined) {
+export function useZapHistory(
+  ownerPubkey: string | undefined,
+  relayUrl: string | undefined,
+) {
   const normalizedOwner = ownerPubkey?.trim().toLowerCase() ?? "";
+  const normalizedRelay =
+    relayUrl?.trim().replace(/\/$/, "").toLowerCase() ?? "";
   const [items, setItems] = React.useState<ZapHistoryItem[]>(() =>
-    readZapHistory(normalizedOwner),
+    readZapHistory(normalizedOwner, normalizedRelay),
   );
 
   React.useEffect(() => {
-    setItems(readZapHistory(normalizedOwner));
+    setItems(readZapHistory(normalizedOwner, normalizedRelay));
     function refresh(event: Event) {
       if (
         event instanceof CustomEvent &&
-        event.detail?.ownerPubkey &&
-        event.detail.ownerPubkey !== normalizedOwner
+        ((event.detail?.ownerPubkey &&
+          event.detail.ownerPubkey !== normalizedOwner) ||
+          (event.detail?.relayUrl && event.detail.relayUrl !== normalizedRelay))
       ) {
         return;
       }
-      setItems(readZapHistory(normalizedOwner));
+      setItems(readZapHistory(normalizedOwner, normalizedRelay));
     }
     function refreshFromStorage(event: StorageEvent) {
-      if (event.key === storageKey(normalizedOwner)) refresh(event);
+      if (event.key === storageKey(normalizedOwner, normalizedRelay))
+        refresh(event);
     }
     window.addEventListener(HISTORY_EVENT, refresh);
     window.addEventListener("storage", refreshFromStorage);
@@ -126,7 +161,7 @@ export function useZapHistory(ownerPubkey: string | undefined) {
       window.removeEventListener(HISTORY_EVENT, refresh);
       window.removeEventListener("storage", refreshFromStorage);
     };
-  }, [normalizedOwner]);
+  }, [normalizedOwner, normalizedRelay]);
 
   return items;
 }

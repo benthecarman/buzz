@@ -536,7 +536,7 @@ pub fn run() {
             }
 
             if !recovery_mode {
-                commands::start_agent_runtime_wallet_reconciler(app_handle.clone());
+                commands::start_wallet_reconciler(app_handle.clone());
             }
 
             // Periodic sweep: reap orphaned agents from dead instances every 60s.

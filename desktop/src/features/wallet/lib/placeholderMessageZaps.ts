@@ -19,11 +19,12 @@ export const placeholderMessageZapsQueryKey = [
 export function usePlaceholderMessageZaps(
   targetEventId: string,
   payerPubkey: string | undefined,
+  relayUrl: string | undefined,
 ): WalletPlaceholderMessageZap[] {
   const query = useQuery({
-    queryKey: [...placeholderMessageZapsQueryKey, payerPubkey],
+    queryKey: [...placeholderMessageZapsQueryKey, payerPubkey, relayUrl],
     queryFn: listPlaceholderMessageZaps,
-    enabled: Boolean(payerPubkey),
+    enabled: Boolean(payerPubkey && relayUrl),
     staleTime: Number.POSITIVE_INFINITY,
   });
   return (query.data ?? []).filter(

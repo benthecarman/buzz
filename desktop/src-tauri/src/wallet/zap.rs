@@ -429,6 +429,11 @@ pub struct ZapAttempt {
     pub runtime_quote_event_json: Option<String>,
     /// Intent reference sent in the BOLT12 payer note for reconciliation.
     pub payer_note: String,
+    /// Relay where the recipient offer was resolved and the proof belongs.
+    /// Legacy attempts omit this and remain manual-only so a community switch
+    /// cannot publish their proof to the wrong relay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
     pub state: ZapAttemptState,
     pub payment: Option<WalletPaymentResult>,
     /// Exact signed kind `9736` event retained for idempotent relay retries.
@@ -517,7 +522,7 @@ impl ZapAttempt {
             .map(|(id, kind)| (Some(id), Some(kind)))
             .unwrap_or((None, None));
         Ok(Self {
-            version: 4,
+            version: 5,
             idempotency_key,
             recipient_pubkey: recipient.recipient_pubkey,
             amount,
@@ -530,6 +535,7 @@ impl ZapAttempt {
             runtime_quote_event_json,
             payer_note: format!("nostr:nipB1:{intent_event_id}"),
             intent_event_id,
+            relay_url: None,
             state: ZapAttemptState::Prepared,
             payment: None,
             proof_event_json: None,
@@ -662,6 +668,20 @@ impl ZapAttemptStore {
                 "open zap attempt: {error}"
             ))),
         }
+    }
+
+    /// Bind a legacy attempt to the relay selected by an explicit user retry.
+    pub fn bind_relay_if_missing(
+        &self,
+        attempt: &mut ZapAttempt,
+        relay_url: &str,
+    ) -> Result<(), WalletError> {
+        if attempt.relay_url.is_some() {
+            return Ok(());
+        }
+        attempt.version = 5;
+        attempt.relay_url = Some(relay_url.to_string());
+        self.save(attempt)
     }
 
     fn save(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
@@ -855,6 +875,7 @@ impl ZapAttemptStore {
         &self,
         recipient_pubkey: &str,
         target_event_id: Option<&str>,
+        relay_url: &str,
     ) -> Result<Option<WalletProfileZapDraft>, WalletError> {
         let entries = match std::fs::read_dir(&self.directory) {
             Ok(entries) => entries,
@@ -880,6 +901,9 @@ impl ZapAttemptStore {
                 && !attempt.proof_published);
             if attempt.recipient_pubkey == recipient_pubkey
                 && attempt.target_event_id.as_deref() == target_event_id
+                && attempt.relay_url.as_deref().is_none_or(|relay| {
+                    relay.trim_end_matches('/') == relay_url.trim_end_matches('/')
+                })
                 && needs_reconciliation
                 && latest
                     .as_ref()
@@ -891,6 +915,42 @@ impl ZapAttemptStore {
         Ok(latest.map(|attempt| attempt.draft()))
     }
 
+    /// List settled proofs that can be retried safely on the specified relay.
+    pub fn unpublished_proofs_for_relay(
+        &self,
+        relay_url: &str,
+    ) -> Result<Vec<ZapAttempt>, WalletError> {
+        let entries = match std::fs::read_dir(&self.directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(WalletError::unavailable(format!(
+                    "read zap attempt directory: {error}"
+                )))
+            }
+        };
+        let relay_url = relay_url.trim_end_matches('/');
+        let mut attempts = entries
+            .flatten()
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<ZapAttempt>(&bytes).ok())
+            .filter(|attempt| {
+                attempt.state == ZapAttemptState::PaidWithoutProof
+                    && !attempt.proof_published
+                    && attempt
+                        .payment
+                        .as_ref()
+                        .is_some_and(|payment| payment.status == "completed")
+                    && attempt
+                        .relay_url
+                        .as_deref()
+                        .is_some_and(|relay| relay.trim_end_matches('/') == relay_url)
+            })
+            .collect::<Vec<_>>();
+        attempts.sort_by_key(|attempt| attempt.updated_at_ms);
+        Ok(attempts)
+    }
+
     /// List settled event-targeted payments for local fallback rendering.
     ///
     /// Keep published attempts in this list. Relay acceptance and renderer
@@ -898,7 +958,10 @@ impl ZapAttemptStore {
     /// accepts its proof creates a gap where neither the local receipt nor the
     /// public zap is visible. The renderer deduplicates these receipts by the
     /// intent event id once the matching public proof is hydrated.
-    pub fn settled_message_zaps(&self) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
+    pub fn settled_message_zaps(
+        &self,
+        relay_url: &str,
+    ) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
         let entries = match std::fs::read_dir(&self.directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -912,6 +975,11 @@ impl ZapAttemptStore {
             .flatten()
             .filter_map(|entry| std::fs::read(entry.path()).ok())
             .filter_map(|bytes| serde_json::from_slice::<ZapAttempt>(&bytes).ok())
+            .filter(|attempt| {
+                attempt.relay_url.as_deref().is_none_or(|relay| {
+                    relay.trim_end_matches('/') == relay_url.trim_end_matches('/')
+                })
+            })
             .filter_map(|attempt| {
                 let target_event_id = attempt.target_event_id?;
                 let payment = attempt.payment?;
@@ -1178,7 +1246,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .pending_for_recipient(&attempt.recipient_pubkey, None)
+                .pending_for_recipient(&attempt.recipient_pubkey, None, "https://relay.example",)
                 .unwrap()
                 .unwrap()
                 .idempotency_key,
@@ -1220,15 +1288,37 @@ mod tests {
             )
             .unwrap();
 
-        let receipts = store.settled_message_zaps().unwrap();
+        store
+            .bind_relay_if_missing(&mut attempt, "https://relay.example/")
+            .unwrap();
+        assert_eq!(
+            store
+                .unpublished_proofs_for_relay("https://relay.example")
+                .unwrap(),
+            vec![attempt.clone()]
+        );
+        assert!(store
+            .unpublished_proofs_for_relay("https://other.example")
+            .unwrap()
+            .is_empty());
+
+        let receipts = store.settled_message_zaps("https://relay.example").unwrap();
         assert_eq!(receipts.len(), 1);
+        assert!(store
+            .settled_message_zaps("https://other.example")
+            .unwrap()
+            .is_empty());
         assert_eq!(receipts[0].intent_event_id, attempt.intent_event_id);
         assert_eq!(receipts[0].target_event_id, target_event_id);
         assert_eq!(receipts[0].amount, 21);
         assert_eq!(receipts[0].settled_at_ms, 200);
         assert_eq!(
             store
-                .pending_for_recipient(&attempt.recipient_pubkey, Some(&target_event_id))
+                .pending_for_recipient(
+                    &attempt.recipient_pubkey,
+                    Some(&target_event_id),
+                    "https://relay.example",
+                )
                 .unwrap()
                 .unwrap()
                 .idempotency_key,
@@ -1256,14 +1346,22 @@ mod tests {
             .unwrap();
         assert_eq!(persisted.id, proof.id);
         store.mark_proof_published(&mut attempt).unwrap();
-        let published_receipts = store.settled_message_zaps().unwrap();
+        assert!(store
+            .unpublished_proofs_for_relay("https://relay.example")
+            .unwrap()
+            .is_empty());
+        let published_receipts = store.settled_message_zaps("https://relay.example").unwrap();
         assert_eq!(published_receipts.len(), 1);
         assert_eq!(
             published_receipts[0].intent_event_id,
             attempt.intent_event_id
         );
         assert!(store
-            .pending_for_recipient(&attempt.recipient_pubkey, Some(&target_event_id))
+            .pending_for_recipient(
+                &attempt.recipient_pubkey,
+                Some(&target_event_id),
+                "https://relay.example",
+            )
             .unwrap()
             .is_none());
         assert!(attempt.result().unwrap().proof_published);

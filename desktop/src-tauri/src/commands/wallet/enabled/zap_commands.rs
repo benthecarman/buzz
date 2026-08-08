@@ -484,24 +484,84 @@ async fn query_all_relay_events(
     Ok(events)
 }
 
-pub(crate) async fn reconcile_agent_runtime_background_once(
+pub(crate) async fn reconcile_wallet_background_once(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<bool, WalletError> {
+    let published_proofs = reconcile_pending_zap_proofs(app, state).await?;
     // Retain reconciliation after pricing is disabled: an inbound payment may
     // have settled just before the operator removed the active rate.
     if crate::managed_agents::load_managed_agents(app)
         .map_err(WalletError::unavailable)?
         .is_empty()
     {
-        return Ok(false);
+        return Ok(published_proofs);
     }
     let keys = state.signing_keys().map_err(WalletError::unavailable)?;
     let provider = wallet_manager()
         .provider_for(&keys, &app_data_dir(app)?)
         .await?;
     provider.poll_updates().await?;
-    reconcile_agent_runtime_deposits(app, state, &provider).await
+    let deposited = reconcile_agent_runtime_deposits(app, state, &provider).await?;
+    Ok(published_proofs || deposited)
+}
+
+async fn reconcile_pending_zap_proofs(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<bool, WalletError> {
+    let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+    let payer_pubkey = keys.public_key().to_hex();
+    let data_dir = app_data_dir(app)?;
+    let store = ZapAttemptStore::new(&data_dir, &payer_pubkey);
+    let relay = relay_api_base_url_with_override(state);
+    let attempts = store.unpublished_proofs_for_relay(&relay)?;
+    let mut published_any = false;
+
+    for candidate in attempts {
+        let operation_lock = wallet_manager()
+            .operation_lock(&payer_pubkey, &candidate.idempotency_key)
+            .await;
+        let _operation_guard = operation_lock.lock().await;
+        let Some(mut attempt) = store.load(&candidate.idempotency_key)? else {
+            continue;
+        };
+        if attempt.state != ZapAttemptState::PaidWithoutProof
+            || attempt.proof_published
+            || attempt.relay_url.as_deref().is_none_or(|attempt_relay| {
+                attempt_relay.trim_end_matches('/') != relay.trim_end_matches('/')
+            })
+        {
+            continue;
+        }
+
+        let publish_result = async {
+            let channel = zap_target_channel_id(state, &keys, &attempt, &relay).await?;
+            let event = store.prepare_placeholder_proof(&mut attempt, &keys, channel.as_deref())?;
+            submit_signed_event_at_with_keys(&event, state, &relay, &keys)
+                .await
+                .map_err(|error| {
+                    WalletError::new(
+                        "relay_publish_failed",
+                        format!("republish placeholder zap proof: {error}"),
+                    )
+                })?;
+            store.mark_proof_published(&mut attempt)
+        }
+        .await;
+
+        match publish_result {
+            Ok(()) => published_any = true,
+            Err(error) => tracing::warn!(
+                code = error.code,
+                error = %error.message,
+                intent_event_id = %attempt.intent_event_id,
+                "background zap proof publication failed"
+            ),
+        }
+    }
+
+    Ok(published_any)
 }
 
 #[tauri::command]
@@ -509,13 +569,14 @@ pub async fn wallet_poll_updates(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<bool, WalletError> {
+    let published_proofs = reconcile_pending_zap_proofs(&app, &state).await?;
     let keys = state.signing_keys().map_err(WalletError::unavailable)?;
     let provider = wallet_manager()
         .provider_for(&keys, &app_data_dir(&app)?)
         .await?;
     let changed = provider.poll_updates().await?;
     let deposited = reconcile_agent_runtime_deposits(&app, &state, &provider).await?;
-    Ok(changed || deposited)
+    Ok(changed || published_proofs || deposited)
 }
 
 #[tauri::command]
@@ -536,8 +597,12 @@ pub async fn wallet_get_pending_profile_zap(
     state: State<'_, AppState>,
 ) -> Result<Option<WalletProfileZapDraft>, WalletError> {
     let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-    ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex())
-        .pending_for_recipient(&recipient_pubkey, target_event_id.as_deref())
+    let relay = relay_api_base_url_with_override(&state);
+    ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex()).pending_for_recipient(
+        &recipient_pubkey,
+        target_event_id.as_deref(),
+        &relay,
+    )
 }
 
 #[tauri::command]
@@ -546,7 +611,9 @@ pub async fn wallet_list_placeholder_message_zaps(
     state: State<'_, AppState>,
 ) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
     let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-    ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex()).settled_message_zaps()
+    let relay = relay_api_base_url_with_override(&state);
+    ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex())
+        .settled_message_zaps(&relay)
 }
 
 fn validate_agent_runtime_quote(
@@ -701,6 +768,7 @@ async fn wallet_send_zap_attempt(
     let provider = wallet_manager().provider_for(&keys, &data_dir).await?;
     let store = ZapAttemptStore::new(&data_dir, &payer_pubkey);
     store.prune()?;
+    let active_relay = relay_api_base_url_with_override(&state);
     let comment = request
         .comment
         .as_deref()
@@ -745,10 +813,13 @@ async fn wallet_send_zap_attempt(
                     &keys,
                 )?
             } else {
-                let relay = relay_api_base_url_with_override(&state);
-                let recipient =
-                    resolve_recipient_offer(&state, &keys, &relay, &request.recipient_pubkey)
-                        .await?;
+                let recipient = resolve_recipient_offer(
+                    &state,
+                    &keys,
+                    &active_relay,
+                    &request.recipient_pubkey,
+                )
+                .await?;
                 ZapAttempt::prepare(
                     request.idempotency_key,
                     recipient,
@@ -759,10 +830,12 @@ async fn wallet_send_zap_attempt(
                     &keys,
                 )?
             };
+            attempt.relay_url = Some(active_relay.clone());
             store.save_prepared(&mut attempt)?;
             attempt
         }
     };
+    store.bind_relay_if_missing(&mut attempt, &active_relay)?;
 
     match attempt.state {
         ZapAttemptState::PaidWithoutProof => {
@@ -770,12 +843,15 @@ async fn wallet_send_zap_attempt(
             if !attempt.proof_published {
                 let channel = match runtime_channel.clone() {
                     Some(channel) => Some(channel),
-                    None => zap_target_channel_id(&state, &keys, &attempt).await?,
+                    None => {
+                        let relay = attempt.relay_url.as_deref().unwrap_or(&active_relay);
+                        zap_target_channel_id(&state, &keys, &attempt, relay).await?
+                    }
                 };
                 let event =
                     store.prepare_placeholder_proof(&mut attempt, &keys, channel.as_deref())?;
-                let relay = relay_api_base_url_with_override(&state);
-                submit_signed_event_at_with_keys(&event, &state, &relay, &keys)
+                let relay = attempt.relay_url.as_deref().unwrap_or(&active_relay);
+                submit_signed_event_at_with_keys(&event, &state, relay, &keys)
                     .await
                     .map_err(|error| {
                         WalletError::new(

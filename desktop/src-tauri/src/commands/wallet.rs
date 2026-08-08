@@ -17,23 +17,22 @@ pub(crate) mod enabled {
         wallet_send_profile_zap,
     };
 
-    /// Start recipient-side runtime-payment reconciliation for the lifetime of
-    /// the application. This task is intentionally owned by Tauri rather than
-    /// a React settings panel: paid Agents must mint verified deposits while
-    /// the app is open regardless of which screen is visible.
-    pub fn start_agent_runtime_wallet_reconciler(app: AppHandle) {
+    /// Start wallet reconciliation for the lifetime of the application.
+    /// Tauri owns this task so outgoing proof receipts and recipient-side
+    /// runtime deposits recover regardless of which React screen is visible.
+    pub fn start_wallet_reconciler(app: AppHandle) {
         tauri::async_runtime::spawn(async move {
             let mut consecutive_failures = 0u32;
             loop {
                 let state = app.state::<AppState>();
-                match zap_commands::reconcile_agent_runtime_background_once(&app, &state).await {
+                match zap_commands::reconcile_wallet_background_once(&app, &state).await {
                     Ok(_) => consecutive_failures = 0,
                     Err(error) => {
                         consecutive_failures = consecutive_failures.saturating_add(1);
                         tracing::warn!(
                             code = error.code,
                             error = %error.message,
-                            "background Agent runtime payment reconciliation failed"
+                            "background wallet reconciliation failed"
                         );
                     }
                 }
@@ -438,6 +437,7 @@ pub(crate) mod enabled {
         state: &AppState,
         keys: &nostr::Keys,
         attempt: &ZapAttempt,
+        relay: &str,
     ) -> Result<Option<String>, WalletError> {
         let (Some(target_event_id), Some(target_event_kind)) = (
             attempt.target_event_id.as_deref(),
@@ -445,10 +445,9 @@ pub(crate) mod enabled {
         ) else {
             return Ok(None);
         };
-        let active_relay = relay_api_base_url_with_override(state);
         let events = query_relay_at_with_keys(
             state,
-            &active_relay,
+            relay,
             &[serde_json::json!({
                 "ids": [target_event_id],
                 "kinds": [target_event_kind],
@@ -482,14 +481,17 @@ pub(crate) mod enabled {
         store.record_payment(attempt, payment.clone())?;
         match payment.status.as_str() {
             "completed" => {
+                let relay = attempt
+                    .relay_url
+                    .clone()
+                    .unwrap_or_else(|| relay_api_base_url_with_override(state));
                 let channel_id = match channel_override {
                     Some(channel_id) => Some(channel_id.to_string()),
-                    None => zap_target_channel_id(state, keys, attempt).await?,
+                    None => zap_target_channel_id(state, keys, attempt, &relay).await?,
                 };
                 let event =
                     store.prepare_placeholder_proof(attempt, keys, channel_id.as_deref())?;
-                let active_relay = relay_api_base_url_with_override(state);
-                submit_signed_event_at_with_keys(&event, state, &active_relay, keys)
+                submit_signed_event_at_with_keys(&event, state, &relay, keys)
                     .await
                     .map_err(|error| {
                         WalletError::new(
@@ -884,7 +886,7 @@ mod disabled {
         }
     }
 
-    pub fn start_agent_runtime_wallet_reconciler(_app: tauri::AppHandle) {}
+    pub fn start_wallet_reconciler(_app: tauri::AppHandle) {}
 
     macro_rules! disabled_async_command {
         ($name:ident ( $($argument:ident : $type:ty),* $(,)? ) -> $result:ty) => {

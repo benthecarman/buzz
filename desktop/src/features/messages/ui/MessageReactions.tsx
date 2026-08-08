@@ -2,6 +2,7 @@ import { Bitcoin, SmilePlus } from "lucide-react";
 import * as React from "react";
 
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
+import { useCommunities } from "@/features/communities/useCommunities";
 import type { TimelineReaction, TimelineZap } from "@/features/messages/types";
 import { recordQuickReactionEmoji } from "@/features/messages/ui/useQuickReactionEmojis";
 import { formatBitcoin } from "@/features/wallet/lib/formatBitcoin";
@@ -162,7 +163,12 @@ export function MessageReactions({
 }) {
   const { burstEmoji } = useEmojiBurst();
   const payerPubkey = useIdentityQuery().data?.pubkey;
-  const placeholderZaps = usePlaceholderMessageZaps(messageId, payerPubkey);
+  const relayUrl = useCommunities().activeCommunity?.relayUrl;
+  const placeholderZaps = usePlaceholderMessageZaps(
+    messageId,
+    payerPubkey,
+    relayUrl,
+  );
   const publicIntentIds = new Set(zaps.map((zap) => zap.intentEventId));
   const localOnlyZaps = placeholderZaps.filter(
     (zap) => !publicIntentIds.has(zap.intentEventId),

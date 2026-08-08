@@ -205,8 +205,8 @@ pub struct WalletProfileZapDraft {
 
 /// Result of the experimental profile-payment flow.
 ///
-/// No public kind `9736` is emitted until the provider exposes the settled
-/// `lnp` payer proof required by the proposal.
+/// The current provider publishes a temporary placeholder receipt after local
+/// settlement; `proof_published` reports whether the relay accepted it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletProfileZapResult {

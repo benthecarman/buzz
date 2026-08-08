@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { useAppShell } from "@/app/AppShellContext";
+import { useCommunities } from "@/features/communities/useCommunities";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { HomeView } from "@/features/home/ui/HomeView";
 import {
@@ -30,7 +31,8 @@ export function HomeScreen({
 }: HomeScreenProps) {
   const homeFeedQuery = useHomeFeedQuery();
   const { threadActivityFeedItems } = useAppShell();
-  const zapHistory = useZapHistory(currentPubkey);
+  const relayUrl = useCommunities().activeCommunity?.relayUrl;
+  const zapHistory = useZapHistory(currentPubkey, relayUrl);
   const zapFeedItems = React.useMemo(
     () => zapHistoryFeedItems(zapHistory),
     [zapHistory],
