@@ -38,6 +38,7 @@ jobs:
           filters: |
             rust:
               - 'crates/**'
+              - 'docs/spec/**'
               - 'migrations/**'
               - 'schema/**'
               - 'Cargo.toml'
@@ -45,6 +46,7 @@ jobs:
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - '.github/workflows/ci.yml'
+              - 'scripts/check-wallet-payment-model.sh'
               - 'scripts/run-tests.sh'
               - 'scripts/model-capabilities.json'
               - 'scripts/normative-corpus.json'
@@ -151,6 +153,8 @@ jobs:
         with:
           fetch-depth: 2
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - name: Wallet formal model
+        run: just wallet-formal
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:

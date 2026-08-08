@@ -147,6 +147,8 @@ export default defineConfig({
         "**/huddle-transcription.spec.ts",
         "**/agent-numeric-tuning.spec.ts",
         "**/needs-restart-screenshots.spec.ts",
+        "**/wallet-profile.spec.ts",
+        "**/wallet-settings.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],

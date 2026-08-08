@@ -268,7 +268,7 @@ pub fn generate_passphrase(word_count: usize, separator: &str) -> Result<String,
         let mut chosen: Vec<&str> = Vec::with_capacity(word_count);
         while chosen.len() < word_count {
             let mut buf = [0u8; 2];
-            getrandom::getrandom(&mut buf).map_err(|e| format!("entropy source: {e}"))?;
+            getrandom::fill(&mut buf).map_err(|e| format!("entropy source: {e}"))?;
             let value = u16::from_le_bytes(buf);
             // Rejection sampling: accept only values below the largest
             // multiple of 1296 that fits in u16 (65536 - 65536 % 1296 = 64800).

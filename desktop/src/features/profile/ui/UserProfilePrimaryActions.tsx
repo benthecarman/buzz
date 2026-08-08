@@ -16,6 +16,7 @@ import type {
   useFollowMutation,
   useUnfollowMutation,
 } from "@/features/profile/hooks";
+import { ProfileBitcoinQuickAction } from "@/features/profile/ui/ProfileQuickAction";
 import { useFeatureEnabled } from "@/shared/features";
 import { cn } from "@/shared/lib/cn";
 import { Spinner } from "@/shared/ui/spinner";
@@ -39,6 +40,7 @@ export function ProfilePrimaryActions({
   onMessage,
   onWave,
   pubkey,
+  recipientName,
   unfollowMutation,
   wavePending,
 }: {
@@ -58,6 +60,7 @@ export function ProfilePrimaryActions({
   onMessage?: () => void;
   onWave?: () => void;
   pubkey: string;
+  recipientName: string;
   unfollowMutation: ReturnType<typeof useUnfollowMutation>;
   wavePending?: boolean;
 }) {
@@ -120,6 +123,10 @@ export function ProfilePrimaryActions({
           testId="user-profile-message"
         />
       ) : null}
+      <ProfileBitcoinQuickAction
+        recipientName={recipientName}
+        recipientPubkey={pubkey}
+      />
       {onHuddle ? (
         <ProfileActionTile
           disabled={huddlePending}
