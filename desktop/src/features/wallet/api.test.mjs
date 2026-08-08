@@ -6,6 +6,7 @@ import {
   disableWallet,
   enableWallet,
   getRecipientWalletOffer,
+  listPlaceholderMessageZaps,
   refreshWalletOffer,
   sendProfileZap,
 } from "./api.ts";
@@ -13,6 +14,7 @@ import {
 const RECIPIENT_PUBKEY =
   "bb22a5299220cad76ffd46190ccbeede8ab5dc260faa28b6e5a2cb31b9aff260";
 const IDEMPOTENCY_KEY = "d2c7ac5e-8ebf-4b85-a5fc-3a693cdadf71";
+const TARGET_EVENT_ID = "ab".repeat(32);
 
 test("offer publication commands include every configured community relay", async () => {
   const previousLocalStorage = globalThis.localStorage;
@@ -56,11 +58,14 @@ test("offer publication commands include every configured community relay", asyn
     await refreshWalletOffer();
     await disableWallet();
     await getRecipientWalletOffer(RECIPIENT_PUBKEY);
+    await listPlaceholderMessageZaps();
     await sendProfileZap({
       recipientPubkey: RECIPIENT_PUBKEY,
       amount: 21,
       comment: null,
       idempotencyKey: IDEMPOTENCY_KEY,
+      targetEventId: TARGET_EVENT_ID,
+      targetEventKind: 40_002,
     });
   } finally {
     globalThis.localStorage = previousLocalStorage;
@@ -82,6 +87,10 @@ test("offer publication commands include every configured community relay", asyn
       args: { recipientPubkey: RECIPIENT_PUBKEY },
     },
     {
+      command: "wallet_list_placeholder_message_zaps",
+      args: {},
+    },
+    {
       command: "wallet_send_profile_zap",
       args: {
         request: {
@@ -89,6 +98,8 @@ test("offer publication commands include every configured community relay", asyn
           amount: 21,
           comment: null,
           idempotencyKey: IDEMPOTENCY_KEY,
+          targetEventId: TARGET_EVENT_ID,
+          targetEventKind: 40_002,
         },
       },
     },

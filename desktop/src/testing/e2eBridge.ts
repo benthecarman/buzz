@@ -5686,6 +5686,15 @@ function walletPaymentId(kind: "fs" | "ln", id = mockEventId()): string {
   return `${Date.now().toString().padStart(19, "0")}-${kind}_${id}`;
 }
 
+const mockPlaceholderMessageZaps: Array<{
+  intentEventId: string;
+  targetEventId: string;
+  recipientPubkey: string;
+  amount: number;
+  comment: string | null;
+  settledAtMs: number;
+}> = [];
+
 async function signedWalletOffer(recipientPubkey: string) {
   if (recipientPubkey !== BOB_IDENTITY.pubkey) {
     throw new Error(`No E2E wallet signer for recipient ${recipientPubkey}`);
@@ -10274,6 +10283,7 @@ export function maybeInstallE2eTauriMocks() {
   mockWebsocketUnavailable = false;
   mockAuthResponses.length = 0;
   mockChannelHistoryCloses.length = 0;
+  mockPlaceholderMessageZaps.length = 0;
   relayWebsocketConnectAttemptStarts.length = 0;
   deferredSendMessageLiveEchoes.length = 0;
   deferredLinkPreviewMetadataQueue = [];
@@ -12176,6 +12186,8 @@ export function maybeInstallE2eTauriMocks() {
       case "wallet_get_pending_send":
       case "wallet_get_pending_profile_zap":
         return null;
+      case "wallet_list_placeholder_message_zaps":
+        return mockPlaceholderMessageZaps;
       case "wallet_list_transactions":
         return {
           transactions: [],
@@ -12214,6 +12226,8 @@ export function maybeInstallE2eTauriMocks() {
               recipientPubkey?: string;
               amount?: number;
               comment?: string | null;
+              targetEventId?: string | null;
+              targetEventKind?: number | null;
             };
           }
         ).request;
@@ -12228,8 +12242,25 @@ export function maybeInstallE2eTauriMocks() {
             ["amount", String(amount * 1000)],
             ["offer_event", JSON.stringify(offerEvent)],
             ["zap_id", crypto.randomUUID().replaceAll("-", "")],
+            ...(request?.targetEventId && request.targetEventKind != null
+              ? [
+                  ["e", request.targetEventId],
+                  ["k", String(request.targetEventKind)],
+                ]
+              : []),
           ],
         });
+        const settledAtMs = Date.now();
+        if (request?.targetEventId) {
+          mockPlaceholderMessageZaps.push({
+            intentEventId: intentEvent.id,
+            targetEventId: request.targetEventId,
+            recipientPubkey,
+            amount,
+            comment: request.comment ?? null,
+            settledAtMs,
+          });
+        }
         return {
           payment: {
             paymentId: walletPaymentId("fs", intentEvent.id),
@@ -12237,8 +12268,8 @@ export function maybeInstallE2eTauriMocks() {
             statusMessage: "Payment completed",
             amount,
             fees: 1,
-            createdAtMs: Date.now(),
-            finalizedAtMs: Date.now(),
+            createdAtMs: settledAtMs,
+            finalizedAtMs: settledAtMs,
           },
           intentEventId: intentEvent.id,
           proofPublished: false,

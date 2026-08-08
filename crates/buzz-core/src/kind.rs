@@ -59,9 +59,9 @@ pub const KIND_REACTION: u32 = 7;
 /// Draft BOLT12 zaps: settled zap proof published by the payer.
 ///
 /// Clients must validate the embedded intent, recipient offer, and payer
-/// proof. A profile zap is global; a future message zap may carry an `h` tag
-/// and inherit normal channel authorization. Relay ingestion only authenticates
-/// and stores the signed outer event.
+/// proof. Profile zaps are global; the relay derives a message zap's channel
+/// from its NIP-B1 `e` target, as it does for NIP-25 reactions. Relay ingestion
+/// only authenticates and stores the signed outer event.
 pub const KIND_BOLT12_ZAP: u32 = 9736;
 /// Draft BOLT12 zaps: signed payer intent embedded in a kind 9736 event.
 ///

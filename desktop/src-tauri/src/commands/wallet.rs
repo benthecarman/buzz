@@ -23,8 +23,9 @@ mod enabled {
             models::{
                 WalletDestinationAnalysis, WalletEnableResult, WalletError, WalletFundingRequest,
                 WalletOfferPublicationResult, WalletOfferSendRequest, WalletPaymentResult,
-                WalletProfileZapDraft, WalletProfileZapRequest, WalletProfileZapResult,
-                WalletRecipientOffer, WalletSendRequest, WalletStatus, WalletTransactionPage,
+                WalletPlaceholderMessageZap, WalletProfileZapDraft, WalletProfileZapRequest,
+                WalletProfileZapResult, WalletRecipientOffer, WalletSendRequest, WalletStatus,
+                WalletTransactionPage,
             },
             provider::WalletPaymentMatch,
             send::{SendAttempt, SendAttemptState, SendAttemptStore},
@@ -511,11 +512,22 @@ mod enabled {
     pub async fn wallet_get_pending_profile_zap(
         app: AppHandle,
         recipient_pubkey: String,
+        target_event_id: Option<String>,
         state: State<'_, AppState>,
     ) -> Result<Option<WalletProfileZapDraft>, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex())
-            .pending_for_recipient(&recipient_pubkey)
+            .pending_for_recipient(&recipient_pubkey, target_event_id.as_deref())
+    }
+
+    #[tauri::command]
+    pub async fn wallet_list_placeholder_message_zaps(
+        app: AppHandle,
+        state: State<'_, AppState>,
+    ) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
+        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+        ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex())
+            .settled_message_zaps()
     }
 
     #[tauri::command]
@@ -550,7 +562,9 @@ mod enabled {
             Some(attempt)
                 if attempt.recipient_pubkey == request.recipient_pubkey
                     && attempt.amount == request.amount
-                    && attempt.comment == normalized_comment =>
+                    && attempt.comment == normalized_comment
+                    && attempt.target_event_id == request.target_event_id
+                    && attempt.target_event_kind == request.target_event_kind =>
             {
                 attempt
             }
@@ -575,6 +589,8 @@ mod enabled {
                     recipient,
                     request.amount,
                     normalized_comment,
+                    request.target_event_id,
+                    request.target_event_kind,
                     &keys,
                 )?;
                 store.save_prepared(&mut attempt)?;
@@ -599,7 +615,11 @@ mod enabled {
             ZapAttemptState::Prepared | ZapAttemptState::Paying => {}
         }
 
-        let personal_note = format!("Buzz profile payment {}", attempt.intent_event_id);
+        let personal_note = if attempt.target_event_id.is_some() {
+            format!("Buzz message zap {}", attempt.intent_event_id)
+        } else {
+            format!("Buzz profile payment {}", attempt.intent_event_id)
+        };
         let payer_note = attempt.payer_note.clone();
         let expected_amount = attempt.amount;
         let expected_offer = attempt.offer.clone();
@@ -763,8 +783,12 @@ mod disabled {
         wallet_get_recipient_offer(recipient_pubkey: String) -> serde_json::Value
     );
     disabled_async_command!(
-        wallet_get_pending_profile_zap(recipient_pubkey: String) -> serde_json::Value
+        wallet_get_pending_profile_zap(
+            recipient_pubkey: String,
+            target_event_id: Option<String>,
+        ) -> serde_json::Value
     );
+    disabled_async_command!(wallet_list_placeholder_message_zaps() -> serde_json::Value);
     disabled_async_command!(
         wallet_send_profile_zap(request: serde_json::Value) -> serde_json::Value
     );

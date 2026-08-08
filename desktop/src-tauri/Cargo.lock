@@ -4956,9 +4956,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lexe"
-version = "0.1.19"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45d52d3c62d73dad0ebc40e05c57a26d0fe4e03a061370830a947d977d872ab4"
+checksum = "cbea18d41ccd6b6657aed7039e87df07bf211b0e58d4bc97125337ad789813a7"
 dependencies = [
  "anyhow",
  "bip39",
@@ -4975,7 +4975,7 @@ dependencies = [
  "lexe-payment-uri",
  "lexe-std",
  "lexe-tokio",
- "lightning 0.2.5",
+ "lightning",
  "semver",
  "serde",
  "serde_json",
@@ -5005,7 +5005,7 @@ dependencies = [
  "lexe-std",
  "lexe-tls",
  "lexe-tokio",
- "lightning 0.3.0-beta1",
+ "lightning",
  "rand_core 0.6.4",
  "reqwest 0.12.28",
  "rustls",
@@ -5042,8 +5042,8 @@ dependencies = [
  "lexe-serde",
  "lexe-sha256",
  "lexe-std",
- "lightning 0.3.0-beta1",
- "lightning-invoice 0.35.0-beta1",
+ "lightning",
+ "lightning-invoice",
  "ref-cast",
  "reqwest 0.12.28",
  "rust_decimal",
@@ -5090,9 +5090,9 @@ dependencies = [
  "lexe-serde",
  "lexe-sha256",
  "lexe-std",
- "lightning 0.3.0-beta1",
- "lightning-invoice 0.35.0-beta1",
- "lightning-types 0.4.0-beta1",
+ "lightning",
+ "lightning-invoice",
+ "lightning-types",
  "rand_core 0.6.4",
  "ref-cast",
  "ring",
@@ -5409,23 +5409,6 @@ dependencies = [
 
 [[package]]
 name = "lightning"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ab16d2a714c0b26d7230bd388ac383a30fce231c8927c62752afc0471a36dc6"
-dependencies = [
- "bech32 0.11.1",
- "bitcoin",
- "dnssec-prover",
- "hashbrown 0.13.2",
- "libm",
- "lightning-invoice 0.34.1",
- "lightning-macros",
- "lightning-types 0.3.5",
- "possiblyrandom",
-]
-
-[[package]]
-name = "lightning"
 version = "0.3.0-beta1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "051fad04d4a4b6fd4b483528c3d61b0c76d9b70cc2f0a870147c10909350d722"
@@ -5436,21 +5419,10 @@ dependencies = [
  "dnssec-prover",
  "hashbrown 0.13.2",
  "libm",
- "lightning-invoice 0.35.0-beta1",
+ "lightning-invoice",
  "lightning-macros",
- "lightning-types 0.4.0-beta1",
+ "lightning-types",
  "possiblyrandom",
-]
-
-[[package]]
-name = "lightning-invoice"
-version = "0.34.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d83bd798e04ab9eecc8bbef1fa17d3808859bcdc0406bd16c55d51c8834444"
-dependencies = [
- "bech32 0.11.1",
- "bitcoin",
- "lightning-types 0.3.5",
 ]
 
 [[package]]
@@ -5461,7 +5433,7 @@ checksum = "99e186bfc9aae7fa6fda7ac3f5d701d9ee1262407025bb7db5bc04af9593723a"
 dependencies = [
  "bech32 0.11.1",
  "bitcoin",
- "lightning-types 0.4.0-beta1",
+ "lightning-types",
 ]
 
 [[package]]
@@ -5473,15 +5445,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "lightning-types"
-version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c77c676d4a34cceb2ae3756916e446b4d17f9430a24107e099981f0f9aec77e6"
-dependencies = [
- "bitcoin",
 ]
 
 [[package]]

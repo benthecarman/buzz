@@ -107,7 +107,7 @@ struct LexeProvider {
     wallet: LexeWallet,
     /// Retained because Lexe's idempotent signup API requires the root seed.
     root_seed: RootSeed,
-    /// Disk location of the persisted active offer. Lexe 0.1.19 has no API to
+    /// Disk location of the persisted active offer. Lexe 0.1.20 has no API to
     /// recover an existing offer and `create_offer` never invalidates prior
     /// ones, so the offer is persisted here to keep a restart from minting a
     /// fresh one and orphaning the previously published offer.

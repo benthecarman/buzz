@@ -145,7 +145,7 @@ pub struct WalletRecipientOffer {
     pub offer_event_id: String,
 }
 
-/// A request to send an attributed profile zap.
+/// A request to send an attributed profile or event zap.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletProfileZapRequest {
@@ -153,6 +153,12 @@ pub struct WalletProfileZapRequest {
     pub amount: u64,
     pub comment: Option<String>,
     pub idempotency_key: String,
+    /// Event id for an event-targeted zap. Omitted for profile zaps.
+    #[serde(default)]
+    pub target_event_id: Option<String>,
+    /// Kind of the target event. Required when `target_event_id` is present.
+    #[serde(default)]
+    pub target_event_kind: Option<u32>,
 }
 
 /// Restorable UI fields for an incomplete profile payment.
@@ -163,6 +169,8 @@ pub struct WalletProfileZapDraft {
     pub amount: u64,
     pub comment: Option<String>,
     pub idempotency_key: String,
+    pub target_event_id: Option<String>,
+    pub target_event_kind: Option<u32>,
 }
 
 /// Result of the experimental profile-payment flow.
@@ -175,6 +183,20 @@ pub struct WalletProfileZapResult {
     pub payment: WalletPaymentResult,
     pub intent_event_id: String,
     pub proof_published: bool,
+}
+
+/// A settled message payment retained locally until a payer proof is available.
+///
+/// This is display-only state. It is not a NIP-B1 proof and is never published.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletPlaceholderMessageZap {
+    pub intent_event_id: String,
+    pub target_event_id: String,
+    pub recipient_pubkey: String,
+    pub amount: u64,
+    pub comment: Option<String>,
+    pub settled_at_ms: u64,
 }
 
 /// A stable, serializable wallet error returned through Tauri.

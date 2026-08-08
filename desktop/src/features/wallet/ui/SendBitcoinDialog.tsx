@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Bitcoin, LoaderCircle, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
@@ -8,6 +9,7 @@ import {
   sendProfileZap,
 } from "../api";
 import { formatBitcoin } from "../lib/formatBitcoin";
+import { placeholderMessageZapsQueryKey } from "../lib/placeholderMessageZaps";
 import { parseWholeBitcoinAmount } from "../lib/profileZap";
 import { walletCommandError } from "../lib/walletError";
 import { Button } from "@/shared/ui/button";
@@ -26,12 +28,17 @@ export function SendBitcoinDialog({
   open,
   recipientName,
   recipientPubkey,
+  targetEventId = null,
+  targetEventKind = null,
 }: {
   onOpenChange: (open: boolean) => void;
   open: boolean;
   recipientName: string;
   recipientPubkey: string;
+  targetEventId?: string | null;
+  targetEventKind?: number | null;
 }) {
+  const queryClient = useQueryClient();
   const [amount, setAmount] = useState("");
   const [comment, setComment] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState<string>(
@@ -66,7 +73,7 @@ export function SendBitcoinDialog({
             `${recipientName} has not enabled their Bitcoin wallet.`,
         );
       });
-    getPendingProfileZap(recipientPubkey)
+    getPendingProfileZap(recipientPubkey, targetEventId)
       .then((pending) => {
         if (cancelled) return;
         if (pending) {
@@ -91,7 +98,7 @@ export function SendBitcoinDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, recipientName, recipientPubkey]);
+  }, [open, recipientName, recipientPubkey, targetEventId]);
 
   const parsedAmount = parseWholeBitcoinAmount(amount);
   const validAmount = parsedAmount !== null;
@@ -112,13 +119,21 @@ export function SendBitcoinDialog({
         amount: parsedAmount,
         comment: comment.trim() || null,
         idempotencyKey,
+        targetEventId,
+        targetEventKind,
       });
       if (result.payment.status === "completed") {
+        if (targetEventId) {
+          await queryClient.invalidateQueries({
+            queryKey: placeholderMessageZapsQueryKey,
+          });
+        }
         toast.success(
           `${formatBitcoin(result.payment.amount ?? parsedAmount)} sent`,
           {
-            description:
-              "The payment settled. Buzz kept the intent local because the wallet cannot produce an lnp payer proof yet.",
+            description: targetEventId
+              ? "The payment settled. A local placeholder receipt now appears under the message while payer proofs are unavailable."
+              : "The payment settled. Buzz kept the intent local because the wallet cannot produce an lnp payer proof yet.",
           },
         );
         setReconciling(false);
@@ -156,7 +171,9 @@ export function SendBitcoinDialog({
             Send bitcoin
           </DialogTitle>
           <DialogDescription>
-            Pay {recipientName}&apos;s BOLT12 offer from your Buzz wallet.
+            {targetEventId
+              ? `Zap ${recipientName}'s message from your Buzz wallet.`
+              : `Pay ${recipientName}'s BOLT12 offer from your Buzz wallet.`}
           </DialogDescription>
         </DialogHeader>
 
