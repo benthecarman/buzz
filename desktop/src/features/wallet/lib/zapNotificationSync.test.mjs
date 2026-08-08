@@ -6,6 +6,7 @@ import {
   fetchZapCatchupEvents,
   hasSettledZapPayment,
   parseZapSyncCursor,
+  zapCatchupProgress,
   zapSyncCursorStorageKey,
 } from "./zapNotificationSync.ts";
 
@@ -102,6 +103,24 @@ test("wallet correlation stays unresolved until the inbound payment is indexed",
   });
 
   assert.equal(found, false);
+});
+
+test("zap catch-up processes later proofs without skipping an unresolved proof", () => {
+  assert.deepEqual(
+    zapCatchupProgress(50, [
+      { createdAt: 80, status: "processed" },
+      { createdAt: 100, status: "retry" },
+      { createdAt: 120, status: "processed" },
+    ]),
+    { cursor: 100, hasPending: true },
+  );
+  assert.deepEqual(
+    zapCatchupProgress(50, [
+      { createdAt: 80, status: "processed" },
+      { createdAt: 120, status: "processed" },
+    ]),
+    { cursor: 120, hasPending: false },
+  );
 });
 
 test("zap sync cursor is validated and scoped by relay and recipient", () => {

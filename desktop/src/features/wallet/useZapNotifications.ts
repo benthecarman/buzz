@@ -21,6 +21,7 @@ import {
   readZapSyncCursor,
   type ZapSyncScope,
   ZAP_SYNC_OVERLAP_SECONDS,
+  zapCatchupProgress,
   writeZapSyncCursor,
 } from "./lib/zapNotificationSync";
 
@@ -228,6 +229,7 @@ export function useZapNotifications(
       };
 
       try {
+        let pendingCorrelationError: Error | null = null;
         const nextDisposer = await relayClient.subscribeLive(
           zapSubscriptionFilter(
             recipients,
@@ -251,6 +253,10 @@ export function useZapNotifications(
         for (const recipient of recipients) {
           const scope = scopeFor(recipient);
           const cursor = readZapSyncCursor(scope);
+          const outcomes: Array<{
+            createdAt: number;
+            status: "processed" | "retry";
+          }> = [];
           const events = await fetchZapCatchupEvents({
             recipientPubkey: recipient,
             since: cursor,
@@ -260,19 +266,31 @@ export function useZapNotifications(
           for (const event of events) {
             if (!isCurrent()) return;
             const result = await handleZap(event);
+            outcomes.push({
+              createdAt: event.created_at,
+              status: result.status,
+            });
             if (result.status === "retry") {
-              throw new Error(
+              pendingCorrelationError ??= new Error(
                 "Zap wallet correlation is temporarily unavailable.",
               );
+              // One uncorrelated proof must not prevent later, settled zaps
+              // from reaching history. Keep the durable cursor pinned here so
+              // this proof is included in the next overlap replay.
+              bufferedEvents.delete(event.id);
+              continue;
             }
-            writeZapSyncCursor(scope, event.created_at);
             bufferedEvents.delete(event.id);
+          }
+          const progress = zapCatchupProgress(cursor, outcomes);
+          if (progress.cursor > cursor) {
+            writeZapSyncCursor(scope, progress.cursor);
           }
         }
 
         if (!isCurrent()) return;
         caughtUp = true;
-        retryAttempt = 0;
+        if (!pendingCorrelationError) retryAttempt = 0;
         const buffered = [...bufferedEvents.values()].sort(
           (left, right) =>
             left.created_at - right.created_at ||
@@ -280,6 +298,10 @@ export function useZapNotifications(
         );
         bufferedEvents.clear();
         for (const event of buffered) enqueueLiveEvent(event);
+        await processing;
+        if (pendingCorrelationError) {
+          await stopAttempt(pendingCorrelationError);
+        }
       } catch (error) {
         await stopAttempt(error);
       }

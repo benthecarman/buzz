@@ -17,6 +17,30 @@ export type ZapSyncScope = {
   relayUrl: string;
 };
 
+export type ZapCatchupOutcome = {
+  createdAt: number;
+  status: "processed" | "retry";
+};
+
+/**
+ * Advance through a catch-up batch without skipping the first unresolved proof.
+ * Later proofs may still be processed and persisted while the cursor remains
+ * pinned close enough for the unresolved proof to be replayed.
+ */
+export function zapCatchupProgress(
+  currentCursor: number,
+  outcomes: readonly ZapCatchupOutcome[],
+): { cursor: number; hasPending: boolean } {
+  let cursor = currentCursor;
+  for (const outcome of outcomes) {
+    cursor = Math.max(cursor, outcome.createdAt);
+    if (outcome.status === "retry") {
+      return { cursor, hasPending: true };
+    }
+  }
+  return { cursor, hasPending: false };
+}
+
 function normalizedScopePart(value: string) {
   return encodeURIComponent(value.trim().toLowerCase());
 }
