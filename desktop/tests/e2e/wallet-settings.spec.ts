@@ -21,6 +21,45 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("profile menu shows the spendable balance and opens wallet settings", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("sidebar-profile-avatar-button").click();
+
+  const balance = page.getByTestId("profile-popover-wallet-balance");
+  await expect(balance).toBeVisible();
+  await expect(balance).toContainText("20,000");
+  await expect(balance).toHaveAttribute(
+    "aria-label",
+    "Open wallet settings. Spendable balance ₿20,000",
+  );
+
+  await balance.click();
+
+  await expect(page).toHaveURL(/\/settings\?section=wallet$/);
+  await expect(page.getByTestId("settings-wallet")).toBeVisible();
+});
+
+test("profile menu hides the balance when the Bitcoin experiment is disabled", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openSettings(page);
+  await page.evaluate((storageKey) => {
+    window.localStorage.setItem(storageKey, JSON.stringify({ bitcoin: false }));
+    window.dispatchEvent(new StorageEvent("storage", { key: storageKey }));
+  }, FEATURE_OVERRIDES_STORAGE_KEY);
+  await expect(page.getByTestId("settings-nav-wallet")).toHaveCount(0);
+
+  await page.getByTestId("settings-back-to-app").click();
+  await page.getByTestId("sidebar-profile-avatar-button").click();
+
+  await expect(page.getByTestId("profile-popover-wallet-balance")).toHaveCount(
+    0,
+  );
+});
+
 test("wallet balance exposes funding and transfer actions", async ({
   page,
 }) => {

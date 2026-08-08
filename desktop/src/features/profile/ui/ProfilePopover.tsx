@@ -18,6 +18,8 @@ import type { PresenceStatus } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { isMacPlatform } from "@/shared/lib/platform";
 
+import bitcoinIconUrl from "../assets/bitcoin.svg?inline";
+
 interface ProfilePopoverProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -31,8 +33,9 @@ interface ProfilePopoverProps {
   onSetStatus: (status: PresenceStatus) => void;
   onSetUserStatus: (text: string, emoji: string) => void;
   onClearUserStatus: () => void;
-  onOpenSettings: (section?: "profile" | "appearance") => void;
+  onOpenSettings: (section?: "profile" | "appearance" | "wallet") => void;
   onSendFeedback?: () => void;
+  spendableWalletBalance?: number | null;
   children: React.ReactNode;
   // Optional outer container whose clicks should NOT close the popover.
   // Used when auxiliary triggers (avatar, status text) live alongside the
@@ -47,6 +50,9 @@ const MENU_ITEM_CLASS =
   "flex min-h-9 w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-popover-foreground outline-hidden transition-colors hover:bg-muted/50 focus:outline-none focus-visible:bg-muted/50 focus-visible:outline-none";
 
 const ALL_STATUSES: PresenceStatus[] = ["online", "away", "offline"];
+const bitcoinAmountFormatter = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 0,
+});
 
 export function ProfilePopover({
   open,
@@ -63,6 +69,7 @@ export function ProfilePopover({
   onClearUserStatus,
   onOpenSettings,
   onSendFeedback,
+  spendableWalletBalance,
   children,
   triggerContainerRef,
   communitySwitcherSlot,
@@ -194,6 +201,32 @@ export function ProfilePopover({
                   </PopoverContent>
                 </Popover>
               </div>
+              {spendableWalletBalance !== null &&
+              spendableWalletBalance !== undefined ? (
+                <button
+                  aria-label={`Open wallet settings. Spendable balance ₿${bitcoinAmountFormatter.format(spendableWalletBalance)}`}
+                  className="ml-auto inline-flex max-w-32 shrink-0 items-center gap-1.5 rounded-lg border border-border/70 bg-background/80 px-2 py-1 text-xs font-medium text-popover-foreground outline-hidden transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  data-testid="profile-popover-wallet-balance"
+                  onClick={() => {
+                    closePopover();
+                    window.requestAnimationFrame(() => {
+                      onOpenSettings("wallet");
+                    });
+                  }}
+                  role="menuitem"
+                  type="button"
+                >
+                  <img
+                    alt=""
+                    aria-hidden="true"
+                    className="h-5 w-5 shrink-0"
+                    src={bitcoinIconUrl}
+                  />
+                  <span className="truncate tabular-nums">
+                    {bitcoinAmountFormatter.format(spendableWalletBalance)}
+                  </span>
+                </button>
+              ) : null}
             </div>
 
             {/* ── Status input (Slack-style) ──────────────────────── */}

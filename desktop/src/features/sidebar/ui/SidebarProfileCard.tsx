@@ -15,7 +15,10 @@ import type { Community } from "@/features/communities/types";
 import { CommunitySwitcher } from "@/features/communities/ui/CommunitySwitcher";
 import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
 import type { SettingsSection } from "@/features/settings/ui/SettingsPanels";
+import { getWalletStatus } from "@/features/wallet/api";
+import { useBitcoinCompileEnabled } from "@/features/wallet/hooks";
 import type { PresenceStatus, Profile, UserStatus } from "@/shared/api/types";
+import { useFeatureEnabled } from "@/shared/features";
 import { cn } from "@/shared/lib/cn";
 
 type SidebarProfileCardProps = {
@@ -63,6 +66,11 @@ export function SidebarProfileCard({
   const activeRole = myMembershipQuery.data?.membership?.role;
   const canInvite = activeRole === "owner" || activeRole === "admin";
   const [profilePopoverOpen, setProfilePopoverOpen] = React.useState(false);
+  const [spendableWalletBalance, setSpendableWalletBalance] = React.useState<
+    number | null
+  >(null);
+  const bitcoinEnabled = useFeatureEnabled("bitcoin");
+  const bitcoinAvailable = useBitcoinCompileEnabled();
   const profileCardRef = React.useRef<HTMLDivElement | null>(null);
   const toggleProfilePopover = React.useCallback(
     () => setProfilePopoverOpen((prev) => !prev),
@@ -83,6 +91,28 @@ export function SidebarProfileCard({
   );
   const hasStatus = Boolean(selfUserStatus?.text || selfUserStatus?.emoji);
   const communityLabel = activeCommunity?.name ?? "No community";
+
+  React.useEffect(() => {
+    if (!bitcoinEnabled || !bitcoinAvailable) {
+      setSpendableWalletBalance(null);
+      return;
+    }
+    if (!profilePopoverOpen) return;
+
+    let cancelled = false;
+    void getWalletStatus()
+      .then((status) => {
+        if (!cancelled) setSpendableWalletBalance(status.spendableBalance);
+      })
+      .catch(() => {
+        if (!cancelled) setSpendableWalletBalance(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bitcoinAvailable, bitcoinEnabled, profilePopoverOpen]);
+
   const readonlyCommunityLabel = (
     <span
       className="flex min-w-0 cursor-pointer items-center gap-1 text-xs leading-snug text-sidebar-foreground/70"
@@ -159,6 +189,7 @@ export function SidebarProfileCard({
             onSendFeedback={onSendFeedback}
             onSetStatus={onSetPresenceStatus ?? (() => {})}
             onSetUserStatus={onSetUserStatus}
+            spendableWalletBalance={spendableWalletBalance}
             triggerContainerRef={profileCardRef}
             userStatusEmoji={selfUserStatus?.emoji}
             userStatusText={selfUserStatus?.text}
