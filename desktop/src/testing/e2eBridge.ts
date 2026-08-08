@@ -99,6 +99,7 @@ export type MockManagedAgentSeed = {
   autoRestartOnConfigChange?: boolean;
   respondTo?: RawManagedAgent["respond_to"];
   respondToAllowlist?: string[];
+  pricePerMinuteSats?: number | null;
   /** Per-agent env vars seeded into the mock store. */
   envVars?: Record<string, string>;
 };
@@ -840,6 +841,7 @@ type RawManagedAgent = {
   backend_agent_id: string | null;
   respond_to: "owner-only" | "allowlist" | "anyone";
   respond_to_allowlist: string[];
+  price_per_minute_sats: number | null;
 };
 
 type RawCreateManagedAgentResponse = {
@@ -1678,6 +1680,7 @@ function cloneManagedAgent(agent: MockManagedAgent): RawManagedAgent {
     respond_to_allowlist: agent.respond_to_allowlist
       ? [...agent.respond_to_allowlist]
       : [],
+    price_per_minute_sats: agent.price_per_minute_sats,
   };
 }
 
@@ -2230,6 +2233,7 @@ function buildSeededManagedAgent(seed: MockManagedAgentSeed): MockManagedAgent {
     backend_agent_id: null,
     respond_to: seed.respondTo ?? "owner-only",
     respond_to_allowlist: seed.respondToAllowlist ?? [],
+    price_per_minute_sats: seed.pricePerMinuteSats ?? null,
     private_key_nsec: `nsec1mock${seed.pubkey.slice(0, 20)}`,
     log_lines: [
       `buzz-acp starting: relay=${DEFAULT_RELAY_WS_URL} agent_pubkey=${seed.pubkey} parallelism=1`,
@@ -8352,6 +8356,7 @@ async function handleCreateManagedAgent(
         | { type: "provider"; id: string; config: Record<string, unknown> };
       respondTo?: "owner-only" | "allowlist" | "anyone";
       respondToAllowlist?: string[];
+      pricePerMinuteSats?: number;
     };
   },
   config: E2eConfig | undefined,
@@ -8439,6 +8444,7 @@ async function handleCreateManagedAgent(
     backend_agent_id: null,
     respond_to: mintRespondTo,
     respond_to_allowlist: [...mintRespondToAllowlist],
+    price_per_minute_sats: args.input.pricePerMinuteSats ?? null,
     private_key_nsec: `nsec1mock${pubkey.slice(0, 20)}`,
     log_lines: [
       `buzz-acp starting: relay=${args.input.relayUrl ?? DEFAULT_RELAY_WS_URL} agent_pubkey=${pubkey} parallelism=${mintParallelism}`,
@@ -8685,6 +8691,7 @@ async function handleUpdateManagedAgent(args: {
     envVars?: Record<string, string>;
     respondTo?: "owner-only" | "allowlist" | "anyone";
     respondToAllowlist?: string[];
+    pricePerMinuteSats?: number | null;
   };
 }): Promise<{ agent: RawManagedAgent; profile_sync_error: string | null }> {
   const agent = getMockManagedAgent(args.input.pubkey);
@@ -8705,6 +8712,9 @@ async function handleUpdateManagedAgent(args: {
   }
   if (args.input.respondToAllowlist !== undefined) {
     agent.respond_to_allowlist = args.input.respondToAllowlist;
+  }
+  if (args.input.pricePerMinuteSats !== undefined) {
+    agent.price_per_minute_sats = args.input.pricePerMinuteSats;
   }
   agent.updated_at = new Date().toISOString();
   return { agent: cloneManagedAgent(agent), profile_sync_error: null };

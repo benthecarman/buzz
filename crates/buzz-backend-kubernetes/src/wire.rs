@@ -50,6 +50,8 @@ pub struct AgentPayload {
     pub respond_to: Option<String>,
     #[serde(default)]
     pub respond_to_allowlist: Option<Vec<String>>,
+    #[serde(default)]
+    pub price_per_minute_sats: Option<u64>,
     /// User env, already merged global < persona < agent by the desktop and
     /// already stripped of reserved keys. Superseded by `launch.env` when
     /// `launch` is present — a provider MUST NOT re-merge it on top

@@ -119,6 +119,8 @@ pub struct WalletTransaction {
     /// Public payer metadata supplied with an inbound BOLT12 payment. Zap
     /// notifications use this to bind a settled payment to its signed intent.
     pub payer_note: Option<String>,
+    /// Provider-canonical identifier of the BOLT12 offer used by the payment.
+    pub offer_id: Option<String>,
     pub created_at_ms: u64,
     pub finalized_at_ms: Option<u64>,
 }
@@ -162,6 +164,16 @@ pub struct WalletProfileZapRequest {
     /// Kind of the target event. Required when `target_event_id` is present.
     #[serde(default)]
     pub target_event_kind: Option<u32>,
+}
+
+/// Exact agent-signed runtime quote approved for one idempotent BOLT12 zap.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletAgentRuntimeZapRequest {
+    /// Exact signed, encrypted kind-24211 event returned by the agent.
+    pub quote_event_json: String,
+    /// Client-generated UUID reused for every retry of this exact quote.
+    pub idempotency_key: String,
 }
 
 /// Restorable UI fields for an incomplete profile payment.

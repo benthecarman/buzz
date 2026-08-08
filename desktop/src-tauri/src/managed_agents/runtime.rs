@@ -338,6 +338,7 @@ pub fn build_managed_agent_summary(
         log_path,
         respond_to: record.respond_to,
         respond_to_allowlist: record.respond_to_allowlist.clone(),
+        price_per_minute_sats: record.price_per_minute_sats,
     })
 }
 
@@ -530,6 +531,10 @@ pub fn spawn_agent_child(
     command.env("RUST_LOG", child_rust_log_filter());
     command.env("BUZZ_PRIVATE_KEY", &record.private_key_nsec);
     command.env("BUZZ_RELAY_URL", &effective_relay_url);
+    let runtime_state_dir = super::managed_agents_base_dir(app)?
+        .join("runtime-state")
+        .join(runtime_key.runtime_id());
+    command.env("BUZZ_ACP_RUNTIME_STATE_DIR", runtime_state_dir);
     command.env("BUZZ_ACP_LAZY_POOL", if lazy { "true" } else { "false" });
     command.env("BUZZ_ACP_AGENT_COMMAND", &resolved_agent_command);
     command.env("BUZZ_ACP_AGENT_ARGS", agent_args.join(","));

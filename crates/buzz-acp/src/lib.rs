@@ -5,10 +5,12 @@ mod config;
 mod engram_fetch;
 mod filter;
 mod observer;
+mod paid_runtime;
 mod pool;
 mod pool_lifecycle;
 mod queue;
 mod relay;
+mod runtime_conformance;
 mod setup_mode;
 mod usage;
 
@@ -21,8 +23,8 @@ use std::time::Duration;
 use acp::{AcpClient, EnvVar, McpServer};
 use anyhow::Result;
 use buzz_core::kind::{
-    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
-    KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
+    KIND_AGENT_RUNTIME_PRICING, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
+    KIND_STREAM_MESSAGE, KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
 };
 use buzz_core::observer::{
     decrypt_observer_payload, encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY,
@@ -35,7 +37,7 @@ use config::{
 };
 use filter::SubscriptionRule;
 use futures_util::FutureExt;
-use nostr::{PublicKey, ToBech32};
+use nostr::{EventBuilder, Kind, PublicKey, ToBech32};
 use pool::{
     AgentPool, ControlSignal, IdleSwitchResult, OwnedAgent, PromptContext, PromptOutcome,
     PromptResult, PromptSource, SessionState, TimeoutKind,
@@ -43,6 +45,22 @@ use pool::{
 use pool_lifecycle::PoolLifecycle;
 use queue::{CancelReason, EventQueue, FlushBatch, QueuedEvent, ThreadTags};
 use relay::{HarnessRelay, RelayEventPublisher};
+
+async fn publish_runtime_pricing(
+    rest: &relay::RestClient,
+    keys: &nostr::Keys,
+    price_per_minute_sats: Option<u64>,
+) -> Result<()> {
+    let pricing = match price_per_minute_sats {
+        Some(price) => buzz_core::agent_runtime_payment::RuntimePricing::enabled(price)?,
+        None => buzz_core::agent_runtime_payment::RuntimePricing::disabled(),
+    };
+    let content = serde_json::to_string(&pricing)?;
+    let event = EventBuilder::new(Kind::Custom(KIND_AGENT_RUNTIME_PRICING as u16), content)
+        .sign_with_keys(keys)?;
+    rest.submit_event(&event).await?;
+    Ok(())
+}
 use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
@@ -1709,6 +1727,14 @@ async fn tokio_main() -> Result<()> {
             );
         }
     }
+    if config.price_per_minute_sats.is_some() && relay_observer_control_rx.is_none() {
+        relay
+            .subscribe_observer_controls()
+            .await
+            .map_err(|e| anyhow::anyhow!("paid runtime request subscribe error: {e}"))?;
+        relay_observer_control_rx = relay.take_observer_control_rx();
+        tracing::info!("paid runtime request subscription enabled");
+    }
 
     let channel_info_map = relay
         .discover_channels()
@@ -1768,6 +1794,74 @@ async fn tokio_main() -> Result<()> {
             tracing::info!("subscribed to channel {channel_id}");
         }
     }
+
+    paid_runtime::acquire_runtime_instance_lock(&config.keys)
+        .map_err(|error| anyhow::anyhow!("acquire paid runtime instance fence: {error}"))?;
+    paid_runtime::recover_interrupted(&config, &relay.rest_client())
+        .await
+        .map_err(|error| anyhow::anyhow!("recover paid runtime checkpoints: {error}"))?;
+    paid_runtime::sweep_expired_open_reservations(&config.keys, &relay.rest_client())
+        .await
+        .map_err(|error| anyhow::anyhow!("sweep expired paid runtime reservations: {error}"))?;
+
+    // Pricing is a separate agent-authored replaceable event. Kind 10058 is
+    // owned exclusively by the wallet offer flow and is never modified here.
+    let paid_runtime_disabled = paid_runtime::kill_switch_active();
+    if config.price_per_minute_sats.is_some() && !paid_runtime_disabled {
+        if let Err(error) =
+            paid_runtime::validate_pricing_readiness(&relay.rest_client(), config.keys.public_key())
+                .await
+        {
+            let _ = publish_runtime_pricing(&relay.rest_client(), &config.keys, None).await;
+            return Err(anyhow::anyhow!(
+                "paid runtime is inactive because its BOLT12 offer is unavailable: {error}"
+            ));
+        }
+    }
+    publish_runtime_pricing(
+        &relay.rest_client(),
+        &config.keys,
+        (!paid_runtime_disabled)
+            .then_some(config.price_per_minute_sats)
+            .flatten(),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("publish agent runtime pricing: {error}"))?;
+    if paid_runtime_disabled && config.price_per_minute_sats.is_some() {
+        tracing::warn!("paid runtime kill switch is active; new paid invocations are blocked");
+    }
+
+    let settlement_retry_keys = config.keys.clone();
+    let settlement_retry_rest = relay.rest_client();
+    let _paid_runtime_settlement_retry = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = paid_runtime::retry_persisted_settlements(
+                &settlement_retry_keys,
+                &settlement_retry_rest,
+            )
+            .await
+            {
+                tracing::warn!(error = %error, "retry durable runtime settlements");
+            }
+            match paid_runtime::sweep_expired_open_reservations(
+                &settlement_retry_keys,
+                &settlement_retry_rest,
+            )
+            .await
+            {
+                Ok(count) if count > 0 => {
+                    tracing::info!(count, "settled expired paid runtime reservations");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(error = %error, "sweep expired paid runtime reservations");
+                }
+            }
+        }
+    });
 
     if let Some((observer, publisher, keys, agent_pubkey, owner_pubkey, owner)) =
         relay_observer_publisher.take()
@@ -2190,7 +2284,9 @@ async fn tokio_main() -> Result<()> {
                     let _ = result_rx;
                     match control_event {
                         Some(event) => {
-                            if let Some(ref owner_hex) = owner_cache.pubkey {
+                            if event.kind.as_u16() as u32 == buzz_core::kind::KIND_AGENT_RUNTIME_REQUEST {
+                                paid_runtime::handle_request(&config, &ctx.rest_client, event).await;
+                            } else if let Some(ref owner_hex) = owner_cache.pubkey {
                                 handle_relay_observer_control_event(&config.keys, event, &mut pool, observer.as_ref(), owner_hex);
                             } else {
                                 tracing::warn!("observer control frame received but no owner resolved — dropping");
@@ -2481,6 +2577,46 @@ async fn tokio_main() -> Result<()> {
                                     continue;
                                 }
                             };
+                            // Paid runtime is required only for explicitly
+                            // allowlisted external callers. Owners and agents
+                            // with the same verified owner remain free even if
+                            // their pubkey also appears in the allowlist.
+                            let paid_author = buzz_event.event.pubkey.to_hex();
+                            if config.price_per_minute_sats.is_some()
+                                && config.respond_to == RespondTo::Allowlist
+                                && config.respond_to_allowlist.contains(&paid_author)
+                                && !is_owner_or_sibling(
+                                    &paid_author,
+                                    &owner_cache,
+                                    &ctx.rest_client,
+                                )
+                                .await
+                            {
+                                if paid_runtime::kill_switch_active() {
+                                    tracing::warn!(
+                                        channel_id = %buzz_event.channel_id,
+                                        author = %paid_author,
+                                        "paid runtime admission blocked by operator kill switch"
+                                    );
+                                    continue;
+                                }
+                                if let Err(error) = paid_runtime::bind_instruction(
+                                    &config,
+                                    &ctx.rest_client,
+                                    &buzz_event.event,
+                                    &buzz_event.channel_id.to_string(),
+                                )
+                                .await
+                                {
+                                    tracing::warn!(
+                                        channel_id = %buzz_event.channel_id,
+                                        author = %paid_author,
+                                        error = %error,
+                                        "paid runtime admission unavailable"
+                                    );
+                                    continue;
+                                }
+                            }
                             // Capture author pubkey before queue.push() moves
                             // buzz_event.event (needed for mode gate below).
                             let author_hex = buzz_event.event.pubkey.to_hex();
@@ -2856,6 +2992,15 @@ async fn tokio_main() -> Result<()> {
                 );
                 if matches!(ack, Ok(pool::SteerAck::Success)) {
                     queue.extend_in_flight_deadline(channel_id, config.max_turn_duration_secs);
+                    if let Err(error) = paid_runtime::settle_instruction_unused(
+                        &config.keys,
+                        &ctx.rest_client,
+                        &event_id,
+                    )
+                    .await
+                    {
+                        tracing::error!(error = %error, "settle native-steer runtime reservation");
+                    }
                 }
                 if drop_withheld {
                     queue.remove_event(channel_id, &event_id);
@@ -3383,6 +3528,42 @@ fn spawn_failure_notice(
     }
 }
 
+fn batch_has_paid_runtime(batch: &FlushBatch) -> bool {
+    batch.events.iter().any(|entry| {
+        entry.event.tags.iter().any(|tag| {
+            tag.as_slice()
+                .first()
+                .is_some_and(|value| value.as_str() == "agent_runtime")
+        })
+    })
+}
+
+fn spawn_paid_runtime_deadletter(
+    config: &Config,
+    rest_client: Option<&relay::RestClient>,
+    batch: &FlushBatch,
+    outcome: buzz_core::agent_runtime_payment::RuntimeOutcome,
+) {
+    let Some(rest) = rest_client.cloned() else {
+        return;
+    };
+    let keys = config.keys.clone();
+    let event_ids = batch
+        .events
+        .iter()
+        .map(|entry| entry.event.id.to_hex())
+        .collect::<Vec<_>>();
+    tokio::spawn(async move {
+        for event_id in event_ids {
+            if let Err(error) =
+                paid_runtime::settle_instruction_checkpoint(&keys, &rest, &event_id, outcome).await
+            {
+                tracing::error!(error = %error, event_id = %event_id, "settle dead-lettered paid runtime");
+            }
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_prompt_result(
     pool: &mut AgentPool,
@@ -3418,6 +3599,7 @@ fn handle_prompt_result(
     // every retry starts at attempt 1 — defeating exponential backoff and
     // dead-letter protection.
     if let Some(batch) = result.batch.take() {
+        let paid_runtime_batch = batch_has_paid_runtime(&batch);
         // Don't requeue batches for channels the agent was removed from —
         // those events are stale and should be silently dropped.
         if !removed_channels.contains(&batch.channel_id) {
@@ -3441,6 +3623,33 @@ fn handle_prompt_result(
                 // accounting, same as a clean cancel.
                 let reason = batch.cancel_reason.unwrap_or(CancelReason::Steer);
                 queue.requeue_as_cancelled(batch, reason);
+            } else if matches!(result.outcome, PromptOutcome::BudgetExhausted) {
+                tracing::warn!(
+                    channel_id = %batch.channel_id,
+                    events = batch.events.len(),
+                    "paid runtime limit reached — stopping batch"
+                );
+                spawn_failure_notice(
+                    rest_client,
+                    &batch,
+                    "⚠️ The prepaid Agent runtime limit was reached. Buy or reserve more runtime before continuing."
+                        .to_string(),
+                );
+            } else if paid_runtime_batch
+                && matches!(
+                    result.outcome,
+                    PromptOutcome::Timeout(TimeoutKind::Hard { .. })
+                )
+            {
+                // The hard-timeout prompt segment already published its final
+                // settlement. Never re-run this paid instruction without a new
+                // reservation.
+                spawn_failure_notice(
+                    rest_client,
+                    &batch,
+                    "⚠️ The paid Agent turn reached its hard timeout. Reserve runtime again to retry."
+                        .to_string(),
+                );
             } else if matches!(
                 result.outcome,
                 PromptOutcome::Timeout(TimeoutKind::Hard {
@@ -3495,6 +3704,12 @@ fn handle_prompt_result(
                     and then re-send."
                     .to_string();
                 spawn_failure_notice(rest_client, &batch, content);
+                spawn_paid_runtime_deadletter(
+                    config,
+                    rest_client,
+                    &batch,
+                    buzz_core::agent_runtime_payment::RuntimeOutcome::Error,
+                );
             } else if let Some(dead) = queue.requeue(batch) {
                 let reason = match &result.outcome {
                     PromptOutcome::Timeout(TimeoutKind::Idle) => "the turn timed out".to_string(),
@@ -3509,6 +3724,13 @@ fn handle_prompt_result(
                     "⚠️ I couldn't process the last request after multiple retries ({reason}). Please re-send if it's still needed."
                 );
                 spawn_failure_notice(rest_client, &dead, content);
+                let runtime_outcome = match result.outcome {
+                    PromptOutcome::Timeout(_) => {
+                        buzz_core::agent_runtime_payment::RuntimeOutcome::Timeout
+                    }
+                    _ => buzz_core::agent_runtime_payment::RuntimeOutcome::Error,
+                };
+                spawn_paid_runtime_deadletter(config, rest_client, &dead, runtime_outcome);
             }
         } else {
             tracing::debug!(
@@ -3517,6 +3739,12 @@ fn handle_prompt_result(
                 "dropping failed batch for removed channel"
             );
             hard_timeout_fate_suffix = Some(" — batch dropped (channel removed)");
+            spawn_paid_runtime_deadletter(
+                config,
+                rest_client,
+                &batch,
+                buzz_core::agent_runtime_payment::RuntimeOutcome::Cancelled,
+            );
         }
     }
 
@@ -3540,6 +3768,7 @@ fn handle_prompt_result(
         PromptOutcome::AgentExited => "exited",
         PromptOutcome::Cancelled => "cancelled",
         PromptOutcome::CancelDrainTimeout(_) => "cancel_drain_timeout",
+        PromptOutcome::BudgetExhausted => "budget_exhausted",
     };
     let agent_index = result.agent.index;
     // Capture the spawn-time configured model and our PID before the agent is
@@ -3590,7 +3819,7 @@ fn handle_prompt_result(
             pool.return_agent(result.agent);
         }
         // Fatal outcomes: the agent subprocess is dead or poisoned — respawn it.
-        PromptOutcome::AgentExited | PromptOutcome::Timeout(_) => {
+        PromptOutcome::AgentExited | PromptOutcome::Timeout(_) | PromptOutcome::BudgetExhausted => {
             tracing::warn!(
                 agent = agent_index,
                 outcome = outcome_label,
@@ -3609,6 +3838,9 @@ fn handle_prompt_result(
                         "Agent turn exceeded the maximum duration ({}s){}",
                         config.max_turn_duration_secs, suffix
                     )
+                }
+                "budget_exhausted" => {
+                    "Agent stopped because its prepaid runtime limit was reached".to_string()
                 }
                 _ => "Agent session timed out due to inactivity".to_string(),
             };
@@ -6202,6 +6434,7 @@ mod build_mcp_servers_tests {
             permission_mode: config::PermissionMode::DontAsk,
             respond_to: config::RespondTo::Anyone,
             respond_to_allowlist: std::collections::HashSet::new(),
+            price_per_minute_sats: None,
             allowed_respond_to: vec![],
             persona_env_vars: vec![],
             has_generated_codex_config: false,
@@ -6424,6 +6657,7 @@ mod error_outcome_emission_tests {
             permission_mode: config::PermissionMode::DontAsk,
             respond_to: config::RespondTo::Anyone,
             respond_to_allowlist: HashSet::new(),
+            price_per_minute_sats: None,
             allowed_respond_to: vec![],
             persona_env_vars: vec![],
             has_generated_codex_config: false,

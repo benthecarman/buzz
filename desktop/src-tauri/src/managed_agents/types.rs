@@ -1,3 +1,4 @@
+pub use super::runtime_pricing::validate_runtime_price;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, process::Child};
 
@@ -18,8 +19,7 @@ pub struct AgentDefinition {
     pub display_name: String,
     pub avatar_url: Option<String>,
     pub system_prompt: String,
-    /// Preferred ACP runtime ID (e.g., 'goose', 'claude', 'codex'). Determines which agent binary
-    /// Buzz spawns. When deploying from this persona, this runtime is pre-selected in the UI.
+    /// Preferred ACP runtime ID, used for spawning and pre-selection in the UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
     /// Opaque, harness-specific model identifier string. Format depends on the runtime and its LLM
@@ -138,6 +138,7 @@ impl AgentDefinition {
             last_error_code: None,
             respond_to: RespondTo::default(),
             respond_to_allowlist: Vec::new(),
+            price_per_minute_sats: None,
             display_name: Some(self.display_name),
             slug: Some(self.id),
             runtime: self.runtime,
@@ -196,6 +197,7 @@ impl ManagedAgentRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayAgentInfo {
     pub pubkey: String,
+    pub owner_pubkey: Option<String>,
     pub name: String,
     pub agent_type: String,
     pub channels: Vec<String>,
@@ -207,6 +209,8 @@ pub struct RelayAgentInfo {
     pub respond_to: Option<RespondTo>,
     #[serde(default)]
     pub respond_to_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_per_minute_sats: Option<u64>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManagedAgentRecord {
@@ -231,8 +235,7 @@ pub struct ManagedAgentRecord {
     /// NIP-OA auth tag JSON. Computed at agent creation time.
     ///
     /// Pre-existing agents created before NIP-OA will have `None` here.
-    /// This is intentional — they continue to work without attestation.
-    /// Re-attestation requires agent recreation (v2 migration scope).
+    /// They continue to work; re-attestation requires agent recreation.
     #[serde(default)]
     pub auth_tag: Option<String>,
     pub relay_url: String,
@@ -344,14 +347,12 @@ pub struct ManagedAgentRecord {
     pub last_error: Option<String>,
     #[serde(default)]
     pub last_error_code: Option<i64>,
-    /// Inbound author gate mode. Translates to `BUZZ_ACP_RESPOND_TO`.
     #[serde(default)]
     pub respond_to: RespondTo,
-    /// Allowlist used when `respond_to == Allowlist`. Stored normalized
-    /// (64-char lowercase hex, deduped). Empty when mode is not Allowlist.
-    /// Preserved across mode toggles so users don't lose state.
     #[serde(default)]
     pub respond_to_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_per_minute_sats: Option<u64>,
     /// Optional display name distinct from the unique `name` handle. Absorbed
     /// from `AgentDefinition.display_name` (unified agent model, Phase 1A).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -566,6 +567,7 @@ pub struct ManagedAgentSummary {
     pub log_path: String,
     pub respond_to: RespondTo,
     pub respond_to_allowlist: Vec<String>,
+    pub price_per_minute_sats: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]

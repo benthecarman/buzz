@@ -269,6 +269,7 @@ export type RelayMember = {
 
 export type RelayAgent = {
   pubkey: string;
+  ownerPubkey?: string | null;
   name: string;
   agentType: string;
   channels: string[];
@@ -277,6 +278,7 @@ export type RelayAgent = {
   status: "online" | "away" | "offline";
   respondTo: RespondToMode | null;
   respondToAllowlist: string[];
+  pricePerMinuteSats: number | null;
 };
 
 export type ManagedAgentRuntimeLifecycle =
@@ -377,13 +379,9 @@ export type ManagedAgent = {
   autoRestartOnConfigChange: boolean;
   backend: ManagedAgentBackend;
   backendAgentId: string | null;
-  /** Who the agent should respond to. Maps to `buzz-acp --respond-to`. */
   respondTo: RespondToMode;
-  /**
-   * Normalized 64-char lowercase hex pubkeys. Used only when `respondTo` is
-   * `"allowlist"`. Preserved across mode toggles.
-   */
   respondToAllowlist: string[];
+  pricePerMinuteSats: number | null;
 };
 
 /** Inbound author gate mode. Mirrors buzz-acp's --respond-to CLI flag. */
@@ -442,6 +440,7 @@ export type CreateManagedAgentInput = {
    * normalized server-side (must be 64 hex chars each).
    */
   respondToAllowlist?: string[];
+  pricePerMinuteSats?: number;
   relayMesh?: RelayMeshConfig;
 };
 
@@ -706,6 +705,7 @@ export type UpdateManagedAgentInput = {
    * (validated & normalized server-side).
    */
   respondToAllowlist?: string[];
+  pricePerMinuteSats?: number | null;
 };
 export type AgentPersona = {
   id: string;

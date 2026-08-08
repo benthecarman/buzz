@@ -32,6 +32,7 @@ mod restore;
 pub mod retention;
 mod runtime;
 mod runtime_commands;
+mod runtime_pricing;
 mod runtime_types;
 pub(crate) mod snapshot_avatar;
 pub(crate) mod spawn_snapshot;

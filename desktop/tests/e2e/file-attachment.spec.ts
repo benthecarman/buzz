@@ -352,7 +352,7 @@ test("upload progress floats above the dock and lifts Jump to latest", async ({
         __BUZZ_E2E__?: { mock?: { uploadDelayMs?: number } };
       }
     ).__BUZZ_E2E__;
-    if (e2e?.mock) e2e.mock.uploadDelayMs = 2_000;
+    if (e2e?.mock) e2e.mock.uploadDelayMs = 10_000;
   });
   await page.getByTestId("channel-deep-history").click();
 

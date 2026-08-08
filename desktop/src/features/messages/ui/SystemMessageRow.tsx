@@ -57,6 +57,8 @@ type SystemMessagePayload = {
   public_reason?: string;
   reason_code?: string;
   action_id?: string;
+  minutes?: number;
+  amount_sats?: number;
 };
 
 type SystemMessageDescription = {
@@ -488,6 +490,26 @@ function describeSystemEvent(
   );
 
   switch (payload.type) {
+    case "agent_runtime_purchased":
+      if (
+        !payload.actor ||
+        !payload.target ||
+        !Number.isSafeInteger(payload.minutes) ||
+        !Number.isSafeInteger(payload.amount_sats) ||
+        (payload.minutes ?? 0) <= 0 ||
+        (payload.amount_sats ?? 0) <= 0
+      ) {
+        return null;
+      }
+      return {
+        title: actorName,
+        action: (
+          <>
+            prepaid ₿{payload.amount_sats?.toLocaleString()} for{" "}
+            {payload.minutes} minutes of {targetName} runtime
+          </>
+        ),
+      };
     case "members_added":
       if (!payload.actor || !payload.targets?.length) return null;
       return {

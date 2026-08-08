@@ -59,6 +59,7 @@ fn minimal_record() -> ManagedAgentRecord {
         last_error_code: Some(42), // MUST NOT appear
         respond_to: RespondTo::default(),
         respond_to_allowlist: vec!["pubkey1hex".to_string()],
+        price_per_minute_sats: None,
         slug: Some("test-agent".to_string()),
         runtime: Some("goose".to_string()),
         name_pool: vec!["Alice".to_string(), "Bob".to_string()],

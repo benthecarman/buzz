@@ -34,6 +34,7 @@
     "model": "gpt-5",
     "name": "worker",
     "parallelism": 10,
+    "price_per_minute_sats": null,
     "private_key_nsec": "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5",
     "provider": "openai",
     "relay_url": "wss://relay.example",

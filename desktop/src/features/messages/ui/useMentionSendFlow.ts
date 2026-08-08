@@ -20,21 +20,14 @@ import { filterEffectiveExplicitAgentPubkeys } from "@/features/messages/lib/eff
 import {
   prepareBackgroundMediaUpload,
   saveQueuedAttachmentsForDraft,
-  type QueuedMediaAttachment,
 } from "@/features/messages/lib/backgroundMediaUploadStore";
-import type { UseChannelLinksResult } from "@/features/messages/lib/useChannelLinks";
-import type { UseEmojiAutocompleteResult } from "@/features/messages/lib/useEmojiAutocomplete";
 import {
   buildOutgoingMessage,
   type ImetaMedia,
   mergeOutgoingTags,
 } from "@/features/messages/lib/imetaMediaMarkdown";
-import type { UseMentionsResult } from "@/features/messages/lib/useMentions";
-import type { UseRichTextEditorResult } from "@/features/messages/lib/useRichTextEditor";
-import type { UseDraftsResult } from "@/features/messages/lib/useDrafts";
 import { invokeTauri } from "@/shared/api/tauri";
-import type { CustomEmoji } from "@/shared/lib/remarkCustomEmoji";
-import type { AcpRuntime, ChannelType, ManagedAgent } from "@/shared/api/types";
+import type { AcpRuntime, ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 import {
@@ -47,51 +40,8 @@ import {
   type SendMessageWithMentionFlowInput,
   uniqueNormalizedPubkeys,
 } from "./useMentionSendFlow.helpers";
-type UseMentionSendFlowOptions = {
-  channelId: string | null;
-  channelLinks: Pick<UseChannelLinksResult, "clearChannels">;
-  channelType: ChannelType | null;
-  contentRef: React.MutableRefObject<string>;
-  customEmoji: CustomEmoji[];
-  drafts: Pick<UseDraftsResult, "loadDraft" | "markDraftSent" | "persistDraft">;
-  emojiAutocomplete: Pick<UseEmojiAutocompleteResult, "clearEmojis">;
-  mentions: UseMentionsResult;
-  onPrepareSendChannel?: (
-    additionalParticipantPubkeys?: string[],
-  ) => Promise<string | null>;
-  onSendRef: React.MutableRefObject<
-    (
-      content: string,
-      mentionPubkeys: string[],
-      mediaTags?: string[][],
-      channelId?: string | null,
-      threadContext?: {
-        parentEventId: string | null;
-        threadHeadId: string | null;
-      } | null,
-    ) => Promise<void>
-  >;
-  richText: Pick<
-    UseRichTextEditorResult,
-    "clearContent" | "setContent" | "setContentAndFocusEnd"
-  >;
-  setContent: (content: string) => void;
-  setIsEmojiPickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  setPendingImeta: (pendingImeta: ImetaMedia[]) => void;
-  hasUnsavedMedia: () => boolean;
-  clearQueuedAttachments: () => void;
-  restoreQueuedAttachments: (attachments: QueuedMediaAttachment[]) => void;
-  setSpoileredAttachmentUrls?: React.Dispatch<
-    React.SetStateAction<Set<string>>
-  >;
-  onSuccessfulExplicitAgentAudience?: (audience: {
-    channelId: string;
-    expectedGeneration: number;
-    expectedRevision: number | null;
-    explicitAgentPubkeys: string[];
-  }) => void;
-  resolvePostSendContent?: (effectiveExplicitAgentPubkeys: string[]) => string;
-};
+import { useAgentRuntimeCheckout } from "./useAgentRuntimeCheckout";
+import type { UseMentionSendFlowOptions } from "./useMentionSendFlow.types";
 export function useMentionSendFlow({
   channelId,
   channelLinks,
@@ -146,6 +96,11 @@ export function useMentionSendFlow({
   const availableRuntimesQuery = useAvailableAcpRuntimes();
   const managedAgentsQuery = useManagedAgentsQuery();
   const startAgentMutation = useStartManagedAgentMutation();
+  const {
+    beginRuntimeCheckout,
+    markRuntimeCheckoutSent,
+    runtimeCheckoutProps,
+  } = useAgentRuntimeCheckout(channelType);
   const getManagedAgentsByPubkey = React.useCallback(async () => {
     const agents =
       managedAgentsQuery.data ??
@@ -485,6 +440,30 @@ export function useMentionSendFlow({
           }
         }
 
+        let runtimeTags: string[][] = [];
+        if (agentMentionPubkeys.length > 0 && sendChannelId) {
+          try {
+            const checkout = await beginRuntimeCheckout(
+              agentMentionPubkeys,
+              sendChannelId,
+              managedAgentsByPubkey,
+            );
+            if (checkout === null) {
+              persistPreflightDraft();
+              return;
+            }
+            runtimeTags = checkout;
+          } catch (error) {
+            const message = getErrorMessage(
+              error,
+              "Could not prepare paid Agent runtime.",
+            );
+            setNonMemberPromptError(message);
+            toast.error(message);
+            return;
+          }
+        }
+
         const effectiveExplicitAgentPubkeys =
           filterEffectiveExplicitAgentPubkeys(
             draft.explicitAgentPubkeys,
@@ -561,7 +540,7 @@ export function useMentionSendFlow({
           );
           const finalOutgoingTags = mergeOutgoingTags(
             mediaTags,
-            outgoingTags ?? [],
+            mergeOutgoingTags(outgoingTags ?? [], runtimeTags) ?? [],
           );
           if (signal?.aborted) return;
           await send(
@@ -571,6 +550,11 @@ export function useMentionSendFlow({
             sendChannelId,
             draft.capturedThreadContext,
           );
+          if (runtimeTags.length > 0) {
+            markRuntimeCheckoutSent(
+              sendChannelId ?? draft.capturedChannelId ?? "",
+            );
+          }
           if (signal?.aborted) return;
           if (effectiveExplicitAgentPubkeys.length > 0) {
             // Promote only explicitly authored agents that remained effective
@@ -646,6 +630,8 @@ export function useMentionSendFlow({
     },
     [
       clearComposer,
+      beginRuntimeCheckout,
+      markRuntimeCheckoutSent,
       contentRef,
       drafts,
       ensureManagedAgentMentionsReady,
@@ -992,6 +978,7 @@ export function useMentionSendFlow({
       onInvite: handleInviteNonMembers,
       open: pendingNonMemberSend !== null,
     },
+    runtimeCheckoutProps,
     sendMessageWithMentionFlow,
   };
 }

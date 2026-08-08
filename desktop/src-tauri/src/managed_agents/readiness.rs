@@ -1,5 +1,4 @@
 //! Agent readiness evaluation.
-//!
 //! # Overview
 //!
 //! Before spawning a managed agent (or before deciding whether to enter
@@ -1516,6 +1515,7 @@ mod tests {
             last_error_code: None,
             respond_to: Default::default(),
             respond_to_allowlist: vec![],
+            price_per_minute_sats: None,
             display_name: None,
             slug: None,
             runtime: None,

@@ -561,7 +561,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 28);
+        assert_eq!(migrations.len(), 30);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -585,6 +585,15 @@ mod tests {
             .sql
             .as_str()
             .contains("search_tsv  TSVECTOR GENERATED ALWAYS"));
+        assert_eq!(migrations[29].version, 30);
+        assert!(migrations[29]
+            .sql
+            .as_str()
+            .contains("CREATE TABLE agent_runtime_reservation_claims"));
+        assert!(migrations[29]
+            .sql
+            .as_str()
+            .contains("trg_agent_runtime_reservation_claim"));
 
         // The git repo-name registry is an additive migration, never folded into
         // 0001 — folding it would change 0001's checksum and break brownfield
@@ -1188,7 +1197,7 @@ mod tests {
         run_migrations(&pool)
             .await
             .expect("retry succeeds after operator repair");
-        assert_eq!(applied_versions(&pool).await.last().copied(), Some(27));
+        assert_eq!(applied_versions(&pool).await.last().copied(), Some(30));
     }
 
     #[tokio::test]
@@ -1310,5 +1319,88 @@ mod tests {
             search_expression.contains("ELSE NULL::tsvector"),
             "fresh installs must default non-allowlisted kinds to NULL: {search_expression}"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn paid_runtime_reservation_claim_is_atomic_across_parallel_instructions() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        run_migrations(&pool).await.expect("run migrations");
+
+        let community_id = uuid::Uuid::new_v4();
+        let channel_id = uuid::Uuid::new_v4();
+        let reservation_id = vec![41_u8; 32];
+        let agent_pubkey = vec![42_u8; 32];
+        let payer_pubkey = vec![43_u8; 32];
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("runtime-claim-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+        let reservation_tags = serde_json::json!([
+            ["p", hex::encode(&payer_pubkey)],
+            ["h", channel_id.to_string()],
+            ["expiration", 4_102_444_800_u64.to_string()]
+        ]);
+        sqlx::query(
+            "INSERT INTO events \
+             (community_id, id, pubkey, created_at, kind, tags, content, sig) \
+             VALUES ($1, $2, $3, NOW(), 44211, $4, 'ciphertext', $5)",
+        )
+        .bind(community_id)
+        .bind(&reservation_id)
+        .bind(&agent_pubkey)
+        .bind(&reservation_tags)
+        .bind(vec![44_u8; 64])
+        .execute(&pool)
+        .await
+        .expect("insert reservation");
+
+        let instruction_tags = serde_json::json!([
+            ["h", channel_id.to_string()],
+            [
+                "agent_runtime",
+                hex::encode(&agent_pubkey),
+                hex::encode(&reservation_id)
+            ]
+        ]);
+        let insert = |pool: PgPool, marker: u8, payer: Vec<u8>, tags: serde_json::Value| async move {
+            sqlx::query(
+                "INSERT INTO events \
+                 (community_id, id, pubkey, created_at, kind, tags, content, sig, channel_id) \
+                 VALUES ($1, $2, $3, NOW(), 9, $4, 'invoke', $5, $6)",
+            )
+            .bind(community_id)
+            .bind(vec![marker; 32])
+            .bind(payer)
+            .bind(tags)
+            .bind(vec![marker; 64])
+            .bind(channel_id)
+            .execute(&pool)
+            .await
+        };
+        let (first, second) = tokio::join!(
+            insert(
+                pool.clone(),
+                51,
+                payer_pubkey.clone(),
+                instruction_tags.clone()
+            ),
+            insert(pool.clone(), 52, payer_pubkey, instruction_tags)
+        );
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+
+        let claimed: Vec<u8> = sqlx::query_scalar(
+            "SELECT instruction_event_id FROM agent_runtime_reservation_claims \
+             WHERE community_id=$1 AND reservation_event_id=$2",
+        )
+        .bind(community_id)
+        .bind(&reservation_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read winning claim");
+        assert!(claimed == vec![51_u8; 32] || claimed == vec![52_u8; 32]);
     }
 }

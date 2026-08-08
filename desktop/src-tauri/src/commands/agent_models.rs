@@ -65,16 +65,11 @@ pub async fn get_agent_models(
         let resolved = resolve_command(&record.acp_command)
             .ok_or_else(|| missing_command_message(&record.acp_command, "ACP harness command"))?;
 
-        // Resolve the effective harness from the linked persona (mirrors spawn),
-        // so model discovery runs against the persona's current harness, not the
-        // frozen record snapshot. An explicit per-agent override wins.
+        // Resolve the linked persona's live harness, with an explicit agent override winning.
         let personas = load_personas(&app).unwrap_or_default();
         let global = load_global_agent_config(&app).unwrap_or_default();
 
-        // Single pure helper — descriptor + authoritative model/provider
-        // resolver, packaged so the linked-agent regression test binds the
-        // exact values this command consumes. Returns Err on dangling harness
-        // id, propagating it to the caller.
+        // The shared pure resolver returns the descriptor and authoritative model/provider.
         let discovery = agent_model_discovery_config(record, &personas, &global)
             .map_err(|e| model_discovery_error(&pubkey, &e))?;
 
@@ -95,8 +90,7 @@ pub async fn get_agent_models(
     } = discovery;
 
     let merged_env = discovery_env_with_baked_floor(merged_env);
-    // Resolve against the baked/process env when the record saved no provider,
-    // so a build-provided provider still gets live discovery.
+    // Use baked/process env when no provider is saved so build defaults get live discovery.
     let effective_provider =
         effective_discovery_provider(saved_provider.as_deref(), provider_env_var, &merged_env);
     if let Some(models) = discover_openrouter_models(
@@ -230,16 +224,14 @@ pub async fn discover_agent_models(
         &input.env_vars,
     );
     let merged_env = discovery_env_with_baked_floor(merged_env);
-    // Recover a build-provided provider when the form has none, so the create
-    // dialog discovers live models instead of falling through to the subprocess.
+    // Recover a build provider when the form has none so create discovers live models.
     let effective_provider = effective_discovery_provider(
         input.provider.as_deref(),
         runtime_meta.and_then(|meta| meta.provider_env_var),
         &merged_env,
     );
 
-    // Buzz shared compute discovery must not depend on the local OpenAI ingress: that
-    // client endpoint is started only after a live target is selected.
+    // Shared-compute discovery cannot depend on ingress started after target selection.
     #[cfg(feature = "mesh-llm")]
     if input.provider.as_deref().map(str::trim)
         == Some(crate::managed_agents::RELAY_MESH_PROVIDER_ID)
@@ -773,12 +765,7 @@ pub async fn update_managed_agent(
         if let Some(parallelism) = input.parallelism {
             record.parallelism = parallelism;
         }
-        // turn_timeout_seconds is intentionally not applied here —
-        // BUZZ_ACP_TURN_TIMEOUT is deprecated and ignored by the harness.
-        // Use idle_timeout_seconds or max_turn_duration_seconds instead.
-        // Store the relay override exactly as supplied (trimmed). An explicit
-        // value pins the agent; empty falls back to the workspace relay at
-        // read-time. A name-only edit (relay_url == None) leaves the pin intact.
+        // Turn timeout is deprecated; store a trimmed relay pin, preserving it on name-only edits.
         if let Some(relay_url) = input.relay_url {
             record.relay_url = relay_url.trim().to_string();
         }
@@ -829,9 +816,7 @@ pub async fn update_managed_agent(
             record.relay_mesh = Some(crate::managed_agents::RelayMeshConfig { model_ref });
         }
 
-        // Inbound author gate: merge patch onto current values, then validate
-        // the merged state. This lets a single update switch to Allowlist AND
-        // supply pubkeys atomically.
+        // Validate the merged author gate so mode and allowlist can change atomically.
         let prospective_mode = input.respond_to.unwrap_or(record.respond_to);
         let prospective_allowlist = match input.respond_to_allowlist.as_ref() {
             Some(list) => crate::managed_agents::validate_respond_to_allowlist(list)?,
@@ -845,12 +830,26 @@ pub async fn update_managed_agent(
                     .to_string(),
             );
         }
+        let requested_price = input
+            .price_per_minute_sats
+            .unwrap_or(record.price_per_minute_sats);
+        let prospective_price = if prospective_mode == crate::managed_agents::RespondTo::Allowlist {
+            crate::managed_agents::validate_runtime_price(
+                prospective_mode,
+                &prospective_allowlist,
+                requested_price,
+            )?
+        } else if input.price_per_minute_sats.flatten().is_some() {
+            return Err("runtime pricing is available only in allowlist mode".to_string());
+        } else {
+            None
+        };
         record.respond_to = prospective_mode;
-        // Preserve the persisted allowlist across mode toggles — only replace
-        // when the caller explicitly supplied a new list.
+        // Preserve the allowlist across mode toggles unless a replacement was supplied.
         if input.respond_to_allowlist.is_some() {
             record.respond_to_allowlist = prospective_allowlist;
         }
+        record.price_per_minute_sats = prospective_price;
 
         record.updated_at = now_iso();
 

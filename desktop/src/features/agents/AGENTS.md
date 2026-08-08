@@ -168,6 +168,16 @@ with a TypeScript lookup table or an id comparison in a component.
    `getAgentAccessOwnerOnly()` is true, every managed agent's access control is
    locked to owner-only, including provider-backed agents. A provider backend
    does not prove remote execution and must never create a policy carve-out.
+12. **Paid runtime belongs only to a live allowlisted instance.** Keep the
+   whole-satoshi per-runtime-minute rate out of persona defaults, team
+   snapshots, and catalog definitions. Render the reusable
+   `PaidRuntimeField` only when a live instance uses allowlist access and the
+   owner-only build capability is off. Switching away from allowlist clears
+   the active price, but never implies that retained runtime credit was erased.
+   Price discovery uses the agent-signed replaceable kind `10101`; kind `10058`
+   remains an ordinary BOLT12 offer and must never carry pricing. External paid
+   invocation is channel-only, while the owner and same-owner sibling agents
+   remain free. Keep all explanatory text on rem-based text tokens.
 
 ## The tests that enforce this
 

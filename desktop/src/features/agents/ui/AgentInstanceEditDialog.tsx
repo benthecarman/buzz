@@ -87,6 +87,7 @@ import { AgentAiDefaultsNotice } from "./AgentAiDefaults";
 import { AgentDefaultsDialog } from "./AgentDefaultsDialog";
 import { useProviderApiKeyFieldState } from "./providerApiKeyFieldState";
 import { resolveModelFieldStatusMessage } from "./agentConfigControls";
+import { usePaidRuntimeEdit } from "./usePaidRuntimeEdit";
 import { AdvancedRequiredBadge } from "./AdvancedRequiredBadge";
 import { showAgentProfileSyncWarning } from "./agentProfileSyncWarning";
 import { AddCustomHarnessDialog } from "./AddCustomHarnessDialog";
@@ -167,14 +168,10 @@ export function AgentInstanceEditDialog({
   const [isAddHarnessOpen, setIsAddHarnessOpen] = React.useState(false);
   const shouldReduceMotion = useReducedMotion();
 
-  // Runtime selector: defaults to "custom" until the dialog opens and the
-  // catalog loads. The open-effect re-derives the correct id from the catalog.
   const [selectedRuntimeId, setSelectedRuntimeId] = React.useState("custom");
 
-  // Tracks whether the user has made an in-dialog runtime selection.
   const runtimeTouched = React.useRef(false);
 
-  // Reset form state only when the dialog opens or when switching to a different agent.
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — including agent fields would re-fire on every 5s poll and wipe edits
   React.useEffect(() => {
     if (open) {
@@ -209,7 +206,6 @@ export function AgentInstanceEditDialog({
     }
   }, [open, agent.pubkey]);
 
-  // Re-derive the runtime id when the catalog loads.
   React.useEffect(() => {
     if (!open || runtimeTouched.current || runtimes.length === 0) {
       return;
@@ -222,7 +218,6 @@ export function AgentInstanceEditDialog({
     }
   }, [open, runtimes, agent.agentCommand]);
 
-  // Build the sorted runtime catalog for the dropdown.
   const sortedRuntimes = React.useMemo(
     () => sortPersonaRuntimes(runtimes),
     [runtimes],
@@ -257,8 +252,6 @@ export function AgentInstanceEditDialog({
     return options;
   }, [sortedRuntimes, selectedRuntimeId]);
 
-  // Resolve the dialog-opening command as the catalog loads. Edit-state runtime
-  // ids mutate during selection changes and cannot identify the original state.
   const originalRuntimeSupportsProvider = React.useMemo(() => {
     const originalCommand = originalAgentCommand.trim();
     const matched =
@@ -267,8 +260,6 @@ export function AgentInstanceEditDialog({
     return runtimeSupportsLlmProviderSelection(matched?.id ?? "");
   }, [runtimes, originalAgentCommand]);
 
-  // The runtime id active after submit. Inheriting resolves from the LINKED PERSONA's runtime
-  // (that is what runs once the override is cleared, not the current override).
   // Falls back to dual-match (command path, then id) when no persona or its runtime is unset.
   // This single prospective id feeds BOTH the block-save gate and submit so they always agree.
   const prospectiveRuntimeId = React.useMemo(() => {
@@ -396,6 +387,12 @@ export function AgentInstanceEditDialog({
   const { data: agentAccessOwnerOnly } = useAgentAccessOwnerOnlyQuery({
     enabled: open,
   });
+  const paidRuntime = usePaidRuntimeEdit(
+    agent,
+    respondTo,
+    agentAccessOwnerOnly,
+    updateMutation.isPending,
+  );
 
   // Merge global env as the base layer so credential keys satisfied via global
   // config (e.g. ANTHROPIC_API_KEY) are available to model discovery. Use
@@ -613,6 +610,7 @@ export function AgentInstanceEditDialog({
       requiredEnvKeyMissing,
     }) &&
     providerValid &&
+    paidRuntime.valid &&
     !updateMutation.isPending &&
     !isAvatarUploadPending;
 
@@ -725,6 +723,7 @@ export function AgentInstanceEditDialog({
           respondToAllowlist.join(",") !== agent.respondToAllowlist.join(",")
             ? respondToAllowlist
             : undefined,
+        pricePerMinuteSats: paidRuntime.update,
       };
 
       const result = await updateMutation.mutateAsync(input);
@@ -944,6 +943,7 @@ export function AgentInstanceEditDialog({
               onAllowlistChange={setRespondToAllowlist}
               onModeChange={setRespondTo}
             />
+            {paidRuntime.field}
             <RunOnSummarySection backend={agent.backend} />
 
             {/* Provider (runtime) */}
