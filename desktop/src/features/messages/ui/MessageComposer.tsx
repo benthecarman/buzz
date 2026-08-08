@@ -52,6 +52,7 @@ import {
 import { ComposerDockToolbar } from "./ComposerDockToolbar";
 import { ComposerUploadProgressPill } from "./ComposerUploadProgressPill";
 import { NonMemberMentionDialog } from "./NonMemberMentionDialog";
+import { AgentRuntimeCheckoutDialog } from "./AgentRuntimeCheckoutDialog";
 import { useMentionSendFlow } from "./useMentionSendFlow";
 import { usePersistentAgentMentionHydration } from "./usePersistentAgentMentionHydration";
 import { useComposerContentState } from "./useComposerContentState";
@@ -670,8 +671,6 @@ function MessageComposerImpl({
     },
     [submitMessage],
   );
-  // ── Keyboard handling ───────────────────────────────────────────────
-  // Tiptap handles formatting shortcuts (⌘B, ⌘I, etc.) natively.
   // Plain Enter → submit is now handled inside the Tiptap `submitOnEnter`
   // extension (fires before ProseMirror's splitBlock). This wrapper only
   // handles autocomplete arrow/enter keys and Escape for edit mode.
@@ -996,6 +995,7 @@ function MessageComposerImpl({
       </footer>
 
       <NonMemberMentionDialog {...mentionSendFlow.nonMemberPromptProps} />
+      <AgentRuntimeCheckoutDialog {...mentionSendFlow.runtimeCheckoutProps} />
 
       {linkEditor.card}
       {linkEditor.dialog}

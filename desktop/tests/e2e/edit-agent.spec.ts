@@ -153,6 +153,44 @@ test.describe("edit agent dialog", () => {
     await expect(page.getByTestId("agent-respond-to")).toBeVisible();
   });
 
+  test("shows and preserves configured paid-runtime pricing", async ({
+    page,
+  }) => {
+    await installMockBridge(page, {
+      managedAgents: [
+        {
+          pubkey: AGENT_PUBKEY,
+          name: AGENT_NAME,
+          status: "stopped",
+          channelNames: ["agents"],
+          respondTo: "allowlist",
+          respondToAllowlist: [TEST_IDENTITIES.alice.pubkey],
+          pricePerMinuteSats: 20,
+        },
+      ],
+    });
+
+    await openEditDialog(page);
+
+    const paymentToggle = page.getByRole("checkbox", {
+      name: "Require payment for runtime",
+    });
+    await expect(paymentToggle).toBeChecked();
+    await expect(page.locator("#agent-runtime-price")).toHaveValue("20");
+    await expect(
+      page.getByText("Paid invocation is not available in direct messages."),
+    ).toBeVisible();
+
+    await page.locator("#agent-runtime-price").fill("25");
+    await page.getByTestId("edit-agent-dialog-submit").click();
+    await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
+
+    await page.getByTestId("user-profile-edit-agent").click();
+    await expect(page.locator("#agent-runtime-price")).toHaveValue("25", {
+      timeout: 10_000,
+    });
+  });
+
   test("edits the agent name and persists it across a dialog reopen", async ({
     page,
   }) => {

@@ -534,6 +534,10 @@ pub fn run() {
                     .store(true, Ordering::Release);
             }
 
+            if !recovery_mode {
+                commands::start_agent_runtime_wallet_reconciler(app_handle.clone());
+            }
+
             // Periodic sweep: reap orphaned agents from dead instances every 60s.
             // Catches agents that escaped both the Justfile trap and boot-time
             // reaping (e.g. a `just staging` Ctrl+C leak that only gets collected
@@ -930,6 +934,9 @@ pub fn run() {
             wallet_get_pending_profile_zap,
             wallet_list_placeholder_message_zaps,
             wallet_send_profile_zap,
+            wallet_send_agent_runtime_zap,
+            agent_runtime_request_reservation,
+            agent_runtime_get_balance,
             wallet_reveal_recovery_phrase,
             #[cfg(target_os = "macos")]
             tray_menu::clear_tray_agent_activity,

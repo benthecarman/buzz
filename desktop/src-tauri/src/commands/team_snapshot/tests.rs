@@ -220,6 +220,7 @@ fn team_export_with_instance_and_memory_level_uses_supplied_entries() {
         last_error_code: None,
         respond_to: crate::managed_agents::RespondTo::default(),
         respond_to_allowlist: vec![],
+        price_per_minute_sats: None,
         is_builtin: false,
         is_active: true,
         shared: false,

@@ -65,6 +65,13 @@ export const KIND_MANAGED_AGENT = 30177;
 export const KIND_USER_STATUS = 30315;
 export const KIND_AGENT_OBSERVER_FRAME = 24200;
 export const KIND_AGENT_TURN_METRIC = 44200;
+/** Agent-authored replaceable metered-runtime pricing terms. */
+export const KIND_AGENT_RUNTIME_PRICING = 10101;
+export const KIND_AGENT_RUNTIME_REQUEST = 24210;
+export const KIND_AGENT_RUNTIME_RESPONSE = 24211;
+export const KIND_AGENT_RUNTIME_DEPOSIT = 44210;
+export const KIND_AGENT_RUNTIME_RESERVATION = 44211;
+export const KIND_AGENT_RUNTIME_SETTLEMENT = 44212;
 export const KIND_EVENT_REMINDER = 30300;
 export const KIND_REPO_ANNOUNCEMENT = 30617;
 export const KIND_REPO_STATE = 30618;

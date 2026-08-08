@@ -102,6 +102,12 @@ pub const KIND_HTTP_AUTH: u32 = 27235;
 /// Agent metadata + owner reference (replaceable, agent-authored).
 pub const KIND_AGENT_PROFILE: u32 = 10100;
 
+/// Buzz Agent Runtime Payments: agent-authored replaceable pricing terms.
+///
+/// This event is deliberately separate from [`KIND_BOLT12_OFFER`]. Pricing
+/// changes never mutate or republish the wallet offer announcement.
+pub const KIND_AGENT_RUNTIME_PRICING: u32 = 10101;
+
 /// NIP-AE: Agent Engram (parameterized replaceable, agent-authored).
 ///
 /// Encrypted memory record for AI agents. Addressed by `(pubkey_a, kind, d_tag)`,
@@ -155,7 +161,13 @@ pub const AUTHOR_ONLY_KINDS: &[u32] = &[
 ///
 /// Used by `filter_can_match_result_gated_kinds` to force the per-event
 /// fallback path in COUNT rather than the fast SQL `count_events()`.
-pub const RESULT_GATED_KINDS: &[u32] = &[KIND_DM_VISIBILITY, KIND_AGENT_TURN_METRIC];
+pub const RESULT_GATED_KINDS: &[u32] = &[
+    KIND_DM_VISIBILITY,
+    KIND_AGENT_TURN_METRIC,
+    KIND_AGENT_RUNTIME_DEPOSIT,
+    KIND_AGENT_RUNTIME_RESERVATION,
+    KIND_AGENT_RUNTIME_SETTLEMENT,
+];
 
 /// Kinds whose stored events have `#p`-bound read access — readable only by
 /// subscribers whose pubkey appears in the event's `#p` tag.
@@ -176,6 +188,8 @@ pub const P_GATED_KINDS: &[u32] = &[
     KIND_NWC_REQUEST,
     KIND_NWC_RESPONSE,
     KIND_AGENT_OBSERVER_FRAME,
+    KIND_AGENT_RUNTIME_REQUEST,
+    KIND_AGENT_RUNTIME_RESPONSE,
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
     KIND_GIFT_WRAP,
@@ -184,6 +198,9 @@ pub const P_GATED_KINDS: &[u32] = &[
     // readable by any unauthenticated or non-owner party, including via `ids`
     // filters — see NIP-AM §Relay Behavior.
     KIND_AGENT_TURN_METRIC,
+    KIND_AGENT_RUNTIME_DEPOSIT,
+    KIND_AGENT_RUNTIME_RESERVATION,
+    KIND_AGENT_RUNTIME_SETTLEMENT,
 ];
 
 /// NIP-AP: Agent Persona (parameterized replaceable, owner-authored).
@@ -566,6 +583,17 @@ pub const KIND_MEMBER_REMOVED_NOTIFICATION: u32 = 44101;
 /// See `docs/nips/NIP-AM.md`.
 pub const KIND_AGENT_TURN_METRIC: u32 = 44200;
 
+/// Buzz Agent Runtime Payments: encrypted reservation request (ephemeral).
+pub const KIND_AGENT_RUNTIME_REQUEST: u32 = 24210;
+/// Buzz Agent Runtime Payments: encrypted reservation/quote response (ephemeral).
+pub const KIND_AGENT_RUNTIME_RESPONSE: u32 = 24211;
+/// Buzz Agent Runtime Payments: settled runtime-credit deposit.
+pub const KIND_AGENT_RUNTIME_DEPOSIT: u32 = 44210;
+/// Buzz Agent Runtime Payments: payer-bound runtime reservation.
+pub const KIND_AGENT_RUNTIME_RESERVATION: u32 = 44211;
+/// Buzz Agent Runtime Payments: final metered usage settlement.
+pub const KIND_AGENT_RUNTIME_SETTLEMENT: u32 = 44212;
+
 // Forum / social (45000–45999)
 // V1 used addressable range (30001–30003) — wrong.
 /// A forum post (thread root).
@@ -676,6 +704,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_GIFT_WRAP,
     KIND_FILE_METADATA,
     KIND_AGENT_PROFILE,
+    KIND_AGENT_RUNTIME_PRICING,
     KIND_AGENT_ENGRAM,
     KIND_EVENT_REMINDER,
     KIND_PERSONA,
@@ -724,6 +753,8 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_BLOSSOM_AUTH,
     KIND_PAIRING,
     KIND_AGENT_OBSERVER_FRAME,
+    KIND_AGENT_RUNTIME_REQUEST,
+    KIND_AGENT_RUNTIME_RESPONSE,
     KIND_NWC_REQUEST,
     KIND_NWC_RESPONSE,
     KIND_HTTP_AUTH,
@@ -753,6 +784,9 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
     KIND_AGENT_TURN_METRIC,
+    KIND_AGENT_RUNTIME_DEPOSIT,
+    KIND_AGENT_RUNTIME_RESERVATION,
+    KIND_AGENT_RUNTIME_SETTLEMENT,
     KIND_WORKFLOW_DEF,
     KIND_LONG_FORM,
     KIND_USER_STATUS,
@@ -881,6 +915,7 @@ pub fn event_kind_i32(event: &nostr::Event) -> i32 {
 
 // Compile-time: new kinds are in the expected ranges.
 const _: () = assert!(is_replaceable(KIND_AGENT_PROFILE)); // 10100 ∈ 10000–19999
+const _: () = assert!(is_replaceable(KIND_AGENT_RUNTIME_PRICING));
 const _: () = assert!(is_parameterized_replaceable(KIND_PERSONA)); // 30175 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 30177 ∈ 30000–39999

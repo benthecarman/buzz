@@ -297,6 +297,7 @@ mod tests {
             last_error_code: None,
             respond_to: RespondTo::default(),
             respond_to_allowlist: vec![],
+            price_per_minute_sats: None,
             slug: Some(name.to_string()),
             runtime: Some("goose".to_string()),
             name_pool: vec![],

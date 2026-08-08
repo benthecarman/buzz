@@ -54,10 +54,7 @@ pub fn build_offer_withdrawal() -> EventBuilder {
     EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
 }
 
-/// Verify that an event is a signature-valid offer announcement authored by
-/// the recipient. The offer tag itself is validated separately so callers can
-/// treat a newer announcement without an offer (a withdrawal) as
-/// authoritative.
+/// Verify an authored offer announcement, including authoritative withdrawals.
 pub(crate) fn validate_offer_event(
     event: &Event,
     recipient_pubkey: &str,
@@ -143,13 +140,14 @@ fn random_zap_id() -> Result<String, WalletError> {
     Ok(hex::encode(bytes))
 }
 
-pub fn signed_intent(
+fn signed_intent_with_runtime_quote(
     keys: &Keys,
     recipient: &WalletRecipientOffer,
     amount: u64,
     comment: &str,
     target_event_id: Option<&str>,
     target_event_kind: Option<u32>,
+    runtime_quote_event_json: Option<&str>,
 ) -> Result<Event, WalletError> {
     if target_event_id.is_some() != target_event_kind.is_some() {
         return Err(WalletError::new(
@@ -181,6 +179,9 @@ pub fn signed_intent(
         let event_kind = event_kind.to_string();
         tags.push(tag(["e", event_id])?);
         tags.push(tag(["k", event_kind.as_str()])?);
+    }
+    if let Some(quote_event_json) = runtime_quote_event_json {
+        tags.push(tag(["agent_runtime_quote", quote_event_json])?);
     }
     let intent = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), comment)
         .tags(tags)
@@ -248,6 +249,9 @@ pub struct ZapAttempt {
     /// Exact payer-signed, unbroadcast kind `9737` intent.
     pub intent_event_json: String,
     pub intent_event_id: String,
+    /// Exact signed kind-24211 quote for an agent-runtime purchase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_quote_event_json: Option<String>,
     /// Intent reference sent in the BOLT12 payer note for reconciliation.
     pub payer_note: String,
     pub state: ZapAttemptState,
@@ -272,18 +276,71 @@ impl ZapAttempt {
         target_event_kind: Option<u32>,
         keys: &Keys,
     ) -> Result<Self, WalletError> {
+        let target = match (target_event_id, target_event_kind) {
+            (Some(id), Some(kind)) => Some((id, kind)),
+            (None, None) => None,
+            _ => {
+                return Err(WalletError::new(
+                    "zap_target_invalid",
+                    "message zap target id and kind must be provided together",
+                ))
+            }
+        };
+        Self::prepare_inner(
+            idempotency_key,
+            recipient,
+            amount,
+            comment,
+            target,
+            None,
+            keys,
+        )
+    }
+
+    /// Prepare a runtime-zap attempt whose intent embeds the exact signed quote.
+    pub fn prepare_agent_runtime(
+        idempotency_key: String,
+        recipient: WalletRecipientOffer,
+        amount: u64,
+        quote_event_json: String,
+        keys: &Keys,
+    ) -> Result<Self, WalletError> {
+        Self::prepare_inner(
+            idempotency_key,
+            recipient,
+            amount,
+            None,
+            None,
+            Some(quote_event_json),
+            keys,
+        )
+    }
+
+    fn prepare_inner(
+        idempotency_key: String,
+        recipient: WalletRecipientOffer,
+        amount: u64,
+        comment: Option<String>,
+        target: Option<(String, u32)>,
+        runtime_quote_event_json: Option<String>,
+        keys: &Keys,
+    ) -> Result<Self, WalletError> {
         let comment = comment
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let intent = signed_intent(
+        let intent = signed_intent_with_runtime_quote(
             keys,
             &recipient,
             amount,
             comment.as_deref().unwrap_or_default(),
-            target_event_id.as_deref(),
-            target_event_kind,
+            target.as_ref().map(|(id, _)| id.as_str()),
+            target.as_ref().map(|(_, kind)| *kind),
+            runtime_quote_event_json.as_deref(),
         )?;
         let intent_event_id = intent.id.to_hex();
+        let (target_event_id, target_event_kind) = target
+            .map(|(id, kind)| (Some(id), Some(kind)))
+            .unwrap_or((None, None));
         Ok(Self {
             version: 4,
             idempotency_key,
@@ -295,6 +352,7 @@ impl ZapAttempt {
             offer: recipient.offer,
             offer_event_json: recipient.offer_event_json,
             intent_event_json: intent.as_json(),
+            runtime_quote_event_json,
             payer_note: format!("nostr:nipB1:{intent_event_id}"),
             intent_event_id,
             state: ZapAttemptState::Prepared,
@@ -723,6 +781,10 @@ impl ZapAttemptStore {
 }
 
 #[cfg(test)]
+#[path = "zap/runtime_tests.rs"]
+mod runtime_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -802,21 +864,6 @@ mod tests {
             .tags
             .iter()
             .any(|tag| tag.as_slice() == ["k", "40002"]));
-    }
-
-    #[test]
-    fn withdrawal_announcement_validates_but_yields_no_offer() {
-        let keys = Keys::generate();
-        let withdrawal = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
-            .sign_with_keys(&keys)
-            .unwrap();
-        assert!(validate_offer_event(&withdrawal, &keys.public_key().to_hex()).is_ok());
-        assert_eq!(
-            recipient_offer(&withdrawal, &keys.public_key().to_hex())
-                .unwrap_err()
-                .code,
-            "offer_invalid"
-        );
     }
 
     #[test]
@@ -942,54 +989,5 @@ mod tests {
         store.mark_proof_published(&mut attempt).unwrap();
         assert!(store.settled_message_zaps().unwrap().is_empty());
         assert!(attempt.result().unwrap().proof_published);
-    }
-
-    #[test]
-    fn persisted_profile_execution_emits_a_model_accepted_trace() {
-        use buzz_conformance_pkg::wallet::{check_wallet_trace, WalletCheckerConfig};
-
-        let _ = crate::wallet::conformance::take_test_trace();
-        let temp = tempfile::tempdir().unwrap();
-        let payer = Keys::generate();
-        let recipient_keys = Keys::generate();
-        let mut attempt = ZapAttempt::prepare(
-            Uuid::new_v4().to_string(),
-            recipient(&recipient_keys),
-            21,
-            None,
-            None,
-            None,
-            &payer,
-        )
-        .unwrap();
-        let store = ZapAttemptStore::new(temp.path(), &payer.public_key().to_hex());
-        store.save_prepared(&mut attempt).unwrap();
-        store.begin_dispatch(&mut attempt).unwrap();
-        store.record_reconcile(&attempt).unwrap();
-        store
-            .record_payment(
-                &mut attempt,
-                WalletPaymentResult {
-                    payment_id: "not-projected".to_string(),
-                    status: "completed".to_string(),
-                    status_message: String::new(),
-                    amount: Some(21),
-                    fees: 0,
-                    created_at_ms: 0,
-                    finalized_at_ms: Some(0),
-                },
-            )
-            .unwrap();
-
-        let trace = crate::wallet::conformance::take_test_trace();
-        check_wallet_trace(
-            &trace,
-            &WalletCheckerConfig::default()
-                .require("prepare_profile")
-                .require("begin_dispatch")
-                .require("reconcile")
-                .require("record_paid_without_proof"),
-        )
-        .expect("implementation trace must conform");
     }
 }

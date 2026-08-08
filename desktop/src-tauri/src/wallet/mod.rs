@@ -8,6 +8,7 @@ mod seed;
 pub(crate) mod send;
 pub(crate) mod zap;
 
+pub(crate) use lexe_provider::canonical_offer_id;
 pub(crate) use manager::WalletManager;
 
 #[cfg(test)]

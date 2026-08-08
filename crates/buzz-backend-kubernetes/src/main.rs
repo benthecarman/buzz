@@ -114,6 +114,14 @@ fn refuse_relay_mesh(raw: &serde_json::Value) -> Option<String> {
 
 /// Run one deploy to a terminal outcome.
 async fn deploy_agent(request: &wire::DeployRequest) -> Result<String, String> {
+    if request.agent.price_per_minute_sats.is_some() {
+        return Err(
+            "deploy refused: paid runtime requires durable, single-writer state, but this \
+             Kubernetes provider currently uses an ephemeral workspace. Run this paid Agent \
+             locally or configure a provider with durable runtime storage."
+                .to_string(),
+        );
+    }
     let cfg = config::parse(&request.provider_config)?;
     // Identity before any cluster contact: a malformed nsec is a refusal, not
     // a failed connection (§Deploy State Machine step 0).
@@ -178,6 +186,16 @@ mod tests {
         // `AgentPayload` does not carry `provider`.
         let bare: serde_json::Value = serde_json::from_str(r#"{"agent":{}}"#).unwrap();
         assert!(refuse_relay_mesh(&bare).is_none());
+    }
+
+    #[test]
+    fn refuses_paid_runtime_without_durable_provider_storage() {
+        let request = r#"{"op":"deploy","agent":{
+            "relay_url":"wss://r","private_key_nsec":"nsec1x",
+            "price_per_minute_sats":20},"provider_config":{}}"#;
+        let error = error_of(&respond(request));
+        assert!(error.contains("paid runtime"));
+        assert!(error.contains("durable"));
     }
 
     /// Malformed input still produces exactly one conforming response.

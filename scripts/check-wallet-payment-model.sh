@@ -28,7 +28,7 @@ if [[ "${actual_sha256}" != "${TLC_SHA256}" ]]; then
 fi
 
 cd "${REPO_ROOT}/docs/spec"
-for model in WalletPaymentAttempts WalletOfferLifecycle; do
+for model in WalletPaymentAttempts WalletOfferLifecycle PaidAgentRuntime; do
   java -XX:+UseParallelGC -cp "${tla_jar}" tlc2.TLC \
     -workers 1 \
     -config "${model}.cfg" \

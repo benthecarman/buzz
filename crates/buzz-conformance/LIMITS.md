@@ -135,3 +135,19 @@ They do not prove Lexe's offer derivation or Nostr cryptography. They do not
 prove relay persistence after an accepted response. The projection treats a
 secondary relay's bounded HTTP retry as one terminal relay result. Unexecuted
 publication paths remain outside runtime trace evidence.
+
+## Paid agent runtime limits
+
+`PaidAgentRuntime.tla` and the paid-runtime replay checker cover verified
+payment effects, credit and reservation arithmetic, one-time instruction
+binding, prompt-only metering, checkpoint recovery, and settlement bounds.
+
+The checker sees opaque identifiers and integer durations only. A `buzz-acp`
+unit integration test drives the production emitter and checks its emitted
+JSONL with the independent reducer; committed good/bad fixtures and property
+tests exercise additional checker paths. It does not
+validate Nostr signatures, NIP-44 encryption, BOLT12 settlement, relay
+availability, operating-system monotonic clocks, or cancellation delivery.
+Those facts must be established before the implementation emits the matching
+abstract action. The production-emitter test is not a live wallet/relay test,
+so unexecuted wallet, retry, and steering paths remain outside trace evidence.

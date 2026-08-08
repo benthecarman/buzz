@@ -58,6 +58,7 @@ export interface WalletTransaction {
   fees: number;
   note: string | null;
   payerNote: string | null;
+  offerId: string | null;
   createdAtMs: number;
   finalizedAtMs: number | null;
 }
@@ -89,6 +90,13 @@ export interface WalletProfileZapResult {
   payment: WalletPaymentResult;
   intentEventId: string;
   proofPublished: boolean;
+}
+
+export interface WalletAgentRuntimeZapRequest {
+  /** Exact signed, encrypted kind-24211 payment-required response. */
+  quoteEventJson: string;
+  /** UUID reused for retries of this exact quote. */
+  idempotencyKey: string;
 }
 
 export interface WalletPlaceholderMessageZap {

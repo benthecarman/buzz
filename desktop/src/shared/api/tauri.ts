@@ -108,6 +108,7 @@ type RawRelayAgent = {
   status: RelayAgent["status"];
   respond_to?: RelayAgent["respondTo"];
   respond_to_allowlist?: string[];
+  price_per_minute_sats?: number | null;
 };
 import type { RestartDiffEntry as RawRestartDiffEntry } from "./restartDiff";
 export type RawManagedAgent = {
@@ -154,6 +155,7 @@ export type RawManagedAgent = {
   // Pre-feature fixtures may omit these; mapped to "owner-only"/[] in fromRawManagedAgent.
   respond_to?: ManagedAgent["respondTo"];
   respond_to_allowlist?: string[];
+  price_per_minute_sats?: number | null;
 };
 
 type RawManagedAgentLog = {
@@ -656,6 +658,7 @@ function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
     status: agent.status,
     respondTo: agent.respond_to ?? null,
     respondToAllowlist: agent.respond_to_allowlist ?? [],
+    pricePerMinuteSats: agent.price_per_minute_sats ?? null,
   };
 }
 
@@ -702,6 +705,7 @@ export function fromRawManagedAgent(agent: RawManagedAgent): ManagedAgent {
     backendAgentId: agent.backend_agent_id,
     respondTo: agent.respond_to ?? "owner-only",
     respondToAllowlist: agent.respond_to_allowlist ?? [],
+    pricePerMinuteSats: agent.price_per_minute_sats ?? null,
   };
 }
 

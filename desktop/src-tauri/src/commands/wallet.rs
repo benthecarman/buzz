@@ -6,10 +6,45 @@ pub fn bitcoin_compile_enabled() -> bool {
 
 #[cfg(feature = "bitcoin")]
 pub(crate) mod enabled {
+    mod zap_commands;
     use std::{
         collections::HashSet,
         sync::{Arc, OnceLock},
     };
+    pub use zap_commands::{
+        wallet_get_pending_profile_zap, wallet_get_recipient_offer,
+        wallet_list_placeholder_message_zaps, wallet_poll_updates, wallet_send_agent_runtime_zap,
+        wallet_send_profile_zap,
+    };
+
+    /// Start recipient-side runtime-payment reconciliation for the lifetime of
+    /// the application. This task is intentionally owned by Tauri rather than
+    /// a React settings panel: paid Agents must mint verified deposits while
+    /// the app is open regardless of which screen is visible.
+    pub fn start_agent_runtime_wallet_reconciler(app: AppHandle) {
+        tauri::async_runtime::spawn(async move {
+            let mut consecutive_failures = 0u32;
+            loop {
+                let state = app.state::<AppState>();
+                match zap_commands::reconcile_agent_runtime_background_once(&app, &state).await {
+                    Ok(_) => consecutive_failures = 0,
+                    Err(error) => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        tracing::warn!(
+                            code = error.code,
+                            error = %error.message,
+                            "background Agent runtime payment reconciliation failed"
+                        );
+                    }
+                }
+                let multiplier = 1u64 << consecutive_failures.min(4);
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    15u64.saturating_mul(multiplier).min(5 * 60),
+                ))
+                .await;
+            }
+        });
+    }
 
     use buzz_core_pkg::kind::KIND_BOLT12_OFFER;
     use futures_util::future::join_all;
@@ -25,17 +60,15 @@ pub(crate) mod enabled {
         wallet::{
             models::{
                 WalletDestinationAnalysis, WalletEnableResult, WalletError, WalletFundingRequest,
-                WalletOfferPublicationResult, WalletOfferSendRequest, WalletPaymentResult,
-                WalletPlaceholderMessageZap, WalletProfileZapDraft, WalletProfileZapRequest,
-                WalletProfileZapResult, WalletRecipientOffer, WalletSendRequest, WalletStatus,
-                WalletTransactionPage,
+                WalletOfferPublicationResult, WalletPaymentResult, WalletProfileZapResult,
+                WalletRecipientOffer, WalletSendRequest, WalletStatus, WalletTransactionPage,
             },
             offer_conformance::OfferPublicationTrace,
             provider::{WalletPaymentMatch, WalletProvider},
             send::{SendAttempt, SendAttemptState, SendAttemptStore},
             zap::{
                 build_offer_announcement, build_offer_withdrawal, recipient_offer,
-                validate_offer_event, ZapAttempt, ZapAttemptState, ZapAttemptStore,
+                validate_offer_event, ZapAttempt, ZapAttemptStore,
             },
             WalletManager,
         },
@@ -419,11 +452,15 @@ pub(crate) mod enabled {
         store: &ZapAttemptStore,
         attempt: &mut ZapAttempt,
         payment: WalletPaymentResult,
+        channel_override: Option<&str>,
     ) -> Result<WalletProfileZapResult, WalletError> {
         store.record_payment(attempt, payment.clone())?;
         match payment.status.as_str() {
             "completed" => {
-                let channel_id = zap_target_channel_id(state, keys, attempt).await?;
+                let channel_id = match channel_override {
+                    Some(channel_id) => Some(channel_id.to_string()),
+                    None => zap_target_channel_id(state, keys, attempt).await?,
+                };
                 let event =
                     store.prepare_placeholder_proof(attempt, keys, channel_id.as_deref())?;
                 let active_relay = relay_api_base_url_with_override(state);
@@ -493,6 +530,21 @@ pub(crate) mod enabled {
         state: State<'_, AppState>,
         relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
+        let paid_agents = crate::managed_agents::load_managed_agents(&app)
+            .map_err(WalletError::unavailable)?
+            .into_iter()
+            .filter(|agent| agent.price_per_minute_sats.is_some())
+            .map(|agent| agent.name)
+            .collect::<Vec<_>>();
+        if !paid_agents.is_empty() {
+            return Err(WalletError::new(
+                "wallet_in_use",
+                format!(
+                    "Disable paid runtime pricing before disabling the wallet: {}",
+                    paid_agents.join(", ")
+                ),
+            ));
+        }
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let event = build_offer_withdrawal()
             .sign_with_keys(&keys)
@@ -723,226 +775,6 @@ pub(crate) mod enabled {
     }
 
     #[tauri::command]
-    pub async fn wallet_poll_updates(
-        app: AppHandle,
-        state: State<'_, AppState>,
-    ) -> Result<bool, WalletError> {
-        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        wallet_manager()
-            .provider_for(&keys, &app_data_dir(&app)?)
-            .await?
-            .poll_updates()
-            .await
-    }
-
-    #[tauri::command]
-    pub async fn wallet_get_recipient_offer(
-        recipient_pubkey: String,
-        state: State<'_, AppState>,
-    ) -> Result<WalletRecipientOffer, WalletError> {
-        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        let active_relay = relay_api_base_url_with_override(&state);
-        resolve_recipient_offer(&state, &keys, &active_relay, &recipient_pubkey).await
-    }
-
-    #[tauri::command]
-    pub async fn wallet_get_pending_profile_zap(
-        app: AppHandle,
-        recipient_pubkey: String,
-        target_event_id: Option<String>,
-        state: State<'_, AppState>,
-    ) -> Result<Option<WalletProfileZapDraft>, WalletError> {
-        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex())
-            .pending_for_recipient(&recipient_pubkey, target_event_id.as_deref())
-    }
-
-    #[tauri::command]
-    pub async fn wallet_list_placeholder_message_zaps(
-        app: AppHandle,
-        state: State<'_, AppState>,
-    ) -> Result<Vec<WalletPlaceholderMessageZap>, WalletError> {
-        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        ZapAttemptStore::new(&app_data_dir(&app)?, &keys.public_key().to_hex())
-            .settled_message_zaps()
-    }
-
-    #[tauri::command]
-    pub async fn wallet_send_profile_zap(
-        app: AppHandle,
-        state: State<'_, AppState>,
-        request: WalletProfileZapRequest,
-    ) -> Result<WalletProfileZapResult, WalletError> {
-        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        let payer_pubkey = keys.public_key().to_hex();
-        if payer_pubkey == request.recipient_pubkey {
-            return Err(WalletError::new(
-                "invalid_recipient",
-                "You cannot send Bitcoin to your own profile",
-            ));
-        }
-        let app_data_dir = app_data_dir(&app)?;
-        let lock = wallet_manager()
-            .operation_lock(&payer_pubkey, &request.idempotency_key)
-            .await;
-        let _guard = lock.lock().await;
-        let provider = wallet_manager().provider_for(&keys, &app_data_dir).await?;
-        let store = ZapAttemptStore::new(&app_data_dir, &payer_pubkey);
-        store.prune()?;
-        let normalized_comment = request
-            .comment
-            .as_deref()
-            .map(str::trim)
-            .filter(|comment| !comment.is_empty())
-            .map(str::to_string);
-        let mut attempt = match store.load(&request.idempotency_key)? {
-            Some(attempt)
-                if attempt.recipient_pubkey == request.recipient_pubkey
-                    && attempt.amount == request.amount
-                    && attempt.comment == normalized_comment
-                    && attempt.target_event_id == request.target_event_id
-                    && attempt.target_event_kind == request.target_event_kind =>
-            {
-                attempt
-            }
-            Some(attempt) => {
-                store.record_conflict(&attempt);
-                return Err(WalletError::new(
-                    "idempotency_conflict",
-                    "This payment key was already used for different details",
-                ));
-            }
-            None => {
-                let active_relay = relay_api_base_url_with_override(&state);
-                let recipient = resolve_recipient_offer(
-                    &state,
-                    &keys,
-                    &active_relay,
-                    &request.recipient_pubkey,
-                )
-                .await?;
-                let mut attempt = ZapAttempt::prepare(
-                    request.idempotency_key,
-                    recipient,
-                    request.amount,
-                    normalized_comment,
-                    request.target_event_id,
-                    request.target_event_kind,
-                    &keys,
-                )?;
-                store.save_prepared(&mut attempt)?;
-                attempt
-            }
-        };
-
-        match attempt.state {
-            ZapAttemptState::PaidWithoutProof => {
-                store.record_terminal_reuse(&attempt);
-                if !attempt.proof_published {
-                    let channel_id = zap_target_channel_id(&state, &keys, &attempt).await?;
-                    let event = store.prepare_placeholder_proof(
-                        &mut attempt,
-                        &keys,
-                        channel_id.as_deref(),
-                    )?;
-                    let active_relay = relay_api_base_url_with_override(&state);
-                    submit_signed_event_at_with_keys(&event, &state, &active_relay, &keys)
-                        .await
-                        .map_err(|error| {
-                            WalletError::new(
-                                "relay_publish_failed",
-                                format!("publish placeholder zap proof: {error}"),
-                            )
-                        })?;
-                    store.mark_proof_published(&mut attempt)?;
-                }
-                return attempt.result().ok_or_else(|| {
-                    WalletError::unavailable("settled profile payment is missing its result")
-                });
-            }
-            ZapAttemptState::Failed => {
-                store.record_terminal_reuse(&attempt);
-                return Err(attempt.payment.as_ref().map_or_else(
-                    || WalletError::new("payment_failed", "The prior payment failed"),
-                    payment_error,
-                ));
-            }
-            ZapAttemptState::Prepared | ZapAttemptState::Paying => {}
-        }
-
-        let personal_note = if attempt.target_event_id.is_some() {
-            format!("Buzz message zap {}", attempt.intent_event_id)
-        } else {
-            format!("Buzz profile payment {}", attempt.intent_event_id)
-        };
-        let payer_note = attempt.payer_note.clone();
-        let expected_amount = attempt.amount;
-        let expected_offer = attempt.offer.clone();
-        let payment_match = || WalletPaymentMatch {
-            payer_note: Some(&payer_note),
-            personal_note: Some(&personal_note),
-            expected_amount: Some(expected_amount),
-            expected_offer: Some(&expected_offer),
-        };
-        let payment = match attempt.state {
-            ZapAttemptState::Prepared => {
-                store.begin_dispatch(&mut attempt)?;
-                match provider
-                    .send_offer(WalletOfferSendRequest {
-                        offer: attempt.offer.clone(),
-                        amount: attempt.amount,
-                        payer_note: attempt.payer_note.clone(),
-                        personal_note: personal_note.clone(),
-                    })
-                    .await
-                {
-                    Ok(payment) => payment,
-                    Err(error) => {
-                        store.record_reconcile(&attempt)?;
-                        provider
-                            .find_outbound_payment(payment_match())
-                            .await?
-                            .ok_or_else(|| {
-                                WalletError::new(
-                                    "payment_status_unknown",
-                                    format!(
-                                        "{error}. Buzz retained this attempt and will only reconcile it."
-                                    ),
-                                )
-                            })?
-                    }
-                }
-            }
-            ZapAttemptState::Paying => {
-                store.record_reconcile(&attempt)?;
-                match provider.find_outbound_payment(payment_match()).await? {
-                    Some(payment) => payment,
-                    None if paying_attempt_expired(attempt.updated_at_ms) => {
-                        store.fail_reconciliation(&mut attempt)?;
-                        return Err(WalletError::new(
-                            "payment_failed",
-                            "No matching payment was found at the provider within 24 hours of the \
-                         send; the attempt was marked failed and Buzz did not send again",
-                        ));
-                    }
-                    None => {
-                        return Err(WalletError::new(
-                            "payment_status_unknown",
-                            "The prior payment result is still unknown; Buzz did not send again",
-                        ));
-                    }
-                }
-            }
-            ZapAttemptState::PaidWithoutProof | ZapAttemptState::Failed => {
-                return Err(WalletError::unavailable(
-                    "profile payment entered an invalid terminal transition",
-                ));
-            }
-        };
-        profile_payment_result(&state, &keys, &store, &mut attempt, payment).await
-    }
-
-    #[tauri::command]
     pub fn wallet_reveal_recovery_phrase(
         state: State<'_, AppState>,
     ) -> Result<String, WalletError> {
@@ -1027,6 +859,8 @@ mod disabled {
         }
     }
 
+    pub fn start_agent_runtime_wallet_reconciler(_app: tauri::AppHandle) {}
+
     macro_rules! disabled_async_command {
         ($name:ident ( $($argument:ident : $type:ty),* $(,)? ) -> $result:ty) => {
             #[tauri::command]
@@ -1065,6 +899,9 @@ mod disabled {
     disabled_async_command!(wallet_list_placeholder_message_zaps() -> serde_json::Value);
     disabled_async_command!(
         wallet_send_profile_zap(request: serde_json::Value) -> serde_json::Value
+    );
+    disabled_async_command!(
+        wallet_send_agent_runtime_zap(request: serde_json::Value) -> serde_json::Value
     );
 
     #[tauri::command]

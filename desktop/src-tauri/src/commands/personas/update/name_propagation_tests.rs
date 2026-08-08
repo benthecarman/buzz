@@ -45,6 +45,7 @@ fn agent(persona_id: &str, name: &str, display_name: Option<&str>) -> ManagedAge
         last_error_code: None,
         respond_to: Default::default(),
         respond_to_allowlist: vec![],
+        price_per_minute_sats: None,
         display_name: display_name.map(str::to_string),
         slug: None,
         runtime: None,

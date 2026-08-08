@@ -458,6 +458,12 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_RESPOND_TO_ALLOWLIST", value_delimiter = ',')]
     pub respond_to_allowlist: Option<Vec<String>>,
 
+    /// Whole satoshis charged per metered ACP runtime minute. Valid only with
+    /// an explicit non-empty allowlist. Runtime payment reservations are
+    /// required for external authors when this is set.
+    #[arg(long, env = "BUZZ_ACP_PRICE_PER_MINUTE_SATS")]
+    pub price_per_minute_sats: Option<u64>,
+
     /// Comma-separated list of allowed `--respond-to` modes.
     /// When set, the harness rejects startup if `--respond-to` is not in this list.
     /// Modes: owner-only, allowlist, anyone, nobody.
@@ -549,6 +555,8 @@ pub struct Config {
     pub respond_to: RespondTo,
     /// Validated allowlist of pubkey hex strings (used when respond_to == Allowlist).
     pub respond_to_allowlist: HashSet<String>,
+    /// Instance-only paid runtime rate in whole satoshis per minute.
+    pub price_per_minute_sats: Option<u64>,
     /// Allowed `respond_to` modes. Empty = all modes allowed.
     pub allowed_respond_to: Vec<String>,
     /// Per-persona env vars to inject at agent spawn time (e.g., GOOSE_PROVIDER, GOOSE_MODEL, BUZZ_AGENT_MODEL).
@@ -1028,6 +1036,20 @@ impl Config {
             HashSet::new()
         };
 
+        let price_per_minute_sats = match args.price_per_minute_sats {
+            Some(0) => {
+                return Err(ConfigError::ConfigFile(
+                    "price_per_minute_sats must be greater than zero".into(),
+                ))
+            }
+            Some(price) if args.respond_to != RespondTo::Allowlist => {
+                return Err(ConfigError::ConfigFile(format!(
+                    "price_per_minute_sats={price} requires --respond-to=allowlist"
+                )))
+            }
+            price => price,
+        };
+
         // Validate respond_to against the allowed set.
         let allowed_respond_to = if let Some(raw) = args.allowed_respond_to {
             // Validate each entry is a known RespondTo mode.
@@ -1112,6 +1134,7 @@ impl Config {
             permission_mode: args.permission_mode,
             respond_to: args.respond_to,
             respond_to_allowlist,
+            price_per_minute_sats,
             allowed_respond_to,
             persona_env_vars,
             has_generated_codex_config,
@@ -1484,6 +1507,7 @@ mod tests {
             permission_mode: PermissionMode::BypassPermissions,
             respond_to: RespondTo::Anyone,
             respond_to_allowlist: HashSet::new(),
+            price_per_minute_sats: None,
             allowed_respond_to: Vec::new(),
             persona_env_vars: vec![],
             has_generated_codex_config: false,

@@ -30,6 +30,8 @@ const AUTHORITATIVE_KEYS: &[&str] = &[
     "BUZZ_ACP_AGENT_ARGS",
     "BUZZ_ACP_RESPOND_TO",
     "BUZZ_ACP_RESPOND_TO_ALLOWLIST",
+    "BUZZ_ACP_PRICE_PER_MINUTE_SATS",
+    "BUZZ_ACP_RUNTIME_STATE_DIR",
     "BUZZ_ACP_MCP_COMMAND",
     "BUZZ_ACP_EXIT_AFTER_INACTIVITY",
     START_NONCE_KEY,
@@ -356,6 +358,8 @@ mod tests {
                     "BUZZ_ACP_AGENT_COMMAND": "/bin/sh",
                     "BUZZ_ACP_MCP_COMMAND": "/bin/sh",
                     "BUZZ_ACP_EXIT_AFTER_INACTIVITY": "0",
+                    "BUZZ_ACP_PRICE_PER_MINUTE_SATS": "1",
+                    "BUZZ_ACP_RUNTIME_STATE_DIR": "/tmp/attacker",
                 },
                 "owner_pubkey": "beef"
             }
@@ -370,6 +374,8 @@ mod tests {
         assert_eq!(env["BUZZ_ACP_MCP_COMMAND"], "buzz-dev-mcp");
         assert_eq!(env["BUZZ_ACP_EXIT_AFTER_INACTIVITY"], "7200");
         assert_eq!(env["BUZZ_MANAGED_AGENT_START_NONCE"], "gen0001");
+        assert!(!env.contains_key("BUZZ_ACP_PRICE_PER_MINUTE_SATS"));
+        assert!(!env.contains_key("BUZZ_ACP_RUNTIME_STATE_DIR"));
     }
 
     /// Tier 1 is *overridable* — user env beats policy defaults, matching the

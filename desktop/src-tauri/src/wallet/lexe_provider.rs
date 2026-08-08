@@ -64,6 +64,13 @@ pub(super) fn canonical_offer(value: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn canonical_offer_id(value: &str) -> Option<String> {
+    lexe::types::bitcoin::Offer::from_str(value)
+        .ok()
+        .and_then(|offer| serde_json::to_value(offer.id()).ok())
+        .and_then(|value| value.as_str().map(str::to_owned))
+}
+
 fn scoped_offer_file_name(scope: &str) -> String {
     let digest = Sha256::digest(scope.as_bytes());
     format!("{}.txt", hex::encode(digest))
@@ -194,6 +201,7 @@ impl LexeProvider {
 
     fn transaction(payment: Payment) -> Result<WalletTransaction, WalletError> {
         let payer_note = payment.message.clone();
+        let offer_id = payment.offer_id.as_ref().map(Self::json_string);
         Ok(WalletTransaction {
             id: Self::payment_id(&payment.index)?,
             direction: Self::json_string(&payment.direction),
@@ -206,6 +214,7 @@ impl LexeProvider {
                 .or(payment.message)
                 .or(payment.payer_name),
             payer_note,
+            offer_id,
             created_at_ms: payment.created_at.to_millis(),
             finalized_at_ms: payment.finalized_at.map(|timestamp| timestamp.to_millis()),
         })

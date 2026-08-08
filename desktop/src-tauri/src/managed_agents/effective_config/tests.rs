@@ -78,6 +78,7 @@ fn record(
         last_error_code: None,
         respond_to: RespondTo::OwnerOnly,
         respond_to_allowlist: vec![],
+        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,
