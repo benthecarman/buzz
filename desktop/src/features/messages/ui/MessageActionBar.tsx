@@ -1,7 +1,6 @@
 import {
   BellOff,
   BellRing,
-  Bitcoin,
   Clock,
   Copy,
   CornerUpLeft,
@@ -22,6 +21,7 @@ import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import { useCustomEmoji } from "@/features/custom-emoji/hooks";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { ReportMessageDialog } from "@/features/moderation/ui/ReportMessageDialog";
+import bitcoinIconUrl from "@/features/profile/assets/bitcoin.svg?inline";
 import { useBitcoinCompileEnabled } from "@/features/wallet/hooks";
 import {
   SendBitcoinDialog,
@@ -605,7 +605,12 @@ export const MessageActionBar = React.memo(function MessageActionBar({
                   type="button"
                   variant="ghost"
                 >
-                  <Bitcoin className={ACTION_ICON_CLASS} />
+                  <img
+                    alt=""
+                    aria-hidden="true"
+                    className="h-5 w-5"
+                    src={bitcoinIconUrl}
+                  />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Zap</TooltipContent>

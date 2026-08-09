@@ -1,9 +1,10 @@
-import { Bitcoin, LoaderCircle, SmilePlus } from "lucide-react";
+import { LoaderCircle, SmilePlus } from "lucide-react";
 import * as React from "react";
 
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import type { TimelineReaction, TimelineZap } from "@/features/messages/types";
 import { recordQuickReactionEmoji } from "@/features/messages/ui/useQuickReactionEmojis";
+import bitcoinIconUrl from "@/features/profile/assets/bitcoin.svg?inline";
 import { formatBitcoin } from "@/features/wallet/lib/formatBitcoin";
 import { cn } from "@/shared/lib/cn";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
@@ -310,13 +311,18 @@ function ZapPill({
           }
           className={cn(
             REACTION_PILL_BASE_CLASSES,
-            "min-w-12 cursor-help justify-center gap-1.5 border-amber-500/40 bg-amber-500/10 px-2 text-amber-700 dark:text-amber-300",
+            "min-w-12 cursor-help justify-center gap-1.5 border-blue-200 bg-white px-2 text-black",
             pending && "border-dashed",
           )}
           data-testid="message-zap"
           type="button"
         >
-          <Bitcoin className="h-3.5 w-3.5" />
+          <img
+            alt=""
+            aria-hidden="true"
+            className="h-5 w-5"
+            src={bitcoinIconUrl}
+          />
           <span>{amount.toLocaleString()}</span>
           {pending ? <LoaderCircle className="h-3 w-3 animate-spin" /> : null}
         </button>
