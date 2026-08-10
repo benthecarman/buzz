@@ -149,7 +149,7 @@ fmt-all: fmt desktop-tauri-fmt mobile-fmt
 fix-all: fmt desktop-tauri-fmt desktop-fix web-fix mobile-fix
 
 # Ensure sidecar placeholder binaries exist (Tauri validates externalBin at compile time)
-# Sidecar binary list must stay in sync with desktop-release-build below.
+# Sidecar binary list must stay in sync with desktop-release-build and desktop-deb below.
 _ensure-sidecar-stubs:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -260,6 +260,35 @@ desktop-release-build target="aarch64-apple-darwin":
     touch "desktop/src-tauri/binaries/buzz-$TARGET"
     pnpm install
     cd {{desktop_dir}} && pnpm tauri build --features mesh-llm --target {{target}}
+
+# Build an unsigned production-shaped Linux .deb locally.
+#
+# Deliberately omit --target when building for the host. Cargo treats an explicit
+# host triple as a separate artifact directory, which otherwise causes a second
+# near-cold release build. Incremental release compilation is local to this
+# recipe so official release/CI artifacts keep their existing profile.
+desktop-deb:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    HOST=$(rustc -vV | sed -n 's|host: ||p')
+    if [[ "$HOST" != *linux* ]]; then
+        echo "Error: desktop-deb requires a Linux host (detected $HOST)." >&2
+        exit 1
+    fi
+
+    export CARGO_PROFILE_RELEASE_INCREMENTAL=true
+
+    pnpm install
+    cargo build --release \
+      -p buzz-acp \
+      -p buzz-agent \
+      -p buzz-backend-kubernetes \
+      -p buzz-dev-mcp \
+      -p git-credential-nostr \
+      -p buzz-cli
+    ./scripts/bundle-sidecars.sh
+    cd {{desktop_dir}}
+    pnpm tauri build --ci --no-sign --bundles deb --features mesh-llm
 
 # Run desktop checks suitable for CI / pre-push
 desktop-ci: desktop-check desktop-test desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-tauri-test
