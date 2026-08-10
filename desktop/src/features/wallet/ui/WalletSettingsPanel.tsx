@@ -31,8 +31,8 @@ import { formatBitcoin } from "../lib/formatBitcoin";
 import { parseWholeBitcoinAmount } from "../lib/profileZap";
 import { walletCommandError, walletErrorMessage } from "../lib/walletError";
 import type {
-  WalletDestinationAnalysis,
   WalletFundingRequest,
+  WalletSendRequest,
   WalletStatus,
   WalletTransaction,
 } from "../types";
@@ -71,8 +71,6 @@ function BalanceCard({
   refreshing: boolean;
   status: WalletStatus;
 }) {
-  const reservedFunds = Math.max(0, status.balance - status.spendableBalance);
-
   return (
     <div className="rounded-2xl border border-border/70 bg-background p-5">
       <div className="flex items-start justify-between gap-3">
@@ -86,14 +84,6 @@ function BalanceCard({
           >
             {formatBitcoin(status.spendableBalance)}
           </p>
-          {reservedFunds > 0 ? (
-            <p
-              className="mt-1 text-xs text-muted-foreground"
-              data-testid="wallet-reserved-funds"
-            >
-              Reserved funds: {formatBitcoin(reservedFunds)}
-            </p>
-          ) : null}
         </div>
         <Button
           aria-label="Refresh wallet"
@@ -154,16 +144,17 @@ function FundWalletCard({
       <div>
         <h3 className="text-sm font-semibold">Fund wallet</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Fund from an existing Lightning wallet.
+          Transfer bitcoin from an external Lightning wallet
         </p>
       </div>
       {funding ? (
         <div className="mt-5 flex flex-col items-center gap-4">
-          <div className="flex h-[312px] w-[312px] max-w-full items-center justify-center rounded-2xl border border-border/70 bg-white p-3">
+          <div className="flex h-[370px] w-[370px] max-w-full items-center justify-center rounded-2xl border border-border/70 bg-white p-3">
             <StyledQrCode
               animate
+              className="h-auto max-w-full"
               data-testid="wallet-receive-qr"
-              size={288}
+              size={346}
               title="Wallet funding QR code"
               value={funding.bip321Uri}
             />
@@ -202,26 +193,22 @@ function TransferOutCard({
   const [amount, setAmount] = useState("");
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
-  const [analysis, setAnalysis] = useState<WalletDestinationAnalysis | null>(
-    null,
-  );
+  const [pendingRequest, setPendingRequest] =
+    useState<WalletSendRequest | null>(null);
   const [requestId, setRequestId] = useState<string>(crypto.randomUUID());
   const [reconciling, setReconciling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void getPendingWalletSend()
-      .then(async (pending) => {
+      .then((pending) => {
         if (!pending || cancelled) return;
         setDestination(pending.destination);
         setAmount(pending.amount === null ? "" : String(pending.amount));
         setMessage(pending.message ?? "");
         setRequestId(pending.requestId);
+        setPendingRequest(pending);
         setReconciling(true);
-        const restoredAnalysis = await analyzeWalletDestination(
-          pending.destination,
-        );
-        if (!cancelled) setAnalysis(restoredAnalysis);
       })
       .catch(() => undefined);
     return () => {
@@ -229,31 +216,30 @@ function TransferOutCard({
     };
   }, []);
 
-  function resetAnalysis() {
-    if (!reconciling) setAnalysis(null);
-  }
-
   const parsedAmount = amount.trim()
     ? parseWholeBitcoinAmount(amount.trim())
     : null;
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (amount.trim() && parsedAmount === null) {
+    if (!pendingRequest && parsedAmount === null) {
       toast.error("Enter a whole Bitcoin amount greater than zero.");
       return;
     }
+    let paymentRequest = pendingRequest;
     setSending(true);
     try {
-      if (!analysis) {
+      if (!paymentRequest) {
+        if (parsedAmount === null) return;
         const nextAnalysis = await analyzeWalletDestination(destination.trim());
         const effectiveAmount = nextAnalysis.amount ?? parsedAmount;
-        if (nextAnalysis.amount !== null && parsedAmount !== null) {
-          toast.error("This destination already specifies its amount.");
-          return;
-        }
-        if (effectiveAmount === null) {
-          toast.error("Enter a whole Bitcoin amount greater than zero.");
+        if (
+          nextAnalysis.amount !== null &&
+          nextAnalysis.amount !== parsedAmount
+        ) {
+          toast.error(
+            `This destination is for ${formatBitcoin(nextAnalysis.amount)}.`,
+          );
           return;
         }
         if (
@@ -274,39 +260,42 @@ function TransferOutCard({
           toast.error("This payment destination has expired.");
           return;
         }
-        setAnalysis(nextAnalysis);
-        return;
+        paymentRequest = {
+          destination: nextAnalysis.normalizedDestination,
+          amount: nextAnalysis.amount === null ? parsedAmount : null,
+          message: message.trim() || null,
+          requestId,
+        };
       }
-      const payment = await sendWalletPayment({
-        destination: analysis.normalizedDestination,
-        amount: parsedAmount,
-        message: message.trim() || null,
-        requestId,
-      });
+      const payment = await sendWalletPayment(paymentRequest);
       if (payment.status === "completed") {
         toast.success(`Payment completed: ${formatBitcoin(payment.amount)}`);
         setDestination("");
         setAmount("");
         setMessage("");
-        setAnalysis(null);
+        setPendingRequest(null);
         setReconciling(false);
         setRequestId(crypto.randomUUID());
         onPaymentComplete();
       } else if (payment.status === "failed") {
         toast.error(payment.statusMessage || "The payment failed.");
+        setPendingRequest(null);
         setReconciling(false);
         setRequestId(crypto.randomUUID());
       } else {
         toast.warning("The payment is pending. Buzz will reconcile it.");
+        setPendingRequest(paymentRequest);
         setReconciling(true);
       }
     } catch (error) {
       const commandError = walletCommandError(error);
-      if (commandError.code === "payment_status_unknown") {
-        setReconciling(true);
-      } else if (commandError.code === "payment_failed") {
+      if (commandError.code === "payment_failed") {
         setReconciling(false);
+        setPendingRequest(null);
         setRequestId(crypto.randomUUID());
+      } else if (paymentRequest) {
+        setPendingRequest(paymentRequest);
+        setReconciling(true);
       }
       toast.error(walletErrorMessage(error));
     } finally {
@@ -320,88 +309,80 @@ function TransferOutCard({
       onSubmit={(event) => void submit(event)}
     >
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold">Transfer out</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Send to a Lightning Address, BOLT11 invoice, BOLT12 offer, or
-            BIP-321 URI.
-          </p>
-        </div>
+        <h3 className="text-sm font-semibold">Transfer out</h3>
         <ArrowUpFromLine className="h-5 w-5 text-muted-foreground" />
       </div>
-      <div className="mt-4 space-y-2">
-        <Input
-          aria-label="Lightning destination"
-          disabled={reconciling}
-          onChange={(event) => {
-            setDestination(event.target.value);
-            resetAnalysis();
-          }}
-          placeholder="name@example.com, lnbc…, lno…, bitcoin:…"
-          required
-          value={destination}
-        />
-        <div className="grid gap-2 sm:grid-cols-2">
+      <div className="mt-4 space-y-3">
+        <div className="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3">
+          <label className="text-sm font-medium" htmlFor="wallet-send-amount">
+            Amount to send:
+          </label>
+          <div className="relative">
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-foreground"
+            >
+              ₿
+            </span>
+            <Input
+              className="pl-7"
+              disabled={reconciling}
+              id="wallet-send-amount"
+              inputMode="numeric"
+              min={1}
+              onChange={(event) => {
+                setAmount(event.target.value);
+              }}
+              required
+              step={1}
+              type="text"
+              value={amount}
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3">
+          <label
+            className="text-sm font-medium"
+            htmlFor="wallet-send-destination"
+          >
+            Destination:
+          </label>
           <Input
-            aria-label="Bitcoin amount"
             disabled={reconciling}
-            inputMode="numeric"
-            min={1}
+            id="wallet-send-destination"
             onChange={(event) => {
-              setAmount(event.target.value);
-              resetAnalysis();
+              setDestination(event.target.value);
             }}
-            placeholder="Amount in ₿ (if needed)"
-            type="text"
-            value={amount}
+            placeholder="Lightning invoice or offer"
+            required
+            value={destination}
           />
+        </div>
+        <div className="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3">
+          <label className="text-sm font-medium" htmlFor="wallet-send-note">
+            Note:
+          </label>
           <Input
-            aria-label="Transfer note"
             disabled={reconciling}
+            id="wallet-send-note"
             maxLength={200}
             onChange={(event) => {
               setMessage(event.target.value);
-              resetAnalysis();
             }}
-            placeholder="Optional note"
+            placeholder="optional"
             value={message}
           />
         </div>
-        {analysis ? (
-          <div
-            className="rounded-xl border border-border/70 bg-muted/30 p-3 text-sm"
-            data-testid="wallet-send-confirmation"
-          >
-            <p className="font-medium">Confirm payment</p>
-            {analysis.description ? (
-              <p className="mt-1 text-muted-foreground">
-                {analysis.description}
-              </p>
-            ) : null}
-            <p className="mt-1 break-all text-xs text-muted-foreground">
-              {analysis.normalizedDestination}
-            </p>
-            <p className="mt-2">
-              Amount:{" "}
-              {formatBitcoin(analysis.amount ?? parsedAmount ?? undefined)}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Lexe calculates routing or on-chain fees during payment. The final
-              fee appears in transaction history.
-            </p>
-          </div>
-        ) : null}
         <Button
           className="w-full"
-          disabled={sending || !destination.trim()}
+          disabled={
+            sending ||
+            (!pendingRequest && (!destination.trim() || !amount.trim()))
+          }
           type="submit"
         >
           {sending ? <LoaderCircle className="animate-spin" /> : <Send />}
-          {reconciling
-            ? "Check payment"
-            : analysis
-              ? "Confirm and send"
-              : "Review payment"}
+          {reconciling ? "Check payment" : "Send payment"}
         </Button>
       </div>
     </form>
@@ -801,7 +782,7 @@ export function WalletSettingsPanel() {
     <section className="space-y-4" data-testid="settings-wallet">
       <SettingsSectionHeader
         title="Wallet"
-        description="Manage your self-custodial Bitcoin wallet."
+        description="Manage your bitcoin Lightning Network wallet"
       />
       <BalanceCard
         activeAction={activeAction}

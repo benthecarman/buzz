@@ -422,6 +422,22 @@ type E2eConfig = {
     /** Current mocked wallet totals, mutable by wallet polling specs. */
     walletBalance?: number;
     walletSpendableBalance?: number;
+    /** Exact persisted request returned for pending-payment reconciliation. */
+    walletPendingSend?: {
+      destination: string;
+      amount: number | null;
+      message: string | null;
+      requestId: string;
+    };
+    /** Sequenced wallet-send failures; null entries allow that call through. */
+    walletSendErrors?: ({ code: string; message: string } | null)[];
+    /** Captured wallet-send requests for idempotency assertions. */
+    walletSendRequests?: Array<{
+      destination: string;
+      amount: number | null;
+      message: string | null;
+      requestId: string;
+    }>;
     /** Result returned by message/profile zap payment commands. */
     walletProfileZapStatus?: "completed" | "failed" | "pending";
     /** Delay a message/profile zap result so optimistic UI can be asserted. */
@@ -12188,6 +12204,7 @@ export function maybeInstallE2eTauriMocks() {
         };
       }
       case "wallet_get_pending_send":
+        return activeConfig?.mock?.walletPendingSend ?? null;
       case "wallet_get_pending_profile_zap":
         return null;
       case "wallet_list_transactions":
@@ -12202,18 +12219,30 @@ export function maybeInstallE2eTauriMocks() {
       case "wallet_parse_zap_events":
         // Native rust-lightning validation is outside the browser-only bridge.
         return [];
-      case "wallet_send":
+      case "wallet_send": {
+        const request = (
+          payload as {
+            request: {
+              destination: string;
+              amount: number | null;
+              message: string | null;
+              requestId: string;
+            };
+          }
+        ).request;
+        activeConfig?.mock?.walletSendRequests?.push({ ...request });
+        const sendError = activeConfig?.mock?.walletSendErrors?.shift();
+        if (sendError) throw sendError;
         return {
           paymentId: walletPaymentId("ln"),
           status: "completed",
           statusMessage: "Payment completed",
-          amount:
-            (payload as { request?: { amount?: number | null } }).request
-              ?.amount ?? 1000,
+          amount: request.amount ?? 1000,
           fees: 1,
           createdAtMs: Date.now(),
           finalizedAtMs: Date.now(),
         };
+      }
       case "wallet_get_recipient_offer": {
         const recipientPubkey =
           (payload as { recipientPubkey?: string }).recipientPubkey ??

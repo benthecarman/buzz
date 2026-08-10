@@ -362,6 +362,22 @@ type MockBridgeOptions = {
   /** Current mocked wallet totals, mutable by wallet polling specs. */
   walletBalance?: number;
   walletSpendableBalance?: number;
+  /** Exact persisted request returned for pending-payment reconciliation. */
+  walletPendingSend?: {
+    destination: string;
+    amount: number | null;
+    message: string | null;
+    requestId: string;
+  };
+  /** Sequenced wallet-send failures; null entries allow that call through. */
+  walletSendErrors?: ({ code: string; message: string } | null)[];
+  /** Captured wallet-send requests for idempotency assertions. */
+  walletSendRequests?: Array<{
+    destination: string;
+    amount: number | null;
+    message: string | null;
+    requestId: string;
+  }>;
   walletProfileZapStatus?: "completed" | "failed" | "pending";
   /** Delay a message/profile zap result so optimistic UI can be asserted. */
   walletProfileZapDelayMs?: number;
