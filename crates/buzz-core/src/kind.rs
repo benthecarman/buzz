@@ -203,6 +203,27 @@ pub const P_GATED_KINDS: &[u32] = &[
     KIND_AGENT_RUNTIME_SETTLEMENT,
 ];
 
+/// Paid-runtime ledger kinds, whose readers are the ledger's two parties.
+///
+/// A subset of [`P_GATED_KINDS`] with one added allowance: the **author** may
+/// read them as well as the `#p` counterparty. Every entry is agent-authored
+/// and NIP-44 encrypted to the payer, and the two parties need opposite
+/// filters to replay the same ledger — the payer reads by `#p=[self]`, while
+/// the agent enumerates what it wrote by `authors=[self]`, because `#p` names
+/// each payer, including ones it has never served. Without the author
+/// allowance an agent cannot settle its own expired reservations, and a priced
+/// agent fails to start.
+///
+/// Reading back one's own signed, counterparty-encrypted events discloses
+/// nothing the author did not write, which is why the allowance is safe here
+/// and not for [`KIND_GIFT_WRAP`] (ephemeral authors) or
+/// [`KIND_DM_VISIBILITY`] (relay-signed).
+pub const AGENT_RUNTIME_LEDGER_KINDS: &[u32] = &[
+    KIND_AGENT_RUNTIME_DEPOSIT,
+    KIND_AGENT_RUNTIME_RESERVATION,
+    KIND_AGENT_RUNTIME_SETTLEMENT,
+];
+
 /// NIP-AP: Agent Persona (parameterized replaceable, owner-authored).
 ///
 /// Persona definition event published by the workspace owner. Addressed by

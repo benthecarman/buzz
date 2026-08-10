@@ -261,6 +261,36 @@ fn is_retriable_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 429 | 502 | 503 | 504)
 }
 
+/// Longest error body carried into a `RelayError`. Enough for the relay's
+/// one-line refusals; short enough that an HTML error page cannot flood a log.
+const MAX_ERROR_DETAIL_CHARS: usize = 240;
+
+/// The relay's refusal message, ready to append to an error.
+///
+/// Bridge errors arrive as `{"error":"restricted: …"}`; anything else is used
+/// verbatim. Returns `None` for an empty body so the caller can omit the
+/// separator entirely.
+fn error_detail(body: &str) -> Option<String> {
+    let message = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .or_else(|| value.get("message"))
+                .and_then(|field| field.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.to_string());
+    let message = message.trim();
+    if message.is_empty() {
+        return None;
+    }
+    Some(match message.char_indices().nth(MAX_ERROR_DETAIL_CHARS) {
+        Some((cut, _)) => format!("{}…", &message[..cut]),
+        None => message.to_string(),
+    })
+}
+
 /// Base retry delays for transient HTTP failures: 500ms, 1s, 2s.
 /// Jitter (±20%) is applied at call time via `jittered_duration`.
 const REST_RETRY_BASE_DELAYS: [Duration; 3] = [
@@ -364,11 +394,18 @@ impl RestClient {
                     )));
                 }
                 Ok(resp) => {
-                    return Err(RelayError::Http(format!(
-                        "{method} {} returned HTTP {}",
-                        path,
-                        resp.status()
-                    )));
+                    // The relay explains a refusal in the body ("restricted:
+                    // …"); without it a 403 reads as an unexplained outage and
+                    // the operator has no way to tell a policy rejection from
+                    // a broken deployment.
+                    let status = resp.status();
+                    let detail = resp.text().await.unwrap_or_default();
+                    return Err(RelayError::Http(match error_detail(&detail) {
+                        Some(detail) => {
+                            format!("{method} {path} returned HTTP {status}: {detail}")
+                        }
+                        None => format!("{method} {path} returned HTTP {status}"),
+                    }));
                 }
                 Err(e) if e.is_timeout() || e.is_connect() => {
                     tracing::warn!("{method} {path} network error: {e}");
@@ -4057,6 +4094,32 @@ async fn wait_for_any_ok(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_detail_surfaces_the_relay_refusal() {
+        // The exact shape the bridge returns when a read is refused. Losing
+        // this text is what made a paid-runtime 403 unreadable in the logs.
+        assert_eq!(
+            error_detail(
+                r#"{"error":"restricted: p-gated kinds require #p tag matching your pubkey"}"#
+            ),
+            Some("restricted: p-gated kinds require #p tag matching your pubkey".to_string())
+        );
+        assert_eq!(
+            error_detail("plain text refusal"),
+            Some("plain text refusal".to_string())
+        );
+        assert_eq!(error_detail("   "), None);
+        assert_eq!(error_detail(""), None);
+    }
+
+    #[test]
+    fn error_detail_truncates_a_flooding_body() {
+        let body = "x".repeat(MAX_ERROR_DETAIL_CHARS * 2);
+        let detail = error_detail(&body).expect("detail");
+        assert_eq!(detail.chars().count(), MAX_ERROR_DETAIL_CHARS + 1);
+        assert!(detail.ends_with('…'));
+    }
 
     #[test]
     fn relay_ws_to_http_plain() {

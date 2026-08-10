@@ -7,8 +7,9 @@ use tracing::{debug, warn};
 
 use buzz_core::filter::filters_match;
 use buzz_core::kind::{
-    is_unshared_gated_event, AUTHOR_ONLY_KINDS, KIND_AGENT_ENGRAM, KIND_AGENT_TURN_METRIC,
-    KIND_DM_VISIBILITY, P_GATED_KINDS, RESULT_GATED_KINDS, SHARED_GATED_KINDS,
+    is_unshared_gated_event, AGENT_RUNTIME_LEDGER_KINDS, AUTHOR_ONLY_KINDS, KIND_AGENT_ENGRAM,
+    KIND_AGENT_TURN_METRIC, KIND_DM_VISIBILITY, P_GATED_KINDS, RESULT_GATED_KINDS,
+    SHARED_GATED_KINDS,
 };
 use buzz_core::tenant::TenantContext;
 use buzz_db::EventQuery;
@@ -1209,9 +1210,44 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex: 
             return true;
         }
 
+        // The paid-runtime ledger has two readers: the `#p` payer handled
+        // below, and the agent that authored the entries. An agent must
+        // enumerate its own ledger to settle expired reservations, and it
+        // cannot do that by `#p` — that tag names each payer, including ones
+        // it has never served. Reading back what it signed itself discloses
+        // nothing new, so `authors=[self]` authorizes these kinds and only
+        // these (see `AGENT_RUNTIME_LEDGER_KINDS`).
+        if filter_p_gates_only_agent_runtime_ledger(filter)
+            && filter_authors_are_all_self(filter, authed_pubkey_hex)
+        {
+            return true;
+        }
+
         filter.generic_tags.get(&p_tag).is_some_and(|values| {
             !values.is_empty() && values.iter().all(|value| value == authed_pubkey_hex)
         })
+    })
+}
+
+/// Whether every p-gated kind this filter can match is a paid-runtime ledger
+/// kind. A kindless filter matches everything and is never ledger-only.
+fn filter_p_gates_only_agent_runtime_ledger(filter: &Filter) -> bool {
+    filter.kinds.as_ref().is_some_and(|kinds| {
+        kinds
+            .iter()
+            .map(|kind| kind.as_u16() as u32)
+            .filter(|kind| P_GATED_KINDS.contains(kind))
+            .all(|kind| AGENT_RUNTIME_LEDGER_KINDS.contains(&kind))
+    })
+}
+
+/// Whether `authors` is present, non-empty, and names nobody but the reader.
+fn filter_authors_are_all_self(filter: &Filter, authed_pubkey_hex: &str) -> bool {
+    filter.authors.as_ref().is_some_and(|authors| {
+        !authors.is_empty()
+            && authors
+                .iter()
+                .all(|author| author.to_hex().eq_ignore_ascii_case(authed_pubkey_hex))
     })
 }
 
@@ -1966,6 +2002,82 @@ mod tests {
         assert!(
             p_gated_filters_authorized(&[owner_p_and_ids], authed),
             "kind:44200 with matching #p and ids must be allowed"
+        );
+    }
+
+    /// The paid-runtime ledger is read from both ends: the payer by `#p`, the
+    /// agent by `authors`. Denying the author its own entries strands expired
+    /// reservations and stops a priced agent from starting at all.
+    #[test]
+    fn agent_runtime_ledger_reads_admit_the_author_and_the_payer() {
+        let p_tag = SingleLetterTag::lowercase(Alphabet::P);
+        let agent_keys = nostr::Keys::generate();
+        let other_keys = nostr::Keys::generate();
+        let agent = agent_keys.public_key();
+        let agent_hex = agent.to_hex();
+        let payer = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let reservation =
+            nostr::Kind::Custom(buzz_core::kind::KIND_AGENT_RUNTIME_RESERVATION as u16);
+        let deposit = nostr::Kind::Custom(buzz_core::kind::KIND_AGENT_RUNTIME_DEPOSIT as u16);
+        let settlement = nostr::Kind::Custom(buzz_core::kind::KIND_AGENT_RUNTIME_SETTLEMENT as u16);
+
+        // The sweep: every open reservation this agent wrote, across payers it
+        // cannot name in advance.
+        let sweep = Filter::new().author(agent).kind(reservation);
+        assert!(
+            p_gated_filters_authorized(&[sweep], &agent_hex),
+            "an agent must be able to enumerate the reservations it authored"
+        );
+
+        // Ledger replay for one payer/channel scope.
+        let replay = Filter::new()
+            .author(agent)
+            .kinds([deposit, reservation, settlement])
+            .custom_tags(p_tag, [payer]);
+        assert!(
+            p_gated_filters_authorized(&[replay], &agent_hex),
+            "the author's own scoped ledger replay must be allowed"
+        );
+
+        // The payer's side is unchanged: `#p=[self]` still authorizes.
+        let payer_side = Filter::new()
+            .author(agent)
+            .kinds([deposit, reservation, settlement])
+            .custom_tags(p_tag, [payer]);
+        assert!(
+            p_gated_filters_authorized(&[payer_side], payer),
+            "the payer must keep reading their own ledger by #p"
+        );
+
+        // Someone else's ledger stays closed.
+        let foreign = Filter::new().author(agent).kind(reservation);
+        assert!(
+            !p_gated_filters_authorized(&[foreign], &other_keys.public_key().to_hex()),
+            "authors=[agent] must not authorize a third party"
+        );
+
+        // The allowance is author-bound, not kind-bound: no authors, no read.
+        let authorless = Filter::new().kind(reservation);
+        assert!(
+            !p_gated_filters_authorized(&[authorless], &agent_hex),
+            "a ledger filter without authors=[self] must still require #p"
+        );
+
+        // Mixing in another p-gated kind must not smuggle it through.
+        let mixed = Filter::new().author(agent).kinds([
+            reservation,
+            nostr::Kind::Custom(buzz_core::kind::KIND_GIFT_WRAP as u16),
+        ]);
+        assert!(
+            !p_gated_filters_authorized(&[mixed], &agent_hex),
+            "authors=[self] must not unlock gift wraps riding along with a ledger kind"
+        );
+
+        // A kindless filter still matches every p-gated kind and needs #p.
+        let kindless = Filter::new().author(agent);
+        assert!(
+            !p_gated_filters_authorized(&[kindless], &agent_hex),
+            "a kindless authors=[self] filter must not become a ledger exemption"
         );
     }
 

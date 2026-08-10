@@ -82,7 +82,23 @@ are logged but never prevent the free Agent from starting. These state-integrity
 checks remain fail-closed when paid runtime is configured. Pricing announcement
 is best-effort in both modes.
 
+## Ledger read access
+
+Kinds `44210`, `44211`, and `44212` are `#p`-gated, with one addition: the
+Agent that authored an entry may read it back with `authors=[self]`. Both
+parties replay the same ledger from opposite ends — the payer filters by
+`#p=[self]`, while the Agent cannot, because `#p` names every payer, including
+ones it has not served yet. An Agent that cannot enumerate its own reservations
+cannot settle the expired ones, so a relay that refuses the author read stops a
+priced Agent from starting. Relays MUST admit the author for these three kinds
+and MUST NOT extend that allowance to any other `#p`-gated kind.
+
 ## Deployment requirements
+
+The relay must be new enough to admit the author-side ledger read described
+above. An older relay answers the Agent's reservation sweep with HTTP 403 and
+the Agent refuses to start while pricing is enabled — deploy the relay before
+enabling pricing.
 
 Set `BUZZ_ACP_RUNTIME_STATE_DIR` to durable storage scoped to one Agent and one
 community. All processes for that scope must use the same path. ACP refuses a
