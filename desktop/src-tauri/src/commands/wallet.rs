@@ -783,11 +783,10 @@ pub(crate) mod enabled {
         relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        let offer = wallet_manager()
+        let provider = wallet_manager()
             .provider_for(&keys, &app_data_dir(&app)?)
-            .await?
-            .offer(true)
             .await?;
+        let offer = provider.offer(true).await?;
         let relay_api_base_urls =
             wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
         let mut publication_warnings =
@@ -795,6 +794,14 @@ pub(crate) mod enabled {
         publication_warnings.extend(
             super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, true)
                 .await?,
+        );
+        // Agent offers ride along. Enabling the wallet was previously the only
+        // thing that published them, and disabling is refused while any agent
+        // is priced — so an agent whose offer went missing had no way back
+        // without clearing its rate first.
+        publication_warnings.extend(
+            provision_managed_agent_offers(&app, &state, &keys, &provider, &relay_api_base_urls)
+                .await,
         );
         Ok(WalletOfferPublicationResult {
             offer: Some(offer),
