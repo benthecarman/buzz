@@ -311,7 +311,7 @@ function ZapPill({
           }
           className={cn(
             REACTION_PILL_BASE_CLASSES,
-            "min-w-12 cursor-help justify-center gap-1.5 border-blue-200 bg-white px-2 text-black",
+            "min-w-12 cursor-help justify-center gap-1.5 border-border/70 bg-muted/70 px-2 text-foreground/90",
             pending && "border-dashed",
           )}
           data-testid="message-zap"

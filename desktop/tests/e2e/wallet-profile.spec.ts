@@ -3,6 +3,80 @@ import { expect, type Page, test } from "@playwright/test";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 import { FEATURE_OVERRIDES_STORAGE_KEY } from "../helpers/features";
 
+async function renderedTextContrast(
+  locator: import("@playwright/test").Locator,
+): Promise<number> {
+  return locator.evaluate((element) => {
+    type Rgba = { r: number; g: number; b: number; a: number };
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("Could not create contrast test canvas");
+
+    const parseColor = (color: string): Rgba => {
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = color;
+      context.fillRect(0, 0, 1, 1);
+      const [r, g, b, alpha] = context.getImageData(0, 0, 1, 1).data;
+      return { r, g, b, a: alpha / 255 };
+    };
+    const composite = (foreground: Rgba, background: Rgba): Rgba => {
+      const alpha = foreground.a + background.a * (1 - foreground.a);
+      if (alpha === 0) return { r: 0, g: 0, b: 0, a: 0 };
+
+      return {
+        r:
+          (foreground.r * foreground.a +
+            background.r * background.a * (1 - foreground.a)) /
+          alpha,
+        g:
+          (foreground.g * foreground.a +
+            background.g * background.a * (1 - foreground.a)) /
+          alpha,
+        b:
+          (foreground.b * foreground.a +
+            background.b * background.a * (1 - foreground.a)) /
+          alpha,
+        a: alpha,
+      };
+    };
+
+    const backgroundLayers: Rgba[] = [];
+    let current: Element | null = element;
+    while (current) {
+      backgroundLayers.push(
+        parseColor(window.getComputedStyle(current).backgroundColor),
+      );
+      current = current.parentElement;
+    }
+    let background: Rgba = { r: 255, g: 255, b: 255, a: 1 };
+    for (const layer of backgroundLayers.reverse()) {
+      background = composite(layer, background);
+    }
+    const foreground = composite(
+      parseColor(window.getComputedStyle(element).color),
+      background,
+    );
+    const luminance = (color: Rgba) => {
+      const [r, g, b] = [color.r, color.g, color.b].map((value) => {
+        const channel = value / 255;
+        return channel <= 0.04045
+          ? channel / 12.92
+          : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const foregroundLuminance = luminance(foreground);
+    const backgroundLuminance = luminance(background);
+    return (
+      (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+      (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+    );
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(
     ({ storageKey }) => {
@@ -133,6 +207,9 @@ test("shows an app-wide toast for an incoming wallet payment", async ({
 test("message zap omits comments and appears while payment is pending", async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("buzz-theme", "buzz-dark");
+  });
   await installMockBridge(page, {
     walletProfileZapDelayMs: 1_000,
     walletProfileZapStatus: "pending",
@@ -154,12 +231,25 @@ test("message zap omits comments and appears while payment is pending", async ({
     return window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
       channelName: "general",
       content: "Zap this pending payment",
+      id: "d4".repeat(32),
       pubkey: bobPubkey,
     });
   }, TEST_IDENTITIES.bob.pubkey);
   if (!message) {
     throw new Error("Mock message emitter is not installed");
   }
+  await page.evaluate(
+    ({ messageId, reactorPubkey }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "general",
+        content: "👍",
+        extraTags: [["e", messageId]],
+        kind: 7,
+        pubkey: reactorPubkey,
+      });
+    },
+    { messageId: message.id, reactorPubkey: TEST_IDENTITIES.alice.pubkey },
+  );
 
   const zapAction = page.getByTestId(`zap-message-${message.id}`);
   await expect(zapAction).toBeVisible();
@@ -173,6 +263,23 @@ test("message zap omits comments and appears while payment is pending", async ({
   await expect(dialog).toHaveCount(0);
 
   const pendingZap = page.getByTestId("message-zap").filter({ hasText: "21" });
+  const ordinaryReaction = page.getByRole("button", {
+    name: "Toggle 👍 reaction",
+  });
   await expect(pendingZap).toBeVisible();
+  await expect(ordinaryReaction).toBeVisible();
+  await expect(page.locator("html")).toHaveClass(/dark/);
   await expect(pendingZap).toHaveAttribute("aria-label", /payment pending/);
+  await expect(pendingZap).toHaveClass(/\bborder-border\/70\b/);
+  await expect(pendingZap).toHaveClass(/\bbg-muted\/70\b/);
+  await expect(pendingZap).toHaveClass(/\btext-foreground\/90\b/);
+  await expect(pendingZap).not.toHaveClass(/\bborder-blue-200\b/);
+  await expect(pendingZap).not.toHaveClass(/\bbg-white\b/);
+  const [zapBorderColor, reactionBorderColor] = await Promise.all(
+    [pendingZap, ordinaryReaction].map((locator) =>
+      locator.evaluate((element) => getComputedStyle(element).borderTopColor),
+    ),
+  );
+  expect(zapBorderColor).toBe(reactionBorderColor);
+  expect(await renderedTextContrast(pendingZap)).toBeGreaterThanOrEqual(4.5);
 });
