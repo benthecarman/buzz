@@ -56,7 +56,10 @@ export function PersonaAdvancedFields({
   behaviorDraft: PersonaBehaviorDraft;
   disabled: boolean;
   envVars: EnvVarsValue;
-  /** Optional create-only field rendered after instruction permissions. */
+  /**
+   * Optional field rendered after instruction permissions: the run-location
+   * section on create, the paid-runtime control on edit.
+   */
   afterRespondTo?: React.ReactNode;
   /** Env vars to display as inherited defaults in tuning-field placeholders.
    *  For templates, pass `globalConfig.env_vars` (the fallback layer). */

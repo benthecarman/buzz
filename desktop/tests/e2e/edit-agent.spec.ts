@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
+import { FEATURE_OVERRIDES_STORAGE_KEY } from "../helpers/features";
 
 const BAKED_DEFAULTS = [
   { key: "BUZZ_AGENT_PROVIDER", value: "anthropic", masked: false },
@@ -12,6 +13,17 @@ const BAKED_DEFAULTS = [
   { key: "BUZZ_AGENT_THINKING_EFFORT", value: "high", masked: false },
   { key: "ANTHROPIC_API_KEY", value: "sk-ant-baked-test", masked: true },
 ];
+
+/**
+ * Paid runtime needs the wallet that mints the agent's payment offer, so the
+ * control only exists once the Bitcoin preview feature is on. Must run before
+ * `installMockBridge` — React reads the override on mount.
+ */
+async function enableWalletFeature(page: import("@playwright/test").Page) {
+  await page.addInitScript((key: string) => {
+    window.localStorage.setItem(key, JSON.stringify({ bitcoin: true }));
+  }, FEATURE_OVERRIDES_STORAGE_KEY);
+}
 
 // Edit-agent dialog coverage (Phase 1B.3b-pre). Written against TODAY'S
 // EditAgentDialog, before the B3b re-host, so the re-host is guarded by a
@@ -156,6 +168,7 @@ test.describe("edit agent dialog", () => {
   test("shows and preserves configured paid-runtime pricing", async ({
     page,
   }) => {
+    await enableWalletFeature(page);
     await installMockBridge(page, {
       managedAgents: [
         {
@@ -192,6 +205,7 @@ test.describe("edit agent dialog", () => {
   });
 
   test("shows paid-runtime pricing for anyone access", async ({ page }) => {
+    await enableWalletFeature(page);
     await installMockBridge(page, {
       managedAgents: [
         {
@@ -211,6 +225,53 @@ test.describe("edit agent dialog", () => {
       page.getByRole("checkbox", { name: "Require payment for runtime" }),
     ).toBeChecked();
     await expect(page.locator("#agent-runtime-price")).toHaveValue("20");
+  });
+
+  test("keeps paid-runtime discoverable under owner-only access", async ({
+    page,
+  }) => {
+    await enableWalletFeature(page);
+    await installMockBridge(page, {
+      managedAgents: [
+        {
+          pubkey: AGENT_PUBKEY,
+          name: AGENT_NAME,
+          status: "stopped",
+          channelNames: ["agents"],
+          respondTo: "owner-only",
+        },
+      ],
+    });
+
+    await openEditDialog(page);
+
+    // Owner-only access cannot take payment, so the control explains itself
+    // instead of disappearing from the dialog.
+    const paymentToggle = page.getByRole("checkbox", {
+      name: "Require payment for runtime",
+    });
+    await expect(paymentToggle).toBeVisible();
+    await expect(paymentToggle).toBeDisabled();
+    await expect(paymentToggle).not.toBeChecked();
+    await expect(page.locator("#agent-runtime-price")).toHaveCount(0);
+    await expect(
+      page.getByText(
+        "Set Who can send instructions to Anyone or Selected people to charge for runtime.",
+      ),
+    ).toBeVisible();
+
+    // Choosing an externally accessible mode enables pricing in place.
+    await pickDropdownOption(page, "agent-respond-to", "Anyone");
+    await expect(paymentToggle).toBeEnabled();
+    await paymentToggle.check();
+    await page.locator("#agent-runtime-price").fill("21");
+    await page.getByTestId("edit-agent-dialog-submit").click();
+    await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
+
+    await page.getByTestId("user-profile-edit-agent").click();
+    await expect(page.locator("#agent-runtime-price")).toHaveValue("21", {
+      timeout: 10_000,
+    });
   });
 
   test("edits the agent name and persists it across a dialog reopen", async ({

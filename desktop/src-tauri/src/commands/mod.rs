@@ -7,6 +7,7 @@ mod agent_metric_archive;
 mod agent_model_process;
 mod agent_models;
 mod agent_models_env;
+mod agent_payment_offer;
 mod agent_providers;
 mod agent_runtime;
 mod agent_settings;
