@@ -100,6 +100,28 @@ pub const KIND_HTTP_AUTH: u32 = 27235;
 
 // NEW: Buzz command kinds (Pure Nostr plan)
 /// Agent metadata + owner reference (replaceable, agent-authored).
+///
+/// # Content contract
+///
+/// One JSON object, written as a whole because the kind is replaceable — a
+/// publisher that omits a field clears it for every reader:
+///
+/// - `channel_add_policy` (`anyone` | `owner_only` | `nobody`) — the only
+///   field the relay itself consumes ([`crate::kind::KIND_AGENT_PROFILE`]
+///   side effect writes it to `users.channel_add_policy`).
+/// - `respond_to`, `respond_to_allowlist`, `channel_ids` — the agent's
+///   audience and where it listens. Desktop
+///   (`agentAutocompleteEligibility.ts`) and mobile
+///   (`agent_identity_provider.dart`) gate mention autocomplete on these:
+///   an agent that omits them is unmentionable by anyone but its own owner,
+///   which also puts paid invocation out of reach.
+/// - `display_name` — how other members' clients label the agent, including
+///   the paid-runtime checkout rows.
+///
+/// The harness publishes the whole object at startup and whenever its channel
+/// set changes (`publish_agent_directory` in `buzz-acp`). Anything that writes
+/// this kind from elsewhere must carry every field it does not intend to
+/// clear.
 pub const KIND_AGENT_PROFILE: u32 = 10100;
 
 /// Buzz Agent Runtime Payments: agent-authored replaceable pricing terms.
