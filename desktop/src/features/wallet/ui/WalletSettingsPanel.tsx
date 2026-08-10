@@ -24,6 +24,7 @@ import {
   getWalletStatus,
   listWalletTransactions,
   pollWalletUpdates,
+  refreshWalletOffer,
   revealWalletRecoveryPhrase,
   sendWalletPayment,
 } from "../api";
@@ -721,6 +722,14 @@ export function WalletSettingsPanel() {
       const [nextStatus] = await Promise.all([
         getWalletStatus(),
         loadHistory(),
+        // Repair path for a missing announcement: agent offers are only
+        // published on wallet enable, and the wallet cannot be disabled while
+        // an agent is priced, so this is the one control that can put a
+        // priced agent's offer back. Never rotates the owner's own offer, and
+        // a failure here must not cost the balance read.
+        refreshWalletOffer().catch((offerError) => {
+          console.warn("[wallet] offer republish failed", offerError);
+        }),
       ]);
       setStatus(nextStatus);
       completeFundingIfReceived(nextStatus.balance);

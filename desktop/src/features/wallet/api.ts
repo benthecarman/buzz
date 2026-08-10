@@ -51,9 +51,19 @@ export function createWalletReceiveRequest(): Promise<WalletFundingRequest> {
   return invoke<WalletFundingRequest>("wallet_create_receive_request");
 }
 
-export function refreshWalletOffer(): Promise<WalletOfferPublicationResult> {
+/**
+ * Republish the wallet's announcements: the owner's offer, NWC info, and every
+ * managed agent's offer.
+ *
+ * `rotate` mints a fresh owner offer and invalidates the published one, so it
+ * stays opt-in — a repair must not change an offer the owner already shared.
+ */
+export function refreshWalletOffer(
+  rotate = false,
+): Promise<WalletOfferPublicationResult> {
   return invoke<WalletOfferPublicationResult>("wallet_refresh_offer", {
     relayUrls: communityRelayUrls(),
+    rotate,
   });
 }
 

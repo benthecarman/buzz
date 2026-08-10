@@ -708,21 +708,7 @@ pub(crate) mod enabled {
         state: State<'_, AppState>,
         relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
-        let paid_agents = crate::managed_agents::load_managed_agents(&app)
-            .map_err(WalletError::unavailable)?
-            .into_iter()
-            .filter(|agent| agent.price_per_minute_sats.is_some())
-            .map(|agent| agent.name)
-            .collect::<Vec<_>>();
-        if !paid_agents.is_empty() {
-            return Err(WalletError::new(
-                "wallet_in_use",
-                format!(
-                    "Disable paid runtime pricing before disabling the wallet: {}",
-                    paid_agents.join(", ")
-                ),
-            ));
-        }
+        let unpriced_agents = clear_agent_runtime_pricing(&app, &state)?;
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let event = build_offer_withdrawal()
             .sign_with_keys(&keys)
@@ -742,12 +728,56 @@ pub(crate) mod enabled {
         );
         publication_warnings
             .extend(withdraw_managed_agent_offers(&app, &state, &relay_api_base_urls).await);
+        if !unpriced_agents.is_empty() {
+            publication_warnings.push(format!(
+                "Paid runtime pricing was cleared for {}. Restart {} to stop charging.",
+                unpriced_agents.join(", "),
+                if unpriced_agents.len() == 1 {
+                    "it"
+                } else {
+                    "them"
+                }
+            ));
+        }
         state.wallet_polling_enabled.store(false, Ordering::Release);
         incoming_payment_tracker().lock().await.clear();
         Ok(WalletOfferPublicationResult {
             offer: None,
             publication_warnings,
         })
+    }
+
+    /// Clear every agent's per-minute rate, returning the names that carried
+    /// one.
+    ///
+    /// Disabling the wallet withdraws the offers those rates are collected
+    /// against, so a surviving rate would leave an agent advertising a price
+    /// nobody can pay — and the harness refuses to start such an agent. This
+    /// used to be a refusal instead, which stranded an owner whose agent had
+    /// already lost its offer: they could neither disable the wallet nor
+    /// republish through it.
+    fn clear_agent_runtime_pricing(
+        app: &AppHandle,
+        state: &AppState,
+    ) -> Result<Vec<String>, WalletError> {
+        let _guard = state
+            .managed_agents_store_lock
+            .lock()
+            .map_err(|error| WalletError::unavailable(error.to_string()))?;
+        let mut records =
+            crate::managed_agents::load_managed_agents(app).map_err(WalletError::unavailable)?;
+        let mut cleared = Vec::new();
+        for record in records.iter_mut() {
+            if record.price_per_minute_sats.take().is_some() {
+                cleared.push(record.name.clone());
+            }
+        }
+        if cleared.is_empty() {
+            return Ok(cleared);
+        }
+        crate::managed_agents::save_managed_agents(app, &records)
+            .map_err(WalletError::unavailable)?;
+        Ok(cleared)
     }
 
     #[tauri::command]
@@ -777,16 +807,23 @@ pub(crate) mod enabled {
     }
 
     #[tauri::command]
+    /// Republish the wallet's announcements: the owner's offer, NWC info, and
+    /// every managed agent's offer.
+    ///
+    /// `rotate` mints a fresh owner offer, invalidating the published one, so
+    /// it is opt-in — the ordinary repair path must not silently change an
+    /// offer the owner has already shared. Agent offers are always reused.
     pub async fn wallet_refresh_offer(
         app: AppHandle,
         state: State<'_, AppState>,
         relay_urls: Option<Vec<String>>,
+        rotate: Option<bool>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let provider = wallet_manager()
             .provider_for(&keys, &app_data_dir(&app)?)
             .await?;
-        let offer = provider.offer(true).await?;
+        let offer = provider.offer(rotate.unwrap_or(false)).await?;
         let relay_api_base_urls =
             wallet_relay_api_base_urls(&relay_api_base_url_with_override(&state), relay_urls);
         let mut publication_warnings =
@@ -795,10 +832,9 @@ pub(crate) mod enabled {
             super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, true)
                 .await?,
         );
-        // Agent offers ride along. Enabling the wallet was previously the only
+        // Agent offers ride along: enabling the wallet was previously the only
         // thing that published them, and disabling is refused while any agent
-        // is priced — so an agent whose offer went missing had no way back
-        // without clearing its rate first.
+        // is priced.
         publication_warnings.extend(
             provision_managed_agent_offers(&app, &state, &keys, &provider, &relay_api_base_urls)
                 .await,
