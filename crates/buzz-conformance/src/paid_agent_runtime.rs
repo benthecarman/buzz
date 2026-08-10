@@ -57,7 +57,10 @@ pub struct RuntimeAbstractState {
 pub enum RuntimeTraceAction {
     /// An authorized, non-DM, same-community request produced a quote.
     QuoteRequested {
-        /// Current explicit allowlist membership.
+        /// External access was authorized by the active access mode.
+        ///
+        /// The serialized field retains its version-1 `allowlisted` name for
+        /// trace compatibility; `anyone` access also records this as true.
         allowlisted: bool,
         /// Channel is not a DM.
         non_dm: bool,
@@ -91,7 +94,10 @@ pub enum RuntimeTraceAction {
         reservation_id: RuntimeOpaqueId,
         /// Opaque instruction event identifier.
         instruction_id: RuntimeOpaqueId,
-        /// Current explicit allowlist membership.
+        /// External access was authorized by the active access mode.
+        ///
+        /// The serialized field retains its version-1 `allowlisted` name for
+        /// trace compatibility; `anyone` access also records this as true.
         allowlisted: bool,
         /// Channel is not a DM.
         non_dm: bool,
@@ -300,9 +306,7 @@ impl ScopeModel {
                 same_community,
             } => {
                 if !(*allowlisted && *non_dm && *same_community) {
-                    return Err(
-                        "quote issued without allowlist, channel, and community checks".into(),
-                    );
+                    return Err("quote issued without access, channel, and community checks".into());
                 }
                 self.quote_requested = true;
             }

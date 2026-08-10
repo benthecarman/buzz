@@ -18,10 +18,17 @@ pub fn validate_runtime_price(
             "runtime price must not exceed {MAX_RUNTIME_RATE_SATS_PER_MINUTE} satoshis per minute"
         ));
     }
-    if respond_to != RespondTo::Allowlist || allowlist.is_empty() {
-        return Err(
-            "runtime pricing requires respond-to mode 'allowlist' with at least one pubkey".into(),
-        );
+    match respond_to {
+        RespondTo::Allowlist if allowlist.is_empty() => {
+            return Err(
+                "runtime pricing in respond-to mode 'allowlist' requires at least one pubkey"
+                    .into(),
+            );
+        }
+        RespondTo::Allowlist | RespondTo::Anyone => {}
+        RespondTo::OwnerOnly => {
+            return Err("runtime pricing requires respond-to mode 'allowlist' or 'anyone'".into());
+        }
     }
     Ok(Some(price))
 }

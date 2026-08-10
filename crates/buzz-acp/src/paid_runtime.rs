@@ -31,7 +31,10 @@ use nostr::{
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
-use crate::{config::Config, relay::RestClient};
+use crate::{
+    config::{Config, RespondTo},
+    relay::RestClient,
+};
 
 const REQUEST_TTL_SECS: u64 = 5 * 60;
 const LEDGER_PAGE_SIZE: usize = 250;
@@ -83,6 +86,18 @@ static ACTIVE_RUNTIME_INSTANCE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
 
 fn protocol_error(message: impl Into<String>) -> anyhow::Error {
     anyhow::anyhow!(message.into())
+}
+
+pub(crate) fn payer_has_paid_access(
+    respond_to: &RespondTo,
+    allowlist: &HashSet<String>,
+    payer_hex: &str,
+) -> bool {
+    match respond_to {
+        RespondTo::Anyone => true,
+        RespondTo::Allowlist => allowlist.contains(payer_hex),
+        RespondTo::OwnerOnly | RespondTo::Nobody => false,
+    }
 }
 
 fn exactly_one_tag<'a>(event: &'a Event, name: &str) -> anyhow::Result<&'a str> {
@@ -299,27 +314,27 @@ async fn latest_offer(rest: &RestClient, agent: PublicKey) -> anyhow::Result<Eve
     let event = events
         .pop()
         .ok_or_else(|| protocol_error("agent has no active BOLT12 offer"))?;
-    let offers = event
+    validate_first_offer(&event)?;
+    Ok(event)
+}
+
+fn validate_first_offer(event: &Event) -> anyhow::Result<()> {
+    let offer = event
         .tags
         .iter()
-        .filter_map(|tag| {
+        .find_map(|tag| {
             let parts = tag.as_slice();
             (parts.len() == 2 && parts[0].as_str() == "offer").then(|| parts[1].as_str())
         })
-        .collect::<Vec<_>>();
-    let parsed_offer = offers
-        .first()
-        .filter(|_| offers.len() == 1)
-        .and_then(|offer| Offer::from_str(offer).ok());
-    if parsed_offer
-        .as_ref()
-        .is_none_or(|offer| offer.to_string() != offers[0])
-    {
+        .ok_or_else(|| protocol_error("agent BOLT12 offer is withdrawn or malformed"))?;
+    let parsed_offer = Offer::from_str(offer)
+        .map_err(|_| protocol_error("agent BOLT12 offer is withdrawn or malformed"))?;
+    if parsed_offer.to_string() != offer {
         return Err(protocol_error(
             "agent BOLT12 offer is withdrawn or malformed",
         ));
     }
-    Ok(event)
+    Ok(())
 }
 
 async fn replay_ledger(
@@ -715,7 +730,7 @@ async fn process_request(
         &request.request_id,
         MAX_RESERVATION_REQUESTS_PER_WINDOW,
     )?;
-    if !config.respond_to_allowlist.contains(&payer_hex) {
+    if !payer_has_paid_access(&config.respond_to, &config.respond_to_allowlist, &payer_hex) {
         return Err(protocol_error("payer is unavailable"));
     }
     let rate = config
@@ -1155,7 +1170,9 @@ pub async fn bind_instruction(
         &instruction.id.to_hex(),
         MAX_PAID_INVOCATIONS_PER_WINDOW,
     )?;
-    if config.price_per_minute_sats.is_none() || !config.respond_to_allowlist.contains(&payer_hex) {
+    if config.price_per_minute_sats.is_none()
+        || !payer_has_paid_access(&config.respond_to, &config.respond_to_allowlist, &payer_hex)
+    {
         return Err(protocol_error("paid runtime is unavailable"));
     }
     let reservation_id = runtime_tag_reservation(instruction, &agent_hex)?;
@@ -1878,6 +1895,58 @@ pub async fn settle_instruction_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VALID_OFFER: &str =
+        "lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
+
+    fn offer_event(offers: &[&str]) -> Event {
+        let tags = offers
+            .iter()
+            .map(|offer| Tag::parse(["offer", *offer]).expect("offer tag"));
+        EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
+            .tags(tags)
+            .sign_with_keys(&nostr::Keys::generate())
+            .expect("sign offer")
+    }
+
+    #[test]
+    fn offer_readiness_selects_first_offer_tag() {
+        let event = offer_event(&[VALID_OFFER, "not-a-bolt12-offer"]);
+        assert!(validate_first_offer(&event).is_ok());
+    }
+
+    #[test]
+    fn offer_readiness_rejects_invalid_first_offer_tag() {
+        let event = offer_event(&["not-a-bolt12-offer", VALID_OFFER]);
+        assert!(validate_first_offer(&event).is_err());
+    }
+
+    #[test]
+    fn paid_access_accepts_anyone_or_explicit_allowlist() {
+        let payer = "a".repeat(64);
+        let allowlist = HashSet::from([payer.clone()]);
+
+        assert!(payer_has_paid_access(
+            &RespondTo::Allowlist,
+            &allowlist,
+            &payer,
+        ));
+        assert!(payer_has_paid_access(
+            &RespondTo::Anyone,
+            &HashSet::new(),
+            &payer,
+        ));
+        assert!(!payer_has_paid_access(
+            &RespondTo::Allowlist,
+            &HashSet::new(),
+            &payer,
+        ));
+        assert!(!payer_has_paid_access(
+            &RespondTo::OwnerOnly,
+            &allowlist,
+            &payer,
+        ));
+    }
 
     #[test]
     fn rate_limit_is_idempotent_and_bounded() {

@@ -458,8 +458,8 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_RESPOND_TO_ALLOWLIST", value_delimiter = ',')]
     pub respond_to_allowlist: Option<Vec<String>>,
 
-    /// Whole satoshis charged per metered ACP runtime minute. Valid only with
-    /// an explicit non-empty allowlist. Runtime payment reservations are
+    /// Whole satoshis charged per metered ACP runtime minute. Valid with
+    /// `allowlist` or `anyone` access. Runtime payment reservations are
     /// required for external authors when this is set.
     #[arg(long, env = "BUZZ_ACP_PRICE_PER_MINUTE_SATS")]
     pub price_per_minute_sats: Option<u64>,
@@ -1042,9 +1042,11 @@ impl Config {
                     "price_per_minute_sats must be greater than zero".into(),
                 ))
             }
-            Some(price) if args.respond_to != RespondTo::Allowlist => {
+            Some(price)
+                if !matches!(args.respond_to, RespondTo::Allowlist | RespondTo::Anyone) =>
+            {
                 return Err(ConfigError::ConfigFile(format!(
-                    "price_per_minute_sats={price} requires --respond-to=allowlist"
+                    "price_per_minute_sats={price} requires --respond-to=allowlist or --respond-to=anyone"
                 )))
             }
             price => price,
@@ -2863,6 +2865,42 @@ channels = "ALL"
             result.is_ok(),
             "from_args should accept any mode when allowed list is unset: {result:?}"
         );
+    }
+
+    #[test]
+    fn paid_runtime_full_path_accepts_anyone_mode() {
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--respond-to",
+            "anyone",
+            "--price-per-minute-sats",
+            "20",
+        ])
+        .expect("clap should parse args");
+        let config = Config::from_args(args).expect("anyone mode should accept paid runtime");
+
+        assert_eq!(config.price_per_minute_sats, Some(20));
+    }
+
+    #[test]
+    fn paid_runtime_full_path_rejects_owner_only_mode() {
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--respond-to",
+            "owner-only",
+            "--price-per-minute-sats",
+            "20",
+        ])
+        .expect("clap should parse args");
+        let error = Config::from_args(args).expect_err("owner-only pricing must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("--respond-to=allowlist or --respond-to=anyone"));
     }
 
     // --- max_turn_duration ceiling gate ---

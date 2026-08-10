@@ -22,27 +22,28 @@ export function usePaidRuntimeEdit(
     setPrice(agent.pricePerMinuteSats?.toString() ?? "");
   }, [agent.pricePerMinuteSats]);
 
+  const supportsPaidRuntime =
+    respondTo === "allowlist" || respondTo === "anyone";
   const numericPrice = Number(price);
   const valid =
     !enabled ||
-    (respondTo === "allowlist" &&
+    (supportsPaidRuntime &&
       Number.isSafeInteger(numericPrice) &&
       numericPrice > 0 &&
       numericPrice <= MAX_RUNTIME_PRICE_PER_MINUTE_SATS);
-  const update =
-    respondTo !== "allowlist"
-      ? agent.pricePerMinuteSats == null
+  const update = !supportsPaidRuntime
+    ? agent.pricePerMinuteSats == null
+      ? undefined
+      : null
+    : enabled
+      ? numericPrice !== agent.pricePerMinuteSats
+        ? numericPrice
+        : undefined
+      : agent.pricePerMinuteSats == null
         ? undefined
-        : null
-      : enabled
-        ? numericPrice !== agent.pricePerMinuteSats
-          ? numericPrice
-          : undefined
-        : agent.pricePerMinuteSats == null
-          ? undefined
-          : null;
+        : null;
   const field =
-    respondTo === "allowlist" && ownerOnly !== true ? (
+    supportsPaidRuntime && ownerOnly !== true ? (
       <PaidRuntimeField
         disabled={disabled}
         enabled={enabled}

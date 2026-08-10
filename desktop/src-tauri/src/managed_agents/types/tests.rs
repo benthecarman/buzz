@@ -802,7 +802,7 @@ fn summary_with_drift_serializes_restart_diff_entries() {
 }
 
 #[test]
-fn paid_runtime_requires_positive_allowlisted_live_access() {
+fn paid_runtime_requires_positive_external_live_access() {
     let payer = "a".repeat(64);
     assert_eq!(
         super::validate_runtime_price(
@@ -822,7 +822,7 @@ fn paid_runtime_requires_positive_allowlisted_live_access() {
     assert!(super::validate_runtime_price(super::RespondTo::Allowlist, &[], Some(20)).is_err());
     assert!(super::validate_runtime_price(super::RespondTo::OwnerOnly, &[], Some(20)).is_err());
     assert_eq!(
-        super::validate_runtime_price(super::RespondTo::Anyone, &[], None),
-        Ok(None)
+        super::validate_runtime_price(super::RespondTo::Anyone, &[], Some(20)),
+        Ok(Some(20))
     );
 }

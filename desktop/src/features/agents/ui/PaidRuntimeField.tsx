@@ -10,7 +10,7 @@ type PaidRuntimeFieldProps = {
 
 export const MAX_RUNTIME_PRICE_PER_MINUTE_SATS = 150_119_987_579_016;
 
-/** Instance-only pricing control for allowlisted managed agents. */
+/** Instance-only pricing control for externally accessible managed agents. */
 export function PaidRuntimeField({
   enabled,
   price,
@@ -52,8 +52,8 @@ export function PaidRuntimeField({
         </div>
       ) : null}
       <p className="text-xs text-muted-foreground">
-        Selected people prepay 15, 30, or 60 minutes. Only active agent runtime
-        is deducted, and unused runtime remains available.
+        People who use this agent prepay 15, 30, or 60 minutes. Only active
+        agent runtime is deducted, and unused runtime remains available.
       </p>
       <p className="text-xs text-muted-foreground">
         You and your agents remain free. Paid invocation is not available in

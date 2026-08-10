@@ -32,8 +32,9 @@ The remaining event kinds are:
 All ledger events are scoped by payer, Agent, and community. Channel messages
 bind a reservation with an `agent_runtime` tag containing the Agent pubkey and
 the exact kind-44211 event ID. Owners and same-owner Agents do not use this
-protocol. External callers must remain explicitly allowlisted, and paid Agent
-invocation is unavailable in DMs.
+protocol. External callers must be authorized by either the Agent's explicit
+allowlist or its anyone-access mode, and paid Agent invocation is unavailable
+in DMs.
 
 The public kind-9736 zap is an audit record, not a credit proof. The recipient
 wallet host must independently verify its completed inbound BOLT12 transaction,
@@ -75,6 +76,12 @@ ambiguous relay failure. A maintenance loop republishes settlements and closes
 expired, unconsumed reservations with zero usage. Runtime state files are
 private, synced to disk, and protected by an exclusive process lock.
 
+When no runtime price is configured, runtime-state locking, interrupted
+settlement recovery, and expired-reservation cleanup are best-effort. Failures
+are logged but never prevent the free Agent from starting. These state-integrity
+checks remain fail-closed when paid runtime is configured. Pricing announcement
+is best-effort in both modes.
+
 ## Deployment requirements
 
 Set `BUZZ_ACP_RUNTIME_STATE_DIR` to durable storage scoped to one Agent and one
@@ -88,8 +95,9 @@ cross-restart single-writer contract. Enable remote paid Agents only after the
 provider supplies persistent storage and a shared ownership lease.
 
 An Agent advertises enabled pricing only after its current kind `10058` BOLT12
-offer is available. If offer readiness fails, ACP publishes disabled kind
-`10101` pricing and exits with an actionable error.
+offer is available. If the event contains multiple `offer` tags, ACP uses the
+first. If offer readiness fails, ACP publishes disabled kind `10101` pricing
+and exits with an actionable error.
 
 ## Operations and launch runbook
 

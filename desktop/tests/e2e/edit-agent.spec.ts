@@ -191,6 +191,28 @@ test.describe("edit agent dialog", () => {
     });
   });
 
+  test("shows paid-runtime pricing for anyone access", async ({ page }) => {
+    await installMockBridge(page, {
+      managedAgents: [
+        {
+          pubkey: AGENT_PUBKEY,
+          name: AGENT_NAME,
+          status: "stopped",
+          channelNames: ["agents"],
+          respondTo: "anyone",
+          pricePerMinuteSats: 20,
+        },
+      ],
+    });
+
+    await openEditDialog(page);
+
+    await expect(
+      page.getByRole("checkbox", { name: "Require payment for runtime" }),
+    ).toBeChecked();
+    await expect(page.locator("#agent-runtime-price")).toHaveValue("20");
+  });
+
   test("edits the agent name and persists it across a dialog reopen", async ({
     page,
   }) => {
