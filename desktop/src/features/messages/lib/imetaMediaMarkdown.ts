@@ -360,11 +360,13 @@ export function splitOutgoingTags(tags: string[][] | undefined): {
   emojiTags: string[][];
   mentionTags: string[][];
   linkPreviewTags: string[][];
+  runtimeTags: string[][];
 } {
   const mediaTags: string[][] = [];
   const emojiTags: string[][] = [];
   const mentionTags: string[][] = [];
   const linkPreviewTags: string[][] = [];
+  const runtimeTags: string[][] = [];
   for (const tag of tags ?? []) {
     if (tag[0] === "emoji") {
       emojiTags.push(tag);
@@ -372,9 +374,14 @@ export function splitOutgoingTags(tags: string[][] | undefined): {
       mentionTags.push(tag);
     } else if (tag[0] === "link-preview") {
       linkPreviewTags.push(tag);
+    } else if (tag[0] === "agent_runtime") {
+      // Paid-runtime reservation markers get their own validated Tauri arg —
+      // on the imeta channel the guard rejects them and the paid message
+      // silently never sends.
+      runtimeTags.push(tag);
     } else {
       mediaTags.push(tag);
     }
   }
-  return { mediaTags, emojiTags, mentionTags, linkPreviewTags };
+  return { mediaTags, emojiTags, mentionTags, linkPreviewTags, runtimeTags };
 }
