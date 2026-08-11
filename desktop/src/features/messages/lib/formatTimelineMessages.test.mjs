@@ -14,6 +14,7 @@ import {
   CHANNEL_TIMELINE_CONTENT_KINDS,
   KIND_HUDDLE_ENDED,
   KIND_HUDDLE_STARTED,
+  KIND_SYSTEM_MESSAGE,
 } from "@/shared/constants/kinds";
 
 const HEX64_A =
@@ -184,6 +185,129 @@ test("message zaps render only from native-verified results", () => {
       recipientPubkey: PUBKEY_A,
     },
   ]);
+});
+
+test("verified runtime zaps render as one payment activity row", () => {
+  const pricingId =
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+  const zapEvent = {
+    id: HEX64_B,
+    pubkey: PUBKEY_B,
+    kind: 9736,
+    created_at: 1_700_000_001,
+    content: "",
+    tags: [
+      ["p", PUBKEY_A],
+      ["e", pricingId],
+      ["h", CHANNEL_ID],
+    ],
+    sig: "sig",
+  };
+  const legacyAnnouncement = {
+    ...streamMessage(),
+    id: HEX64_A,
+    kind: KIND_SYSTEM_MESSAGE,
+    content: JSON.stringify({
+      type: "agent_runtime_purchased",
+      zap: zapEvent.id,
+    }),
+  };
+  const verifiedZapEvents = new Map([
+    [
+      zapEvent.id,
+      {
+        eventId: zapEvent.id,
+        amount: 50,
+        comment: "",
+        intentEventId: "intent-id",
+        recipientPubkey: PUBKEY_A,
+        targetEventId: pricingId,
+        channelId: CHANNEL_ID,
+      },
+    ],
+  ]);
+
+  const out = formatTimelineMessages(
+    [legacyAnnouncement, zapEvent],
+    { id: CHANNEL_ID, channelType: "public" },
+    undefined,
+    null,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    verifiedZapEvents,
+  );
+
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, zapEvent.id);
+  assert.equal(out[0].kind, 9736);
+  assert.deepEqual(JSON.parse(out[0].body), {
+    type: "agent_runtime_purchased",
+    actor: PUBKEY_B,
+    target: PUBKEY_A,
+    invocation_window_seconds: 300,
+    amount_sats: 50,
+    zap: zapEvent.id,
+  });
+});
+
+test("runtime zaps need native validation and must omit k", () => {
+  const zapEvent = {
+    id: HEX64_B,
+    pubkey: PUBKEY_B,
+    kind: 9736,
+    created_at: 1_700_000_001,
+    content: "",
+    tags: [
+      ["p", PUBKEY_A],
+      ["e", HEX64_A],
+      ["h", CHANNEL_ID],
+    ],
+    sig: "sig",
+  };
+  const channel = { id: CHANNEL_ID, channelType: "public" };
+  assert.equal(
+    formatTimelineMessages([zapEvent], channel, undefined, null).length,
+    0,
+  );
+
+  const verified = new Map([
+    [
+      zapEvent.id,
+      {
+        eventId: zapEvent.id,
+        amount: 50,
+        comment: "",
+        intentEventId: "intent-id",
+        recipientPubkey: PUBKEY_A,
+        targetEventId: HEX64_A,
+        channelId: CHANNEL_ID,
+      },
+    ],
+  ]);
+  const withKindTag = {
+    ...zapEvent,
+    tags: [...zapEvent.tags, ["k", "10101"]],
+  };
+  assert.equal(
+    formatTimelineMessages(
+      [withKindTag],
+      channel,
+      undefined,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      verified,
+    ).length,
+    0,
+  );
 });
 
 test("kind:5 (NIP-09) deletion hides the target message", () => {

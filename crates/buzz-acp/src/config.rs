@@ -458,9 +458,9 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_RESPOND_TO_ALLOWLIST", value_delimiter = ',')]
     pub respond_to_allowlist: Option<Vec<String>>,
 
-    /// Whole satoshis charged per metered ACP runtime minute. Valid with
-    /// `allowlist` or `anyone` access. Runtime payment reservations are
-    /// required for external authors when this is set.
+    /// Whole satoshis charged for five minutes of invocation access. Valid
+    /// with `allowlist` or `anyone` access. The option name is kept for
+    /// deployment compatibility.
     #[arg(long, env = "BUZZ_ACP_PRICE_PER_MINUTE_SATS")]
     pub price_per_minute_sats: Option<u64>,
 
@@ -555,7 +555,7 @@ pub struct Config {
     pub respond_to: RespondTo,
     /// Validated allowlist of pubkey hex strings (used when respond_to == Allowlist).
     pub respond_to_allowlist: HashSet<String>,
-    /// Instance-only paid runtime rate in whole satoshis per minute.
+    /// Instance-only price for five minutes of invocation access.
     pub price_per_minute_sats: Option<u64>,
     /// Allowed `respond_to` modes. Empty = all modes allowed.
     pub allowed_respond_to: Vec<String>,

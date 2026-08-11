@@ -736,14 +736,14 @@ test("splitOutgoingTags is the inverse of mergeOutgoingTags", () => {
   assert.deepEqual(linkPreviewTags, []);
 });
 
-// The exact shape runtimeReservationMessageTag() produces for a paid
-// invocation (importing it here would drag in the Tauri bridge).
+// The exact paid-invocation tag shape. Importing the builder here would load
+// the Tauri bridge.
 const AGENT_RUNTIME = ["agent_runtime", "a".repeat(64), "b".repeat(64)];
 
 test("splitOutgoingTags: routes agent_runtime to its own channel", () => {
   // Regression: this tag once fell through to mediaTags, where the Rust
   // imeta guard rejected the whole message — the paid checkout closed but
-  // the instruction never published and the reservation sat unclaimed.
+  // the instruction did not publish.
   const { mediaTags, emojiTags, mentionTags, linkPreviewTags, runtimeTags } =
     splitOutgoingTags([IMETA, AGENT_RUNTIME, EMOJI_A]);
   assert.deepEqual(mediaTags, [IMETA]);
@@ -755,7 +755,7 @@ test("splitOutgoingTags: routes agent_runtime to its own channel", () => {
 
 test("splitOutgoingTags: agent_runtime survives the checkout merge path", () => {
   // Mirror useMentionSendFlow's finishSend: media tags merged with the
-  // checkout's reservation tags, then split at the Tauri boundary.
+  // checkout's access tags, then split at the Tauri boundary.
   const merged = mergeOutgoingTags(
     [IMETA],
     mergeOutgoingTags([], [AGENT_RUNTIME]) ?? [],

@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import type { WalletTransaction } from "../../src/features/wallet/types";
 import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
 import type { MockManagedAgentSeed } from "../../src/testing/e2eBridge";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
@@ -65,6 +66,8 @@ type MockRelayAgentSeed = {
   channelNames?: string[];
   channelIds?: string[];
   status?: "online" | "away" | "offline";
+  ownerPubkey?: string | null;
+  priceSats?: number | null;
 };
 
 type MockHuddleSeed = {
@@ -362,6 +365,7 @@ type MockBridgeOptions = {
   /** Current mocked wallet totals, mutable by wallet polling specs. */
   walletBalance?: number;
   walletSpendableBalance?: number;
+  walletTransactions?: WalletTransaction[];
   /** Exact persisted request returned for pending-payment reconciliation. */
   walletPendingSend?: {
     destination: string;
@@ -385,6 +389,12 @@ type MockBridgeOptions = {
   walletProfileZapErrors?: ({ code: string; message: string } | null)[];
   /** Delay a message/profile zap result so optimistic UI can be asserted. */
   walletProfileZapDelayMs?: number;
+  walletAgentRuntimeZapRequests?: Array<{
+    agentPubkey: string;
+    channelId: string;
+    pricingEventJson: string;
+    idempotencyKey: string;
+  }>;
   /**
    * Value returned by the `observer_archive_default_enabled` mock command.
    * `true` = internal-policy build (toggle locked ON); `false`/omitted = OSS

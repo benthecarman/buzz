@@ -162,6 +162,7 @@ pub struct WalletVerifiedZapEvent {
     pub intent_event_id: String,
     pub recipient_pubkey: String,
     pub target_event_id: Option<String>,
+    pub channel_id: Option<String>,
 }
 
 /// A request to send an attributed profile or event zap.
@@ -180,18 +181,15 @@ pub struct WalletProfileZapRequest {
     pub target_event_kind: Option<u32>,
 }
 
-/// Purchase of one runtime pack against the Agent's published terms,
-/// idempotent per key.
+/// Purchase of one invocation window against the Agent's published terms.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletAgentRuntimeZapRequest {
     /// Agent whose published terms this purchase pays against.
     pub agent_pubkey: String,
-    /// Non-DM channel the credit is scoped to.
+    /// Non-DM channel in which the zap grants access.
     pub channel_id: String,
-    /// Purchased pack duration in minutes.
-    pub pack_minutes: u16,
-    /// Exact signed kind-10101 pricing event being pinned.
+    /// Exact signed kind-10101 pricing event that the zap targets.
     pub pricing_event_json: String,
     /// Client-generated UUID reused for every retry of this exact purchase.
     pub idempotency_key: String,
@@ -218,6 +216,7 @@ pub struct WalletProfileZapDraft {
 pub struct WalletProfileZapResult {
     pub payment: WalletPaymentResult,
     pub intent_event_id: String,
+    pub proof_event_id: Option<String>,
     pub proof_published: bool,
 }
 

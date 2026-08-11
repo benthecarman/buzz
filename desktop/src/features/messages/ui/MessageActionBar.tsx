@@ -444,6 +444,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
         ),
     [customEmoji, quickReactionEmojis],
   );
+  const zapLabel = `Zap ₿${MESSAGE_ZAP_AMOUNT}`;
   const hasReplyAction = Boolean(onReply);
   const hasReactionAction = Boolean(onReactionSelect);
   const hasZapAction =
@@ -744,7 +745,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  aria-label="Zap ₿50"
+                  aria-label={zapLabel}
                   className={ACTION_BUTTON_CLASS}
                   data-testid={`zap-message-${message.id}`}
                   disabled={zapDisabled}
@@ -761,7 +762,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
                   />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Zap ₿50</TooltipContent>
+              <TooltipContent>{zapLabel}</TooltipContent>
             </Tooltip>
           ) : null}
 

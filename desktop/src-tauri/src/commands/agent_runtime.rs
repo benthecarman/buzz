@@ -1,14 +1,8 @@
 use buzz_core_pkg::{
-    agent_runtime_payment::{
-        DepositRecord, ReservationRecord, RuntimeDeposit, RuntimeLedger, RuntimePricing,
-        RuntimeReservation, RuntimeSettlement, SettlementRecord, RESERVATION_VALIDITY_SECS,
-    },
-    kind::{
-        KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_PRICING, KIND_AGENT_RUNTIME_RESERVATION,
-        KIND_AGENT_RUNTIME_SETTLEMENT,
-    },
+    agent_runtime_payment::RuntimePricing,
+    kind::{KIND_AGENT_RUNTIME_PRICING, KIND_BOLT12_ZAP},
 };
-use nostr::{nips::nip44, JsonUtil, PublicKey};
+use nostr::{JsonUtil, PublicKey};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -17,36 +11,35 @@ use crate::{
     managed_agents::RelayAgentInfo,
     nostr_convert,
     relay::{query_relay_at_with_keys, relay_api_base_url_with_override},
+    wallet::zap::parse_tagged_zap_event,
 };
-
-const LEDGER_PAGE_SIZE: usize = 250;
 
 pub async fn list_runtime_priced_relay_agents(
     state: State<'_, AppState>,
 ) -> Result<Vec<RelayAgentInfo>, String> {
     let keys = state.signing_keys()?;
     let relay = relay_api_base_url_with_override(&state);
-    let events = query_all_runtime_events(
+    let events = query_relay_at_with_keys(
         &state,
         &relay,
-        &keys,
-        serde_json::json!({
+        &[serde_json::json!({
             "kinds": [
                 buzz_core_pkg::kind::KIND_AGENT_PROFILE,
-                buzz_core_pkg::kind::KIND_AGENT_RUNTIME_PRICING
+                KIND_AGENT_RUNTIME_PRICING
             ],
-        }),
+        })],
+        &keys,
+        None,
     )
     .await?;
     let profiles = events
         .iter()
-        .filter(|event| event.kind.as_u16() as u32 == buzz_core_pkg::kind::KIND_AGENT_PROFILE)
+        .filter(|event| u32::from(event.kind.as_u16()) == buzz_core_pkg::kind::KIND_AGENT_PROFILE)
         .cloned()
         .collect::<Vec<_>>();
     let mut prices = std::collections::HashMap::<String, &nostr::Event>::new();
     for event in events.iter().filter(|event| {
-        event.kind.as_u16() as u32 == buzz_core_pkg::kind::KIND_AGENT_RUNTIME_PRICING
-            && event.verify().is_ok()
+        u32::from(event.kind.as_u16()) == KIND_AGENT_RUNTIME_PRICING && event.verify().is_ok()
     }) {
         let pubkey = event.pubkey.to_hex();
         if prices
@@ -71,11 +64,12 @@ pub async fn list_runtime_priced_relay_agents(
     let owner_profiles = if agent_authors.is_empty() {
         Vec::new()
     } else {
-        query_all_runtime_events(
+        query_relay_at_with_keys(
             &state,
             &relay,
+            &[serde_json::json!({ "kinds": [0], "authors": agent_authors })],
             &keys,
-            serde_json::json!({ "kinds": [0], "authors": agent_authors }),
+            None,
         )
         .await?
     };
@@ -101,14 +95,9 @@ pub async fn list_runtime_priced_relay_agents(
         agent.owner_pubkey = owners.get(&agent.pubkey).map(|(_, _, owner)| owner.clone());
         agent.price_per_minute_sats = prices
             .get(&agent.pubkey)
-            .and_then(|event| {
-                serde_json::from_str::<buzz_core_pkg::agent_runtime_payment::RuntimePricing>(
-                    &event.content,
-                )
-                .ok()
-            })
+            .and_then(|event| serde_json::from_str::<RuntimePricing>(&event.content).ok())
             .filter(|pricing| pricing.validate().is_ok() && pricing.enabled)
-            .and_then(|pricing| pricing.rate_sats_per_minute);
+            .and_then(|pricing| pricing.price_sats);
     }
     Ok(agents)
 }
@@ -120,114 +109,29 @@ pub struct AgentRuntimeStatusInput {
     pub channel_id: String,
 }
 
-/// One open, claimable reservation read out of the payer's own ledger.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeOpenReservation {
-    /// Exact signed kind-44211 event, attached to the instruction verbatim.
-    pub reservation_event_json: String,
-    pub reservation_event_id: String,
-    pub cap_ms: u64,
-    pub must_start_by: u64,
+pub struct AgentRuntimeAccessZap {
+    pub zap_event_id: String,
+    pub created_at: u64,
+    pub valid_until: u64,
 }
 
-/// The Agent's published terms, pinned for a purchase.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimePricingTerms {
-    /// Exact signed kind-10101 event the purchase will pay against.
     pub pricing_event_json: String,
-    pub rate_sats_per_minute: u64,
+    pub price_sats: u64,
+    pub invocation_window_seconds: u64,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeStatusResult {
-    pub available_ms: u64,
-    pub credited_ms: u64,
-    pub used_ms: u64,
-    /// Present when a claimable lock is waiting — invoke immediately.
-    pub open_reservation: Option<AgentRuntimeOpenReservation>,
-    /// Present when the Agent currently advertises an enabled rate.
+    pub access_zap: Option<AgentRuntimeAccessZap>,
     pub pricing: Option<AgentRuntimePricingTerms>,
 }
 
-fn exactly_one_tag<'a>(event: &'a nostr::Event, name: &str) -> Result<&'a str, String> {
-    let values = event
-        .tags
-        .iter()
-        .filter_map(|tag| {
-            let parts = tag.as_slice();
-            (parts.len() == 2 && parts[0].as_str() == name).then(|| parts[1].as_str())
-        })
-        .collect::<Vec<_>>();
-    match values.as_slice() {
-        [value] => Ok(value),
-        _ => Err(format!("expected exactly one {name} tag")),
-    }
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-async fn query_all_runtime_events(
-    state: &AppState,
-    relay: &str,
-    keys: &nostr::Keys,
-    base_filter: serde_json::Value,
-) -> Result<Vec<nostr::Event>, String> {
-    let mut until = None;
-    let mut seen = std::collections::HashSet::new();
-    let mut events = Vec::new();
-    loop {
-        let mut filter = base_filter.clone();
-        let object = filter
-            .as_object_mut()
-            .ok_or_else(|| "runtime ledger filter is not an object".to_string())?;
-        object.insert("limit".into(), serde_json::Value::from(LEDGER_PAGE_SIZE));
-        if let Some(cursor) = until {
-            object.insert("until".into(), serde_json::Value::from(cursor));
-        }
-        let page =
-            query_relay_at_with_keys(state, relay, std::slice::from_ref(&filter), keys, None)
-                .await?;
-        if page.is_empty() {
-            break;
-        }
-        let page_len = page.len();
-        let oldest = page
-            .iter()
-            .map(|event| event.created_at.as_secs())
-            .min()
-            .ok_or_else(|| "runtime ledger page has no timestamp".to_string())?;
-        let mut inserted = 0usize;
-        for event in page {
-            if seen.insert(event.id) {
-                inserted += 1;
-                events.push(event);
-            }
-        }
-        if page_len < LEDGER_PAGE_SIZE {
-            break;
-        }
-        if until == Some(oldest) && inserted == 0 {
-            return Err(
-                "runtime ledger pagination cannot advance across one dense timestamp".into(),
-            );
-        }
-        until = Some(oldest);
-    }
-    Ok(events)
-}
-
-/// Everything the checkout needs about one (agent, channel) scope, read from
-/// durable state alone: retained balance, the open reservation if the Agent
-/// has minted one, and the published terms a new purchase would pay against.
-/// There is nothing to ask the Agent — this is the whole payer protocol.
 #[tauri::command]
 pub async fn agent_runtime_get_status(
     state: State<'_, AppState>,
@@ -237,149 +141,88 @@ pub async fn agent_runtime_get_status(
     let agent = PublicKey::from_hex(&input.agent_pubkey)
         .map_err(|error| format!("invalid agent pubkey: {error}"))?;
     let relay = relay_api_base_url_with_override(&state);
-    let payer_hex = keys.public_key().to_hex();
-    // No `#h` here, deliberately: ledger kinds are stored channel-less, and
-    // the relay's `#h` handling scopes to the stored channel column (NULL for
-    // these kinds), so an `#h` filter returns nothing. The signed `h` tag is
-    // checked per event below instead.
-    let filter = serde_json::json!({
-        "kinds": [
-            KIND_AGENT_RUNTIME_DEPOSIT,
-            KIND_AGENT_RUNTIME_RESERVATION,
-            KIND_AGENT_RUNTIME_SETTLEMENT
-        ],
-        "authors": [input.agent_pubkey],
-        "#p": [payer_hex]
-    });
-    let mut events = query_all_runtime_events(&state, &relay, &keys, filter).await?;
-    events.sort_by_key(|event| {
-        let phase = match u32::from(event.kind.as_u16()) {
-            KIND_AGENT_RUNTIME_DEPOSIT => 0u8,
-            KIND_AGENT_RUNTIME_RESERVATION => 1,
-            KIND_AGENT_RUNTIME_SETTLEMENT => 2,
-            _ => 3,
-        };
-        (event.created_at, phase, event.id)
-    });
-    let mut ledger = RuntimeLedger::default();
-    let mut reservations: Vec<(nostr::Event, RuntimeReservation)> = Vec::new();
-    for event in events {
-        event
-            .verify()
-            .map_err(|error| format!("verify runtime ledger event: {error}"))?;
-        if event.pubkey != agent || exactly_one_tag(&event, "p")? != keys.public_key().to_hex() {
-            return Err("runtime ledger routing does not match the requested scope".into());
-        }
-        // The query is payer-wide; this status is per channel.
-        if exactly_one_tag(&event, "h")? != input.channel_id {
-            continue;
-        }
-        match u32::from(event.kind.as_u16()) {
-            KIND_AGENT_RUNTIME_DEPOSIT => {
-                let deposit: RuntimeDeposit = serde_json::from_str(&event.content)
-                    .map_err(|error| format!("decode runtime deposit: {error}"))?;
-                deposit.validate().map_err(|error| error.to_string())?;
-                nostr::EventId::from_hex(exactly_one_tag(&event, "pricing")?)
-                    .map_err(|error| format!("invalid runtime deposit pricing: {error}"))?;
-                nostr::EventId::from_hex(exactly_one_tag(&event, "zap")?)
-                    .map_err(|error| format!("invalid runtime deposit zap: {error}"))?;
-                ledger
-                    .apply_deposit(DepositRecord {
-                        payment_id: exactly_one_tag(&event, "zap_intent")?.to_string(),
-                        credit_ms: deposit.credit_ms,
-                    })
-                    .map_err(|error| error.to_string())?;
-            }
-            KIND_AGENT_RUNTIME_RESERVATION => {
-                let plaintext = nip44::decrypt(keys.secret_key(), &agent, &event.content)
-                    .map_err(|error| format!("decrypt runtime reservation: {error}"))?;
-                let reservation: RuntimeReservation = serde_json::from_str(&plaintext)
-                    .map_err(|error| format!("decode runtime reservation: {error}"))?;
-                reservation.validate().map_err(|error| error.to_string())?;
-                let expiration = exactly_one_tag(&event, "expiration")?
-                    .parse::<u64>()
-                    .map_err(|_| "runtime reservation expiration is invalid".to_string())?;
-                if exactly_one_tag(&event, "encryption")? != "nip44_v2"
-                    || expiration != reservation.must_start_by
-                    || event.created_at.as_secs() > expiration
-                    || expiration
-                        > event
-                            .created_at
-                            .as_secs()
-                            .saturating_add(RESERVATION_VALIDITY_SECS)
-                {
-                    return Err("runtime reservation validity tags are invalid".into());
-                }
-                ledger
-                    .apply_reservation(ReservationRecord {
-                        reservation_id: event.id.to_hex(),
-                        cap_ms: reservation.cap_ms,
-                    })
-                    .map_err(|error| error.to_string())?;
-                reservations.push((event, reservation));
-            }
-            KIND_AGENT_RUNTIME_SETTLEMENT => {
-                let plaintext = nip44::decrypt(keys.secret_key(), &agent, &event.content)
-                    .map_err(|error| format!("decrypt runtime settlement: {error}"))?;
-                let settlement: RuntimeSettlement = serde_json::from_str(&plaintext)
-                    .map_err(|error| format!("decode runtime settlement: {error}"))?;
-                settlement.validate().map_err(|error| error.to_string())?;
-                if exactly_one_tag(&event, "encryption")? != "nip44_v2"
-                    || exactly_one_tag(&event, "e")? != settlement.reservation_id
-                    || ledger.reservation_cap_ms(&settlement.reservation_id)
-                        != Some(settlement.cap_ms)
-                {
-                    return Err("runtime settlement does not match its reservation".into());
-                }
-                ledger
-                    .apply_settlement(SettlementRecord {
-                        reservation_id: settlement.reservation_id,
-                        used_ms: settlement.used_ms,
-                    })
-                    .map_err(|error| error.to_string())?;
-            }
-            _ => return Err("unexpected runtime ledger event kind".into()),
-        }
-    }
-    // The newest still-claimable lock wins; anything expired is the Agent's
-    // sweep to clean up, not ours to offer.
-    let now = now_secs();
-    let open_reservation = reservations
-        .into_iter()
-        .filter(|(event, reservation)| {
-            ledger.reservation_is_open(&event.id.to_hex()) && reservation.must_start_by > now
-        })
-        .max_by_key(|(event, _)| (event.created_at, event.id))
-        .map(|(event, reservation)| AgentRuntimeOpenReservation {
-            reservation_event_id: event.id.to_hex(),
-            reservation_event_json: event.as_json(),
-            cap_ms: reservation.cap_ms,
-            must_start_by: reservation.must_start_by,
+    let Some((pricing_event, pricing)) = fetch_pricing_terms(&state, &relay, &keys, &agent).await?
+    else {
+        return Ok(AgentRuntimeStatusResult {
+            access_zap: None,
+            pricing: None,
         });
-    let pricing = fetch_pricing_terms(&state, &relay, &keys, &agent).await?;
+    };
+    let price_sats = pricing
+        .price_sats
+        .ok_or_else(|| "enabled pricing has no price".to_string())?;
+    let invocation_window_seconds = pricing
+        .invocation_window_seconds
+        .ok_or_else(|| "enabled pricing has no invocation window".to_string())?;
+    let terms = AgentRuntimePricingTerms {
+        pricing_event_json: pricing_event.as_json(),
+        price_sats,
+        invocation_window_seconds,
+    };
+    let payer = keys.public_key().to_hex();
+    let zap_events = query_relay_at_with_keys(
+        &state,
+        &relay,
+        &[serde_json::json!({
+            "kinds": [KIND_BOLT12_ZAP],
+            "authors": [payer],
+            "#p": [input.agent_pubkey],
+            "#h": [input.channel_id],
+            "limit": 100,
+        })],
+        &keys,
+        None,
+    )
+    .await?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let access_zap = zap_events
+        .into_iter()
+        .filter_map(|event| {
+            let raw = serde_json::to_value(&event).ok()?;
+            let zap = parse_tagged_zap_event(&raw).ok()?;
+            let valid_until = event
+                .created_at
+                .as_secs()
+                .checked_add(invocation_window_seconds)?;
+            (zap.recipient_pubkey == input.agent_pubkey
+                && zap.target_event_id.as_deref() == Some(pricing_event.id.to_hex().as_str())
+                && zap.channel_id.as_deref() == Some(input.channel_id.as_str())
+                && zap.amount == price_sats
+                && now <= valid_until)
+                .then_some(AgentRuntimeAccessZap {
+                    zap_event_id: event.id.to_hex(),
+                    created_at: event.created_at.as_secs(),
+                    valid_until,
+                })
+        })
+        .max_by_key(|zap| (zap.created_at, zap.zap_event_id.clone()));
     Ok(AgentRuntimeStatusResult {
-        available_ms: ledger.available_ms().map_err(|error| error.to_string())?,
-        credited_ms: ledger.credited_ms(),
-        used_ms: ledger.used_ms(),
-        open_reservation,
-        pricing,
+        access_zap,
+        pricing: Some(terms),
     })
 }
 
-/// The Agent's latest enabled pricing, or None when it does not charge.
 async fn fetch_pricing_terms(
     state: &State<'_, AppState>,
     relay: &str,
     keys: &nostr::Keys,
     agent: &PublicKey,
-) -> Result<Option<AgentRuntimePricingTerms>, String> {
-    let filter = serde_json::json!({
-        "kinds": [KIND_AGENT_RUNTIME_PRICING],
-        "authors": [agent.to_hex()],
-        "limit": 1,
-    });
-    let events =
-        query_relay_at_with_keys(state, relay, std::slice::from_ref(&filter), keys, None).await?;
+) -> Result<Option<(nostr::Event, RuntimePricing)>, String> {
+    let events = query_relay_at_with_keys(
+        state,
+        relay,
+        &[serde_json::json!({
+            "kinds": [KIND_AGENT_RUNTIME_PRICING],
+            "authors": [agent.to_hex()],
+            "limit": 1,
+        })],
+        keys,
+        None,
+    )
+    .await?;
     let Some(event) = events
         .into_iter()
         .filter(|event| event.verify().is_ok() && event.pubkey == *agent)
@@ -393,47 +236,31 @@ async fn fetch_pricing_terms(
     if pricing.validate().is_err() || !pricing.enabled {
         return Ok(None);
     }
-    let Some(rate) = pricing.rate_sats_per_minute else {
-        return Ok(None);
-    };
-    Ok(Some(AgentRuntimePricingTerms {
-        pricing_event_json: event.as_json(),
-        rate_sats_per_minute: rate,
-    }))
+    Ok(Some((event, pricing)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Both halves of the payer boundary pin this fixture: the web layer's
-    /// `runtimeContract.test.mjs` consumes the identical bytes, so a drift on
-    /// either side of the Tauri IPC fails a test instead of a live checkout.
     const CONTRACT: &str = include_str!("../../../fixtures/agent-runtime-contract.json");
 
     #[test]
     fn status_serialization_matches_the_desktop_contract_fixture() {
         let fixture: serde_json::Value = serde_json::from_str(CONTRACT).unwrap();
         let status = AgentRuntimeStatusResult {
-            available_ms: 0,
-            credited_ms: 900_000,
-            used_ms: 60_000,
-            open_reservation: Some(AgentRuntimeOpenReservation {
-                reservation_event_json: "{\"kind\":44211}".into(),
-                reservation_event_id: "b".repeat(64),
-                cap_ms: 840_000,
-                must_start_by: 4_102_444_800,
+            access_zap: Some(AgentRuntimeAccessZap {
+                zap_event_id: "b".repeat(64),
+                created_at: 4_102_444_500,
+                valid_until: 4_102_444_800,
             }),
             pricing: Some(AgentRuntimePricingTerms {
                 pricing_event_json: "{\"kind\":10101}".into(),
-                rate_sats_per_minute: 20,
+                price_sats: 255,
+                invocation_window_seconds: 300,
             }),
         };
-        assert_eq!(
-            serde_json::to_value(&status).unwrap(),
-            fixture["status"],
-            "agent_runtime_get_status no longer emits the pinned contract"
-        );
+        assert_eq!(serde_json::to_value(&status).unwrap(), fixture["status"]);
     }
 
     #[test]
@@ -453,13 +280,10 @@ mod tests {
             &runtime_tags,
             "http://localhost:3000",
         )
-        .expect("the invocation the web layer derives from the fixture must build");
+        .expect("the invocation from the fixture must build");
         let event = builder.sign_with_keys(&nostr::Keys::generate()).unwrap();
         for tag in &runtime_tags {
-            assert!(
-                event.tags.iter().any(|t| t.as_slice() == tag.as_slice()),
-                "built event lost the runtime tag"
-            );
+            assert!(event.tags.iter().any(|item| item.as_slice() == tag));
         }
     }
 }

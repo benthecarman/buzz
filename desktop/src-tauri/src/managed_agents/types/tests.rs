@@ -816,7 +816,7 @@ fn paid_runtime_requires_positive_external_live_access() {
     assert!(super::validate_runtime_price(
         super::RespondTo::Allowlist,
         &["a".repeat(64)],
-        Some(buzz_core_pkg::agent_runtime_payment::MAX_RUNTIME_RATE_SATS_PER_MINUTE + 1),
+        Some(buzz_core_pkg::agent_runtime_payment::MAX_INVOCATION_PRICE_SATS + 1),
     )
     .is_err());
     assert!(super::validate_runtime_price(super::RespondTo::Allowlist, &[], Some(20)).is_err());

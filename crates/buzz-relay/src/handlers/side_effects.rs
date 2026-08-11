@@ -7,11 +7,11 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use buzz_core::kind::{
-    event_kind_u32, is_parameterized_replaceable, KIND_AGENT_PROFILE, KIND_AGENT_RUNTIME_DEPOSIT,
-    KIND_DM_VISIBILITY, KIND_GIT_REPO_ANNOUNCEMENT, KIND_IA_ARCHIVED, KIND_IA_ARCHIVED_LIST,
-    KIND_IA_UNARCHIVED, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
-    KIND_NIP29_GROUP_ADMINS, KIND_NIP29_GROUP_MEMBERS, KIND_NIP29_GROUP_METADATA,
-    KIND_NIP43_MEMBERSHIP_LIST, KIND_REACTION, KIND_THREAD_SUMMARY,
+    event_kind_u32, is_parameterized_replaceable, KIND_AGENT_PROFILE, KIND_DM_VISIBILITY,
+    KIND_GIT_REPO_ANNOUNCEMENT, KIND_IA_ARCHIVED, KIND_IA_ARCHIVED_LIST, KIND_IA_UNARCHIVED,
+    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_NIP29_GROUP_ADMINS,
+    KIND_NIP29_GROUP_MEMBERS, KIND_NIP29_GROUP_METADATA, KIND_NIP43_MEMBERSHIP_LIST, KIND_REACTION,
+    KIND_THREAD_SUMMARY,
 };
 use buzz_core::StoredEvent;
 use buzz_db::channel::{MemberRecord, MemberRole};
@@ -33,7 +33,7 @@ pub fn is_admin_kind(kind: u32) -> bool {
 /// handled in `ingest_event()` before storage so we can short-circuit on
 /// duplicates without storing the event at all.
 pub fn is_side_effect_kind(kind: u32) -> bool {
-    matches!(kind, 0 | 5 | 9000..=9022 | KIND_GIT_REPO_ANNOUNCEMENT | KIND_AGENT_PROFILE | KIND_AGENT_RUNTIME_DEPOSIT | 41001..=41003 | 40099)
+    matches!(kind, 0 | 5 | 9000..=9022 | KIND_GIT_REPO_ANNOUNCEMENT | KIND_AGENT_PROFILE | 41001..=41003 | 40099)
 }
 
 async fn evict_live_channel_subscriptions(
@@ -216,51 +216,9 @@ pub async fn handle_side_effects(
         // NIP-34: Git repo announcement → reserve name + seed manifest pointer.
         KIND_GIT_REPO_ANNOUNCEMENT => handle_git_repo_announcement(tenant, event, state).await,
         KIND_AGENT_PROFILE => handle_agent_profile(tenant, event, state).await,
-        KIND_AGENT_RUNTIME_DEPOSIT => handle_agent_runtime_deposit(tenant, event, state).await,
         // kind:7 (reaction) handled inline in ingest_event() before storage.
         _ => Ok(()),
     }
-}
-
-async fn handle_agent_runtime_deposit(
-    tenant: &TenantContext,
-    event: &Event,
-    state: &Arc<AppState>,
-) -> anyhow::Result<()> {
-    let deposit: buzz_core::agent_runtime_payment::RuntimeDeposit =
-        serde_json::from_str(&event.content)?;
-    deposit.validate()?;
-    let payer = event
-        .tags
-        .iter()
-        .find_map(|tag| {
-            let parts = tag.as_slice();
-            (parts.len() == 2 && parts[0].as_str() == "p").then(|| parts[1].as_str().to_string())
-        })
-        .ok_or_else(|| anyhow::anyhow!("runtime deposit missing payer tag"))?;
-    let channel_id = event
-        .tags
-        .iter()
-        .find_map(|tag| {
-            let parts = tag.as_slice();
-            (parts.len() == 2 && parts[0].as_str() == "h")
-                .then(|| parts[1].as_str().parse::<Uuid>().ok())
-                .flatten()
-        })
-        .ok_or_else(|| anyhow::anyhow!("runtime deposit missing channel tag"))?;
-    emit_system_message(
-        tenant,
-        state,
-        channel_id,
-        serde_json::json!({
-            "type": "agent_runtime_purchased",
-            "actor": payer,
-            "target": event.pubkey.to_hex(),
-            "minutes": deposit.pack_minutes,
-            "amount_sats": deposit.amount_sats,
-        }),
-    )
-    .await
 }
 
 /// Validate a standard NIP-09 deletion event before it is stored.

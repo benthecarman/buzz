@@ -11,13 +11,9 @@ import type {
 } from "@/shared/api/types";
 import { useFeatureEnabled } from "@/shared/features/useFeatureEnabled";
 import { useAgentAccessOwnerOnlyQuery } from "../useAgentAccessOwnerOnly";
-import {
-  MAX_RUNTIME_PRICE_PER_MINUTE_SATS,
-  PaidRuntimeField,
-} from "./PaidRuntimeField";
+import { PaidRuntimeField, validatedInvocationPrice } from "./PaidRuntimeField";
 import {
   derivePersonaRuntimePricing,
-  instancesNeedingAccessLift,
   personaLiveInstances,
   personaRuntimePricingUpdates,
   pricingAppliesToInstances,
@@ -81,11 +77,7 @@ export function usePersonaRuntimePricingEdit({
   const supported = pricingAppliesToInstances(instances, respondTo);
   const numericPrice = Number(price);
   const valid =
-    !enabled ||
-    !supported ||
-    (Number.isSafeInteger(numericPrice) &&
-      numericPrice > 0 &&
-      numericPrice <= MAX_RUNTIME_PRICE_PER_MINUTE_SATS);
+    !enabled || !supported || validatedInvocationPrice(numericPrice) !== null;
 
   /**
    * Carry the pricing decision to the live instances, reporting failure in
@@ -135,54 +127,13 @@ export function usePersonaRuntimePricingEdit({
           price={price}
           supported={supported}
         />
-        <p className="text-xs text-muted-foreground">
-          {describeInstanceScope({
-            instanceCount: instances.length,
-            liftCount: supported
-              ? instancesNeedingAccessLift(instances).length
-              : 0,
-            mixed: stored.mixed,
-          })}
-        </p>
         {error ? (
           <p className="text-xs text-destructive">
-            Runtime pricing was not applied: {error}
+            Reservation price was not applied: {error}
           </p>
         ) : null}
       </div>
     ) : null;
 
   return { apply, field, valid };
-}
-
-function describeInstanceScope({
-  instanceCount,
-  liftCount,
-  mixed,
-}: {
-  instanceCount: number;
-  liftCount: number;
-  mixed: boolean;
-}): string {
-  if (instanceCount === 0) {
-    return "Start this agent in a community before setting a rate — the rate belongs to a running agent, not to its definition.";
-  }
-  const sentences = [
-    instanceCount === 1
-      ? "Applies to this agent's 1 running instance."
-      : `Applies to this agent's ${instanceCount} running instances.`,
-  ];
-  if (liftCount > 0) {
-    sentences.push(
-      liftCount === 1
-        ? "Saving also opens that instance to the access selected above."
-        : `Saving also opens ${liftCount} of them to the access selected above.`,
-    );
-  }
-  if (mixed) {
-    sentences.push(
-      "Their rates currently differ; saving levels them to this one.",
-    );
-  }
-  return sentences.join(" ");
 }

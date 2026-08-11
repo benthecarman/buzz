@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
+import { KIND_BOLT12_ZAP, KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
 import {
   buildTimelineDayGroups,
   buildTimelineItems,
@@ -110,6 +110,18 @@ test("buildTimelineItems: system messages flatten to a 'system' item", () => {
   ];
   const { items } = buildTimelineItems(entries, null);
   assert.deepEqual(kinds(items), ["day-divider", "message", "system"]);
+});
+
+test("buildTimelineItems: runtime payment zaps use a system row", () => {
+  const entries = [
+    entry({
+      id: "zap",
+      kind: KIND_BOLT12_ZAP,
+      body: JSON.stringify({ type: "agent_runtime_purchased" }),
+    }),
+  ];
+  const { items } = buildTimelineItems(entries, null);
+  assert.deepEqual(kinds(items), ["day-divider", "system"]);
 });
 
 test("buildTimelineItems: contiguous member additions by one actor group", () => {

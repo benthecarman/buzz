@@ -1,6 +1,7 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { useBitcoinUsdRate } from "@/features/wallet/useBitcoinUsdRate";
 import { RouterProvider } from "@tanstack/react-router";
 import {
   type ReactNode,
@@ -602,6 +603,7 @@ function CommunityApp({
 }
 
 function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
+  useBitcoinUsdRate();
   const { activeCommunity } = useCommunities();
   const communityOnboarding = useCommunityOnboarding();
   const machine = useMachineOnboardingState({

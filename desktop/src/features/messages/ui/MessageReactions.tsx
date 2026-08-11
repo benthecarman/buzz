@@ -5,6 +5,7 @@ import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import type { TimelineReaction, TimelineZap } from "@/features/messages/types";
 import { recordQuickReactionEmoji } from "@/features/messages/ui/useQuickReactionEmojis";
 import bitcoinIconUrl from "@/features/profile/assets/bitcoin.svg?inline";
+import { formatBitcoin } from "@/features/wallet/lib/formatBitcoin";
 import { cn } from "@/shared/lib/cn";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
@@ -293,7 +294,7 @@ function ZapPill({ amount, count }: { amount: number; count: number }) {
     <Tooltip>
       <TooltipTrigger asChild>
         <button
-          aria-label={`₿${amount.toLocaleString()} across ${count} ${count === 1 ? "zap" : "zaps"}`}
+          aria-label={`${formatBitcoin(amount)} across ${count} ${count === 1 ? "zap" : "zaps"}`}
           className={cn(
             REACTION_PILL_BASE_CLASSES,
             "min-w-12 cursor-help justify-center gap-1.5 border-border/70 bg-muted/70 px-2 text-foreground/90",

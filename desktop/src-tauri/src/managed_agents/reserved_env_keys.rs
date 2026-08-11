@@ -52,9 +52,6 @@ pub(crate) const RESERVED_ENV_KEYS: &[&str] = &[
     "BUZZ_ACP_RESPOND_TO",
     "BUZZ_ACP_RESPOND_TO_ALLOWLIST",
     "BUZZ_ACP_PRICE_PER_MINUTE_SATS",
-    // Durable paid-runtime identity and single-writer fencing must stay scoped
-    // to the Desktop's exact (Agent, relay) runtime key.
-    "BUZZ_ACP_RUNTIME_STATE_DIR",
     "BUZZ_ACP_ALLOWED_RESPOND_TO",
     "BUZZ_ACP_AGENT_OWNER",
     // Stable agent identity used for git attribution and private-conversation

@@ -150,6 +150,7 @@ export default defineConfig({
         "**/needs-restart-screenshots.spec.ts",
         "**/wallet-profile.spec.ts",
         "**/wallet-settings.spec.ts",
+        "**/paid-agent-access.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],

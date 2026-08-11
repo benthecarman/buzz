@@ -5,6 +5,17 @@ import { FEATURE_OVERRIDES_STORAGE_KEY } from "../helpers/features";
 import { openSettings } from "../helpers/settings";
 
 test.beforeEach(async ({ page }) => {
+  await page.route(
+    "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: { amount: "80000", currency: "USD" },
+        }),
+      });
+    },
+  );
   await page.addInitScript(
     ({ storageKey }) => {
       window.localStorage.setItem(
@@ -18,6 +29,21 @@ test.beforeEach(async ({ page }) => {
     walletPollUpdates: [],
     walletBalance: 21_000,
     walletSpendableBalance: 20_000,
+    walletTransactions: [
+      {
+        id: "received-transaction",
+        direction: "inbound",
+        status: "completed",
+        statusMessage: "Payment completed",
+        amount: 5_000,
+        fees: 10,
+        note: "Test payment",
+        payerNote: null,
+        offerId: null,
+        createdAtMs: 1_700_000_000_000,
+        finalizedAtMs: 1_700_000_001_000,
+      },
+    ],
   });
 });
 
@@ -29,10 +55,11 @@ test("profile menu shows the spendable balance and opens wallet settings", async
 
   const balance = page.getByTestId("profile-popover-wallet-balance");
   await expect(balance).toBeVisible();
-  await expect(balance).toContainText("20,000");
+  await expect(balance).toHaveText("20,000");
+  await expect(balance).not.toContainText("$");
   await expect(balance).toHaveAttribute(
     "aria-label",
-    "Open wallet settings. Spendable balance ₿20,000",
+    "Open wallet settings. Spendable balance ₿ 20,000",
   );
 
   await balance.click();
@@ -67,6 +94,19 @@ test("wallet balance exposes funding and transfer actions", async ({
   await openSettings(page, "wallet");
 
   await expect(page.getByTestId("settings-wallet")).toBeVisible();
+  await expect(page.getByTestId("wallet-spendable-balance")).toHaveText(
+    "₿ 20,000",
+  );
+  await expect(page.getByTestId("wallet-spendable-balance-usd")).toHaveText(
+    "$16.00",
+  );
+  const transaction = page.getByTestId(
+    "wallet-transaction-received-transaction",
+  );
+  await expect(transaction).toContainText("+₿ 5,000");
+  await expect(
+    transaction.getByTestId("wallet-transaction-amount-usd"),
+  ).toHaveText("+$4.00");
   await expect(page.getByText("Reserved funds")).toHaveCount(0);
   await expect(page.getByTestId("wallet-receive-qr")).toHaveCount(0);
 

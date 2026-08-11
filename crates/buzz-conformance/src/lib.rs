@@ -39,7 +39,6 @@
 #![warn(missing_docs)]
 
 pub mod checker;
-pub mod paid_agent_runtime;
 pub mod transitions;
 pub mod wallet;
 pub mod wallet_offer;

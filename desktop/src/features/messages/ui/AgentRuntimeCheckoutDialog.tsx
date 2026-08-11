@@ -1,3 +1,4 @@
+import * as React from "react";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -7,25 +8,26 @@ import {
   AlertDialogTitle,
 } from "@/shared/ui/alert-dialog";
 import { Button } from "@/shared/ui/button";
+import { useUsersBatchQuery } from "@/features/profile/hooks";
+import { resolveUserLabel } from "@/features/profile/lib/identity";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import {
-  agentRuntimePackChargeSats,
-  agentRuntimePackRequired,
-  type AgentRuntimeCapMinutes,
-} from "@/features/agents/runtimePayments";
-
+  formatBitcoin,
+  formatSatsAsUsd,
+} from "@/features/wallet/lib/formatBitcoin";
 export type RuntimeCheckoutRow = {
   pubkey: string;
   name: string;
-  rateSats: number;
-  availableMs: number;
+  ownerPubkey: string | null;
+  priceSats: number;
+  invocationWindowSeconds: number;
+  pricingEventJson: string | null;
+  needsPayment: boolean;
 };
 
 type AgentRuntimeCheckoutDialogProps = {
-  capMinutes: AgentRuntimeCapMinutes;
-  capLocked: boolean;
   error: string | null;
   isPaying: boolean;
-  onCapChange: (cap: AgentRuntimeCapMinutes) => void;
   onConfirm: () => void;
   onDismiss: () => void;
   open: boolean;
@@ -33,20 +35,21 @@ type AgentRuntimeCheckoutDialogProps = {
 };
 
 export function AgentRuntimeCheckoutDialog({
-  capMinutes,
-  capLocked,
   error,
   isPaying,
-  onCapChange,
   onConfirm,
   onDismiss,
   open,
   rows,
 }: AgentRuntimeCheckoutDialogProps) {
+  const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
+  const identityQuery = useIdentityQuery();
+  const ownerPubkeys = rows.flatMap((row) =>
+    row.ownerPubkey ? [row.ownerPubkey] : [],
+  );
+  const ownersQuery = useUsersBatchQuery(ownerPubkeys, { enabled: open });
   const total = rows.reduce(
-    (sum, row) =>
-      sum +
-      agentRuntimePackChargeSats(row.availableMs, capMinutes, row.rateSats),
+    (sum, row) => sum + (row.needsPayment ? row.priceSats : 0),
     0,
   );
   return (
@@ -56,62 +59,40 @@ export function AgentRuntimeCheckoutDialog({
       }}
       open={open}
     >
-      <AlertDialogContent data-testid="agent-runtime-checkout">
+      <AlertDialogContent
+        data-testid="agent-runtime-checkout"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          confirmButtonRef.current?.focus();
+        }}
+      >
         <AlertDialogHeader>
-          <AlertDialogTitle>Reserve Agent runtime</AlertDialogTitle>
-          <AlertDialogDescription>
-            Choose one runtime pack for each paid Agent. Retained runtime is
-            used first; if it is insufficient, Buzz buys a matching pack with a
-            separate BOLT12 zap at the Agent's published rate, then waits for
-            the Agent to confirm the credit — usually under a minute. Unused
-            runtime stays available.
-          </AlertDialogDescription>
+          <AlertDialogTitle>Payment required for Agent access</AlertDialogTitle>
         </AlertDialogHeader>
 
-        <fieldset className="flex gap-2">
-          <legend className="sr-only">Runtime cap</legend>
-          {([15, 30, 60] as const).map((cap) => (
-            <Button
-              key={cap}
-              disabled={isPaying || capLocked}
-              onClick={() => onCapChange(cap)}
-              size="sm"
-              type="button"
-              variant={capMinutes === cap ? "default" : "outline"}
-            >
-              {cap} min
-            </Button>
-          ))}
-        </fieldset>
-
         <div className="space-y-2">
-          {rows.map((row) => {
-            const needsPack = agentRuntimePackRequired(
-              row.availableMs,
-              capMinutes,
-            );
-            const retainedMinutes = row.availableMs / 60_000;
-            return (
-              <div
-                className="rounded-lg border border-border px-3 py-2 text-sm"
-                key={row.pubkey}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium">{row.name}</span>
-                  <span>₿{row.rateSats}/runtime min</span>
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {retainedMinutes.toFixed(1)} min retained · {capMinutes} min
-                  cap · {needsPack ? `₿${row.rateSats * capMinutes}` : "no zap"}
-                </div>
-              </div>
-            );
-          })}
+          {rows
+            .filter((row) => row.needsPayment)
+            .map((row) => {
+              const usdPrice = formatSatsAsUsd(row.priceSats);
+              const ownerName = row.ownerPubkey
+                ? resolveUserLabel({
+                    pubkey: row.ownerPubkey,
+                    currentPubkey: identityQuery.data?.pubkey,
+                    profiles: ownersQuery.data?.profiles,
+                  })
+                : "this user";
+              const ownerPossessive =
+                ownerName === "You" ? "your" : `${ownerName}'s`;
+              return (
+                <AlertDialogDescription key={row.pubkey}>
+                  Using {ownerPossessive} agent {row.name} costs{" "}
+                  {formatBitcoin(row.priceSats)}
+                  {usdPrice ? ` (${usdPrice})` : ""} for 5 minutes of access.
+                </AlertDialogDescription>
+              );
+            })}
         </div>
-
-        <p className="text-sm">
-          Combined total: <span className="font-semibold">₿{total}</span>
-        </p>
         {error ? (
           <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
@@ -130,10 +111,15 @@ export function AgentRuntimeCheckoutDialog({
           <Button
             disabled={isPaying}
             onClick={onConfirm}
+            ref={confirmButtonRef}
             size="sm"
             type="button"
           >
-            {isPaying ? "Reserving…" : total > 0 ? `Pay ₿${total}` : "Reserve"}
+            {isPaying
+              ? "Paying…"
+              : total > 0
+                ? `Pay ${formatBitcoin(total)}`
+                : "Continue"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

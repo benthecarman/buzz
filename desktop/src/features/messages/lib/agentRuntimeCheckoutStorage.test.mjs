@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  activeStoredRuntimeZap,
   clearAgentRuntimeCheckout,
   loadAgentRuntimeCheckout,
   saveAgentRuntimeCheckout,
@@ -9,27 +10,21 @@ import {
 
 class MemoryStorage {
   #values = new Map();
-
   get length() {
     return this.#values.size;
   }
-
   clear() {
     this.#values.clear();
   }
-
   getItem(key) {
     return this.#values.get(key) ?? null;
   }
-
   key(index) {
     return [...this.#values.keys()][index] ?? null;
   }
-
   removeItem(key) {
     this.#values.delete(key);
   }
-
   setItem(key, value) {
     this.#values.set(key, String(value));
   }
@@ -37,36 +32,45 @@ class MemoryStorage {
 
 const row = {
   pubkey: "a".repeat(64),
-  name: "Metered Agent",
-  rateSats: 20,
-  availableMs: 0,
+  name: "Paid Agent",
+  ownerPubkey: "c".repeat(64),
+  priceSats: 255,
+  invocationWindowSeconds: 300,
   zapIdempotencyKey: "zap-idempotency-key",
-  paymentSent: true,
-  reservationTag: ["agent_runtime", "a".repeat(64), "reservation-id"],
+  zapEventId: "b".repeat(64),
+  validUntilSeconds: 1_800,
 };
 
-test("checkout identities and successful partial work survive a renderer restart", () => {
+test("checkout payment state survives a renderer restart", () => {
   const storage = new MemoryStorage();
   saveAgentRuntimeCheckout(
     "community-a:channel-a",
-    { channelId: "channel-a", capMinutes: 30, rows: [row] },
+    { channelId: "channel-a", rows: [row] },
     storage,
   );
-
   const restored = loadAgentRuntimeCheckout("community-a:channel-a", storage);
-  assert.equal(restored?.capMinutes, 30);
   assert.equal(restored?.rows[0]?.zapIdempotencyKey, "zap-idempotency-key");
-  assert.equal(restored?.rows[0]?.paymentSent, true);
-  assert.deepEqual(restored?.rows[0]?.reservationTag, row.reservationTag);
+  assert.equal(restored?.rows[0]?.zapEventId, "b".repeat(64));
 });
 
-test("checkout state is cleared only after the caller confirms message send", () => {
+test("a settled zap remains reusable until its access window ends", () => {
   const storage = new MemoryStorage();
   saveAgentRuntimeCheckout(
     "community-a:channel-a",
-    { channelId: "channel-a", capMinutes: 15, rows: [row] },
+    { channelId: "channel-a", rows: [row] },
     storage,
   );
+  const restored = loadAgentRuntimeCheckout("community-a:channel-a", storage);
+  assert.equal(
+    activeStoredRuntimeZap(restored?.rows[0], 1_500),
+    "b".repeat(64),
+  );
+  assert.equal(
+    activeStoredRuntimeZap(restored?.rows[0], 1_800),
+    "b".repeat(64),
+  );
+  assert.equal(activeStoredRuntimeZap(restored?.rows[0], 1_801), null);
+
   clearAgentRuntimeCheckout("community-a:channel-a", storage);
   assert.equal(
     loadAgentRuntimeCheckout("community-a:channel-a", storage),
@@ -74,15 +78,14 @@ test("checkout state is cleared only after the caller confirms message send", ()
   );
 });
 
-test("malformed durable checkout data fails closed", () => {
+test("malformed checkout data fails closed", () => {
   const storage = new MemoryStorage();
   storage.setItem(
-    "buzz.agent-runtime-checkout.v2:community-a:channel-a",
-    JSON.stringify({ version: 2, channelId: "channel-a", capMinutes: 45 }),
+    "buzz.agent-runtime-checkout.v4:community-a:channel-a",
+    JSON.stringify({ version: 4, channelId: "channel-a", rows: [{}] }),
   );
   assert.equal(
     loadAgentRuntimeCheckout("community-a:channel-a", storage),
     null,
   );
-  assert.equal(storage.length, 0);
 });

@@ -472,8 +472,8 @@ pub fn normalize_agent_args(command: &str, agent_args: Vec<String>) -> Vec<Strin
     normalized
 }
 
-fn profile_target_dirs(root: &Path) -> [PathBuf; 2] {
-    if cfg!(debug_assertions) {
+fn profile_target_dirs(root: &Path, debug_build: bool) -> [PathBuf; 2] {
+    if debug_build {
         // `just dev` builds fresh debug sidecars; never prefer stale release output.
         [root.join("target/debug"), root.join("target/release")]
     } else {
@@ -481,23 +481,49 @@ fn profile_target_dirs(root: &Path) -> [PathBuf; 2] {
     }
 }
 
-fn command_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = profile_target_dirs(&workspace_root_dir()).to_vec();
-    if let Ok(current_dir) = std::env::current_dir() {
-        dirs.extend(profile_target_dirs(&current_dir));
+fn ordered_command_search_dirs(
+    workspace_root: &Path,
+    current_dir: Option<&Path>,
+    executable_parent: Option<&Path>,
+    debug_build: bool,
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    // A packaged release must use the sidecars shipped beside its executable.
+    // Build paths can exist on the test machine and can contain an older
+    // `buzz-acp`; they must not override the package during an upgrade.
+    if !debug_build {
+        dirs.extend(executable_parent.map(Path::to_path_buf));
     }
 
-    dirs.extend(
-        std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(Path::to_path_buf)),
-    );
+    dirs.extend(profile_target_dirs(workspace_root, debug_build));
+    if let Some(current_dir) = current_dir {
+        dirs.extend(profile_target_dirs(current_dir, debug_build));
+    }
+
+    if debug_build {
+        dirs.extend(executable_parent.map(Path::to_path_buf));
+    }
+
     dirs.into_iter().fold(Vec::new(), |mut unique, dir| {
         if !unique.contains(&dir) {
             unique.push(dir);
         }
         unique
     })
+}
+
+fn command_search_dirs() -> Vec<PathBuf> {
+    let current_dir = std::env::current_dir().ok();
+    let executable_parent = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    ordered_command_search_dirs(
+        &workspace_root_dir(),
+        current_dir.as_deref(),
+        executable_parent.as_deref(),
+        cfg!(debug_assertions),
+    )
 }
 
 fn is_executable_file(path: &Path) -> bool {

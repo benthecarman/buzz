@@ -17,6 +17,7 @@ import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 import type { PresenceStatus } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { isMacPlatform } from "@/shared/lib/platform";
+import { formatBitcoin } from "@/features/wallet/lib/formatBitcoin";
 
 import bitcoinIconUrl from "../assets/bitcoin.svg?inline";
 
@@ -50,10 +51,6 @@ const MENU_ITEM_CLASS =
   "flex min-h-9 w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-popover-foreground outline-hidden transition-colors hover:bg-muted/50 focus:outline-none focus-visible:bg-muted/50 focus-visible:outline-none";
 
 const ALL_STATUSES: PresenceStatus[] = ["online", "away", "offline"];
-const bitcoinAmountFormatter = new Intl.NumberFormat(undefined, {
-  maximumFractionDigits: 0,
-});
-
 export function ProfilePopover({
   open,
   onOpenChange,
@@ -204,7 +201,7 @@ export function ProfilePopover({
               {spendableWalletBalance !== null &&
               spendableWalletBalance !== undefined ? (
                 <button
-                  aria-label={`Open wallet settings. Spendable balance ₿${bitcoinAmountFormatter.format(spendableWalletBalance)}`}
+                  aria-label={`Open wallet settings. Spendable balance ${formatBitcoin(spendableWalletBalance)}`}
                   className="ml-auto inline-flex max-w-32 shrink-0 items-center gap-1.5 rounded-lg border border-border/70 bg-background/80 px-2 py-1 text-xs font-medium text-popover-foreground outline-hidden transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   data-testid="profile-popover-wallet-balance"
                   onClick={() => {
@@ -223,7 +220,7 @@ export function ProfilePopover({
                     src={bitcoinIconUrl}
                   />
                   <span className="truncate tabular-nums">
-                    {bitcoinAmountFormatter.format(spendableWalletBalance)}
+                    {formatBitcoin(spendableWalletBalance).replace("₿ ", "")}
                   </span>
                 </button>
               ) : null}

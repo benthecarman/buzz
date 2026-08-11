@@ -134,6 +134,17 @@ export function buildChannelReactionAuxFilter(
   ]);
 }
 
+/** Runtime payment zaps target the global pricing event, not a message row. */
+export function buildChannelRuntimeZapFilter(
+  channelId: string,
+): RelaySubscriptionFilter {
+  return {
+    kinds: [KIND_BOLT12_ZAP],
+    "#h": [channelId],
+    limit: MAX_HISTORICAL_LIMIT,
+  };
+}
+
 export function buildChannelAuxDeletionFilter(
   _channelId: string,
   auxEventIds: string[],

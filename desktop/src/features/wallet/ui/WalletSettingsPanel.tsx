@@ -28,7 +28,7 @@ import {
   revealWalletRecoveryPhrase,
   sendWalletPayment,
 } from "../api";
-import { formatBitcoin } from "../lib/formatBitcoin";
+import { formatBitcoin, formatSatsAsUsd } from "../lib/formatBitcoin";
 import { parseWholeBitcoinAmount } from "../lib/profileZap";
 import { walletCommandError, walletErrorMessage } from "../lib/walletError";
 import type {
@@ -72,6 +72,7 @@ function BalanceCard({
   refreshing: boolean;
   status: WalletStatus;
 }) {
+  const balanceUsd = formatSatsAsUsd(status.spendableBalance);
   return (
     <div className="rounded-2xl border border-border/70 bg-background p-5">
       <div className="flex items-start justify-between gap-3">
@@ -85,6 +86,14 @@ function BalanceCard({
           >
             {formatBitcoin(status.spendableBalance)}
           </p>
+          {balanceUsd ? (
+            <p
+              className="mt-0.5 text-sm text-muted-foreground"
+              data-testid="wallet-spendable-balance-usd"
+            >
+              {balanceUsd}
+            </p>
+          ) : null}
         </div>
         <Button
           aria-label="Refresh wallet"
@@ -503,6 +512,12 @@ function TransactionHistory({
   transactions: WalletTransaction[];
   canLoadMore: boolean;
 }) {
+  const directionPrefix = (transaction: WalletTransaction) =>
+    transaction.direction === "outbound"
+      ? "−"
+      : transaction.direction === "inbound"
+        ? "+"
+        : "";
   return (
     <div className="rounded-2xl border border-border/70 bg-background p-5">
       <h3 className="text-sm font-semibold">Transaction history</h3>
@@ -513,36 +528,53 @@ function TransactionHistory({
             No transactions yet.
           </p>
         ) : null}
-        {transactions.map((transaction) => (
-          <div
-            className="flex items-center justify-between gap-3 py-3"
-            key={transaction.id}
-          >
-            <div className="min-w-0">
-              <p className="text-sm font-medium capitalize">
-                {transaction.direction} · {transaction.status}
-              </p>
-              <p className="truncate text-xs text-muted-foreground">
-                {transaction.note || transaction.statusMessage}
-              </p>
-              <p className="text-2xs text-muted-foreground">
-                {new Date(transaction.createdAtMs).toLocaleString()}
-              </p>
-            </div>
-            <div className="shrink-0 text-right">
-              <p className="text-sm font-medium">
-                {transaction.amount === null
-                  ? formatBitcoin(null)
-                  : `${transaction.direction === "outbound" ? "−" : transaction.direction === "inbound" ? "+" : ""}${formatBitcoin(transaction.amount)}`}
-              </p>
-              {transaction.fees > 0 ? (
-                <p className="text-2xs text-muted-foreground">
-                  Fee {formatBitcoin(transaction.fees)}
+        {transactions.map((transaction) => {
+          const prefix = directionPrefix(transaction);
+          const amountUsd =
+            transaction.amount === null
+              ? null
+              : formatSatsAsUsd(transaction.amount);
+          return (
+            <div
+              className="flex items-center justify-between gap-3 py-3"
+              data-testid={`wallet-transaction-${transaction.id}`}
+              key={transaction.id}
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium capitalize">
+                  {transaction.direction} · {transaction.status}
                 </p>
-              ) : null}
+                <p className="truncate text-xs text-muted-foreground">
+                  {transaction.note || transaction.statusMessage}
+                </p>
+                <p className="text-2xs text-muted-foreground">
+                  {new Date(transaction.createdAtMs).toLocaleString()}
+                </p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="text-sm font-medium">
+                  {transaction.amount === null
+                    ? formatBitcoin(null)
+                    : `${prefix}${formatBitcoin(transaction.amount)}`}
+                </p>
+                {amountUsd ? (
+                  <p
+                    className="text-2xs text-muted-foreground"
+                    data-testid="wallet-transaction-amount-usd"
+                  >
+                    {prefix}
+                    {amountUsd}
+                  </p>
+                ) : null}
+                {transaction.fees > 0 ? (
+                  <p className="text-2xs text-muted-foreground">
+                    Fee {formatBitcoin(transaction.fees)}
+                  </p>
+                ) : null}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       {canLoadMore ? (
         <Button

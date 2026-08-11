@@ -375,9 +375,10 @@ export function splitOutgoingTags(tags: string[][] | undefined): {
     } else if (tag[0] === "link-preview") {
       linkPreviewTags.push(tag);
     } else if (tag[0] === "agent_runtime") {
-      // Paid-runtime reservation markers get their own validated Tauri arg —
+      // Paid-runtime access markers get their own validated Tauri argument.
       // on the imeta channel the guard rejects them and the paid message
-      // silently never sends.
+      // On the imeta channel, the guard rejects them and the paid message does
+      // not send.
       runtimeTags.push(tag);
     } else {
       mediaTags.push(tag);

@@ -186,20 +186,17 @@ test.describe("edit agent dialog", () => {
     await openEditDialog(page);
 
     const paymentToggle = page.getByRole("checkbox", {
-      name: "Require payment for runtime",
+      name: "Require payment for agent access",
     });
     await expect(paymentToggle).toBeChecked();
     await expect(page.locator("#agent-runtime-price")).toHaveValue("20");
-    await expect(
-      page.getByText("Paid invocation is not available in direct messages."),
-    ).toBeVisible();
 
-    await page.locator("#agent-runtime-price").fill("25");
+    await page.locator("#agent-runtime-price").fill("375");
     await page.getByTestId("edit-agent-dialog-submit").click();
     await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
 
     await page.getByTestId("user-profile-edit-agent").click();
-    await expect(page.locator("#agent-runtime-price")).toHaveValue("25", {
+    await expect(page.locator("#agent-runtime-price")).toHaveValue("375", {
       timeout: 10_000,
     });
   });
@@ -222,7 +219,9 @@ test.describe("edit agent dialog", () => {
     await openEditDialog(page);
 
     await expect(
-      page.getByRole("checkbox", { name: "Require payment for runtime" }),
+      page.getByRole("checkbox", {
+        name: "Require payment for agent access",
+      }),
     ).toBeChecked();
     await expect(page.locator("#agent-runtime-price")).toHaveValue("20");
   });
@@ -248,7 +247,7 @@ test.describe("edit agent dialog", () => {
     // Owner-only access cannot take payment, so the control explains itself
     // instead of disappearing from the dialog.
     const paymentToggle = page.getByRole("checkbox", {
-      name: "Require payment for runtime",
+      name: "Require payment for agent access",
     });
     await expect(paymentToggle).toBeVisible();
     await expect(paymentToggle).toBeDisabled();
@@ -256,7 +255,7 @@ test.describe("edit agent dialog", () => {
     await expect(page.locator("#agent-runtime-price")).toHaveCount(0);
     await expect(
       page.getByText(
-        "Set Who can send instructions to Anyone or Selected people to charge for runtime.",
+        "Set Who can send instructions to Anyone or Selected people to let others pay to invoke this agent.",
       ),
     ).toBeVisible();
 
@@ -264,12 +263,12 @@ test.describe("edit agent dialog", () => {
     await pickDropdownOption(page, "agent-respond-to", "Anyone");
     await expect(paymentToggle).toBeEnabled();
     await paymentToggle.check();
-    await page.locator("#agent-runtime-price").fill("21");
+    await page.locator("#agent-runtime-price").fill("315");
     await page.getByTestId("edit-agent-dialog-submit").click();
     await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
 
     await page.getByTestId("user-profile-edit-agent").click();
-    await expect(page.locator("#agent-runtime-price")).toHaveValue("21", {
+    await expect(page.locator("#agent-runtime-price")).toHaveValue("315", {
       timeout: 10_000,
     });
   });

@@ -186,7 +186,7 @@ pub struct CreateManagedAgentRequest {
     /// before being written to the record.
     #[serde(default)]
     pub respond_to_allowlist: Vec<String>,
-    /// Optional live-instance runtime price in whole satoshis per minute.
+    /// Optional flat price for a five-minute Agent invocation window.
     #[serde(default)]
     pub price_per_minute_sats: Option<u64>,
     #[serde(default)]

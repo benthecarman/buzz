@@ -1,470 +1,85 @@
-//! Buzz Agent Runtime Payments wire types and deterministic ledger reducer.
+//! Buzz paid Agent invocation terms.
 //!
 //! Pricing is advertised independently from BOLT12 offer kind `10058`.
-//! Deposits add non-expiring runtime milliseconds, reservations lock a cap,
-//! and settlements replace that lock with measured usage.
-
-use std::collections::BTreeMap;
+//! A settled zap against the pricing event grants a short invocation window.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Current wire-format version.
-pub const VERSION: u8 = 1;
-/// Supported prepaid runtime pack sizes.
-pub const RUNTIME_PACKS_MINUTES: [u16; 3] = [15, 30, 60];
+pub const VERSION: u8 = 2;
+/// Fixed period in which a settled zap can start Agent invocations.
+pub const INVOCATION_WINDOW_SECONDS: u64 = 5 * 60;
+/// Largest price that remains an exact JavaScript integer after msat conversion.
+pub const MAX_INVOCATION_PRICE_SATS: u64 = 9_007_199_254_740;
 
-/// Largest cap one reservation may lock: the largest purchasable pack.
-pub const MAX_RESERVATION_CAP_MS: u64 = 60 * MILLIS_PER_MINUTE;
-
-/// How long an agent-minted reservation stays claimable.
-///
-/// Nobody asks for a reservation under the prepaid protocol, so the deadline
-/// is not "start soon after asking". Thirty days keeps a funded payer's lock
-/// waiting across any realistic absence; the Agent's maintenance loop
-/// replaces a lock in its second half, so a claimable one always exists while
-/// credit does. Validators on both sides bound a reservation's signed
-/// validity interval with this constant.
-pub const RESERVATION_VALIDITY_SECS: u64 = 30 * 24 * 60 * 60;
-/// Largest rate whose 60-minute charge remains an exact JavaScript integer.
-pub const MAX_RUNTIME_RATE_SATS_PER_MINUTE: u64 = 150_119_987_579_016;
-/// Milliseconds in one runtime minute.
-pub const MILLIS_PER_MINUTE: u64 = 60_000;
-/// Maximum byte length for caller-provided idempotency identifiers.
-pub const MAX_SCOPE_ID_BYTES: usize = 128;
-
-/// Plaintext purchase terms carried inside a runtime zap intent.
-///
-/// Under the prepaid protocol nobody asks the Agent for a quote: the payer
-/// computes the price from the Agent's published kind `10101` terms and pays.
-/// This struct pins exactly what was paid against, so the wallet host can
-/// attest the deposit without any live party — the embedded pricing event
-/// proves the Agent advertised the rate, and the arithmetic proves the amount
-/// bought the pack.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimePurchase {
-    /// Schema version.
-    pub version: u8,
-    /// Non-DM channel the credit is scoped to.
-    pub channel_id: String,
-    /// Purchased pack duration. Must be a supported pack.
-    pub pack_minutes: u16,
-    /// The rate paid, taken from the pinned pricing event.
-    pub price_per_minute_sats: u64,
-    /// Exact zap amount in satoshis. Must equal rate × pack.
-    pub amount_sats: u64,
-    /// The exact agent-signed kind `10101` event the payer priced against.
-    /// Embedded, not referenced: attestation must not depend on a relay
-    /// fetch, and a replaceable event may no longer be queryable by the time
-    /// the payment settles.
-    pub pricing_event: serde_json::Value,
-}
-
-impl RuntimePurchase {
-    /// Validate the purchase arithmetic and embedded-event shape.
-    ///
-    /// Signature verification of `pricing_event` is the caller's job — this
-    /// type has no crypto dependencies beyond hex parsing.
-    pub fn validate(&self) -> Result<(), RuntimePaymentError> {
-        validate_version(self.version)?;
-        if self.channel_id.is_empty() || self.channel_id.len() > MAX_SCOPE_ID_BYTES {
-            return Err(RuntimePaymentError::InvalidPurchase(
-                "channel_id must contain 1 to 128 bytes",
-            ));
-        }
-        validate_pack(self.pack_minutes)?;
-        if self.price_per_minute_sats == 0
-            || self.price_per_minute_sats > MAX_RUNTIME_RATE_SATS_PER_MINUTE
-        {
-            return Err(RuntimePaymentError::InvalidPurchase(
-                "price_per_minute_sats is outside the supported whole-satoshi range",
-            ));
-        }
-        let expected_amount = self
-            .price_per_minute_sats
-            .checked_mul(u64::from(self.pack_minutes))
-            .ok_or(RuntimePaymentError::ArithmeticOverflow)?;
-        if self.amount_sats != expected_amount {
-            return Err(RuntimePaymentError::InvalidPurchase(
-                "amount_sats does not match price and pack",
-            ));
-        }
-        if !self.pricing_event.is_object() {
-            return Err(RuntimePaymentError::InvalidPurchase(
-                "pricing_event must be an exact signed event object",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Public, agent-authored pricing terms carried by replaceable kind `10101`.
+/// Public, Agent-authored pricing terms carried by replaceable kind `10101`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimePricing {
     /// Schema version. Must equal [`VERSION`].
     pub version: u8,
-    /// Whether paid runtime is currently offered.
+    /// Whether paid Agent access is currently offered.
     pub enabled: bool,
-    /// Whole satoshis charged per runtime minute. Required only when enabled.
+    /// Whole satoshis charged for one invocation window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rate_sats_per_minute: Option<u64>,
-    /// Supported pack sizes. Required to equal [`RUNTIME_PACKS_MINUTES`] when enabled.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub runtime_packs_minutes: Vec<u16>,
+    pub price_sats: Option<u64>,
+    /// Period after settlement in which the payer can start invocations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_window_seconds: Option<u64>,
 }
 
 impl RuntimePricing {
-    /// Construct enabled pricing with Buzz's fixed packs.
-    pub fn enabled(rate_sats_per_minute: u64) -> Result<Self, RuntimePaymentError> {
+    /// Construct enabled pricing with Buzz's fixed invocation window.
+    pub fn enabled(price_sats: u64) -> Result<Self, RuntimePaymentError> {
         let pricing = Self {
             version: VERSION,
             enabled: true,
-            rate_sats_per_minute: Some(rate_sats_per_minute),
-            runtime_packs_minutes: RUNTIME_PACKS_MINUTES.to_vec(),
+            price_sats: Some(price_sats),
+            invocation_window_seconds: Some(INVOCATION_WINDOW_SECONDS),
         };
         pricing.validate()?;
         Ok(pricing)
     }
 
-    /// Construct an explicit disabled tombstone that supersedes stale pricing.
+    /// Construct a disabled tombstone that supersedes stale pricing.
     pub fn disabled() -> Self {
         Self {
             version: VERSION,
             enabled: false,
-            rate_sats_per_minute: None,
-            runtime_packs_minutes: Vec::new(),
+            price_sats: None,
+            invocation_window_seconds: None,
         }
     }
 
     /// Validate canonical pricing terms.
     pub fn validate(&self) -> Result<(), RuntimePaymentError> {
-        validate_version(self.version)?;
+        if self.version != VERSION {
+            return Err(RuntimePaymentError::UnsupportedVersion);
+        }
         if self.enabled {
-            let rate = self
-                .rate_sats_per_minute
-                .ok_or(RuntimePaymentError::InvalidPricing(
-                    "enabled pricing requires a rate",
-                ))?;
-            if rate == 0 || rate > MAX_RUNTIME_RATE_SATS_PER_MINUTE {
+            let price = self.price_sats.ok_or(RuntimePaymentError::InvalidPricing(
+                "enabled pricing requires a price",
+            ))?;
+            if price == 0 || price > MAX_INVOCATION_PRICE_SATS {
                 return Err(RuntimePaymentError::InvalidPricing(
-                    "runtime price is outside the supported whole-satoshi range",
+                    "invocation price is outside the supported whole-satoshi range",
                 ));
             }
-            if self.runtime_packs_minutes != RUNTIME_PACKS_MINUTES {
+            if self.invocation_window_seconds != Some(INVOCATION_WINDOW_SECONDS) {
                 return Err(RuntimePaymentError::InvalidPricing(
-                    "runtime packs must be exactly 15, 30, and 60 minutes",
+                    "invocation window must be exactly 300 seconds",
                 ));
             }
-        } else if self.rate_sats_per_minute.is_some() || !self.runtime_packs_minutes.is_empty() {
+        } else if self.price_sats.is_some() || self.invocation_window_seconds.is_some() {
             return Err(RuntimePaymentError::InvalidPricing(
-                "disabled pricing must not carry a rate or packs",
+                "disabled pricing must not carry a price or invocation window",
             ));
         }
         Ok(())
     }
 }
 
-/// Plaintext content of a settled kind `44210` runtime-credit deposit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeDeposit {
-    /// Schema version.
-    pub version: u8,
-    /// Purchased pack duration.
-    pub pack_minutes: u16,
-    /// Runtime milliseconds credited by the pack.
-    pub credit_ms: u64,
-    /// Locked whole-satoshi rate.
-    pub price_per_minute_sats: u64,
-    /// Exact zap amount in satoshis.
-    pub amount_sats: u64,
-}
-
-impl RuntimeDeposit {
-    /// Validate pack, credit, and price arithmetic.
-    pub fn validate(&self) -> Result<(), RuntimePaymentError> {
-        validate_version(self.version)?;
-        validate_pack(self.pack_minutes)?;
-        let expected_credit = u64::from(self.pack_minutes)
-            .checked_mul(MILLIS_PER_MINUTE)
-            .ok_or(RuntimePaymentError::ArithmeticOverflow)?;
-        if self.credit_ms != expected_credit {
-            return Err(RuntimePaymentError::InvalidDeposit(
-                "credit_ms does not match pack_minutes",
-            ));
-        }
-        if self.price_per_minute_sats == 0 {
-            return Err(RuntimePaymentError::InvalidDeposit(
-                "price_per_minute_sats must be greater than zero",
-            ));
-        }
-        let expected_amount = self
-            .price_per_minute_sats
-            .checked_mul(u64::from(self.pack_minutes))
-            .ok_or(RuntimePaymentError::ArithmeticOverflow)?;
-        if self.amount_sats != expected_amount {
-            return Err(RuntimePaymentError::InvalidDeposit(
-                "amount_sats does not match price and pack",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Decrypted content of an agent-signed kind `44211` reservation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeReservation {
-    /// Schema version.
-    pub version: u8,
-    /// Payer-generated idempotency identifier.
-    pub request_id: String,
-    /// Maximum billable runtime for this invocation.
-    pub cap_ms: u64,
-    /// Unix timestamp by which the reservation must begin.
-    pub must_start_by: u64,
-}
-
-impl RuntimeReservation {
-    /// Validate the reservation payload.
-    pub fn validate(&self) -> Result<(), RuntimePaymentError> {
-        validate_version(self.version)?;
-        if self.request_id.is_empty() || self.request_id.len() > MAX_SCOPE_ID_BYTES {
-            return Err(RuntimePaymentError::InvalidReservation(
-                "request_id must contain 1 to 128 bytes",
-            ));
-        }
-        // The cap bounds one invocation's spend; it is not a pack SKU.
-        // Retained credit is fractional after any settlement, and a lock over
-        // exactly the remaining balance must be expressible.
-        if self.cap_ms == 0 || self.cap_ms > MAX_RESERVATION_CAP_MS {
-            return Err(RuntimePaymentError::InvalidReservation(
-                "cap_ms must be positive and at most the largest runtime pack",
-            ));
-        }
-        if self.must_start_by == 0 {
-            return Err(RuntimePaymentError::InvalidReservation(
-                "must_start_by must be a positive unix timestamp",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Terminal outcome of a metered runtime reservation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeOutcome {
-    /// Agent completed successfully.
-    Completed,
-    /// Agent or provider returned an error.
-    Error,
-    /// Payer cancelled the turn.
-    Cancelled,
-    /// Idle or hard timeout fired.
-    Timeout,
-    /// The reserved runtime cap was fully consumed.
-    BudgetExhausted,
-    /// The harness terminated unexpectedly.
-    Interrupted,
-    /// Reservation expired before execution began.
-    UnusedExpired,
-}
-
-/// Decrypted content of an agent-signed kind `44212` settlement.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeSettlement {
-    /// Schema version.
-    pub version: u8,
-    /// Referenced reservation event id.
-    pub reservation_id: String,
-    /// Instruction event that consumed the reservation, absent when unused.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction_event_id: Option<String>,
-    /// Reserved maximum runtime.
-    pub cap_ms: u64,
-    /// Measured billable runtime.
-    pub used_ms: u64,
-    /// Terminal outcome.
-    pub outcome: RuntimeOutcome,
-}
-
-impl RuntimeSettlement {
-    /// Validate usage bounds and outcome-specific requirements.
-    pub fn validate(&self) -> Result<(), RuntimePaymentError> {
-        validate_version(self.version)?;
-        if self.reservation_id.is_empty() || self.reservation_id.len() > 128 {
-            return Err(RuntimePaymentError::InvalidSettlement(
-                "reservation_id must contain 1 to 128 bytes",
-            ));
-        }
-        if self.used_ms > self.cap_ms {
-            return Err(RuntimePaymentError::InvalidSettlement(
-                "used_ms exceeds cap_ms",
-            ));
-        }
-        if self.outcome == RuntimeOutcome::BudgetExhausted && self.used_ms != self.cap_ms {
-            return Err(RuntimePaymentError::InvalidSettlement(
-                "budget_exhausted must consume the full cap",
-            ));
-        }
-        if self.outcome == RuntimeOutcome::UnusedExpired
-            && (self.used_ms != 0 || self.instruction_event_id.is_some())
-        {
-            return Err(RuntimePaymentError::InvalidSettlement(
-                "unused_expired must have zero usage and no instruction",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Deposit input for deterministic ledger replay.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DepositRecord {
-    /// Zap intent identifier; unique per credited payment.
-    pub payment_id: String,
-    /// Credited runtime milliseconds.
-    pub credit_ms: u64,
-}
-
-/// Reservation input for deterministic ledger replay.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReservationRecord {
-    /// Reservation event identifier.
-    pub reservation_id: String,
-    /// Locked runtime cap.
-    pub cap_ms: u64,
-}
-
-/// Settlement input for deterministic ledger replay.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SettlementRecord {
-    /// Referenced reservation identifier.
-    pub reservation_id: String,
-    /// Final billable usage.
-    pub used_ms: u64,
-}
-
-/// Deterministic projection of an append-only runtime ledger.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RuntimeLedger {
-    credited_ms: u64,
-    used_ms: u64,
-    payments: BTreeMap<String, u64>,
-    reservations: BTreeMap<String, u64>,
-    settlements: BTreeMap<String, u64>,
-}
-
-impl RuntimeLedger {
-    /// Apply a settled credit deposit exactly once.
-    pub fn apply_deposit(&mut self, record: DepositRecord) -> Result<(), RuntimePaymentError> {
-        if record.payment_id.is_empty() || record.credit_ms == 0 {
-            return Err(RuntimePaymentError::InvalidLedgerEntry);
-        }
-        if let Some(existing) = self.payments.get(&record.payment_id) {
-            return if *existing == record.credit_ms {
-                Ok(())
-            } else {
-                Err(RuntimePaymentError::ConflictingDuplicate)
-            };
-        }
-        self.credited_ms = self
-            .credited_ms
-            .checked_add(record.credit_ms)
-            .ok_or(RuntimePaymentError::ArithmeticOverflow)?;
-        self.payments.insert(record.payment_id, record.credit_ms);
-        Ok(())
-    }
-
-    /// Lock runtime for a pending invocation.
-    pub fn apply_reservation(
-        &mut self,
-        record: ReservationRecord,
-    ) -> Result<(), RuntimePaymentError> {
-        if record.reservation_id.is_empty() || record.cap_ms == 0 {
-            return Err(RuntimePaymentError::InvalidLedgerEntry);
-        }
-        if let Some(existing) = self.reservations.get(&record.reservation_id) {
-            return if *existing == record.cap_ms {
-                Ok(())
-            } else {
-                Err(RuntimePaymentError::ConflictingDuplicate)
-            };
-        }
-        if self.available_ms()? < record.cap_ms {
-            return Err(RuntimePaymentError::InsufficientRuntime);
-        }
-        self.reservations
-            .insert(record.reservation_id, record.cap_ms);
-        Ok(())
-    }
-
-    /// Close a reservation and replace its cap lock with measured usage.
-    pub fn apply_settlement(
-        &mut self,
-        record: SettlementRecord,
-    ) -> Result<(), RuntimePaymentError> {
-        if let Some(existing) = self.settlements.get(&record.reservation_id) {
-            return if *existing == record.used_ms {
-                Ok(())
-            } else {
-                Err(RuntimePaymentError::ConflictingDuplicate)
-            };
-        }
-        let cap_ms = self
-            .reservations
-            .get(&record.reservation_id)
-            .copied()
-            .ok_or(RuntimePaymentError::UnknownReservation)?;
-        if record.used_ms > cap_ms {
-            return Err(RuntimePaymentError::UsageExceedsReservation);
-        }
-        self.used_ms = self
-            .used_ms
-            .checked_add(record.used_ms)
-            .ok_or(RuntimePaymentError::ArithmeticOverflow)?;
-        self.settlements
-            .insert(record.reservation_id, record.used_ms);
-        Ok(())
-    }
-
-    /// Runtime milliseconds not used or locked by an open reservation.
-    pub fn available_ms(&self) -> Result<u64, RuntimePaymentError> {
-        let locked = self
-            .reservations
-            .iter()
-            .filter(|(id, _)| !self.settlements.contains_key(*id))
-            .map(|(_, cap)| *cap)
-            .try_fold(0u64, |sum, value| sum.checked_add(value))
-            .ok_or(RuntimePaymentError::ArithmeticOverflow)?;
-        self.credited_ms
-            .checked_sub(self.used_ms)
-            .and_then(|value| value.checked_sub(locked))
-            .ok_or(RuntimePaymentError::LedgerUnderflow)
-    }
-
-    /// Total credited runtime.
-    pub fn credited_ms(&self) -> u64 {
-        self.credited_ms
-    }
-
-    /// Total settled billable runtime.
-    pub fn used_ms(&self) -> u64 {
-        self.used_ms
-    }
-
-    /// Whether a known reservation still holds runtime and has no settlement.
-    pub fn reservation_is_open(&self, reservation_id: &str) -> bool {
-        self.reservations.contains_key(reservation_id)
-            && !self.settlements.contains_key(reservation_id)
-    }
-
-    /// The cap locked by a known reservation.
-    pub fn reservation_cap_ms(&self, reservation_id: &str) -> Option<u64> {
-        self.reservations.get(reservation_id).copied()
-    }
-}
-
-/// Validation or ledger error.
+/// Validation error for paid Agent pricing.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RuntimePaymentError {
     /// Unknown schema version.
@@ -473,58 +88,6 @@ pub enum RuntimePaymentError {
     /// Invalid public pricing terms.
     #[error("invalid runtime pricing: {0}")]
     InvalidPricing(&'static str),
-    /// Invalid zap-intent purchase terms.
-    #[error("invalid runtime purchase: {0}")]
-    InvalidPurchase(&'static str),
-    /// Unsupported pack size.
-    #[error("runtime pack must be 15, 30, or 60 minutes")]
-    InvalidPack,
-    /// Invalid deposit payload.
-    #[error("invalid runtime deposit: {0}")]
-    InvalidDeposit(&'static str),
-    /// Invalid reservation payload.
-    #[error("invalid runtime reservation: {0}")]
-    InvalidReservation(&'static str),
-    /// Invalid settlement payload.
-    #[error("invalid runtime settlement: {0}")]
-    InvalidSettlement(&'static str),
-    /// Integer arithmetic overflowed.
-    #[error("runtime-payment arithmetic overflow")]
-    ArithmeticOverflow,
-    /// Ledger entry lacks a required id or amount.
-    #[error("invalid runtime ledger entry")]
-    InvalidLedgerEntry,
-    /// A duplicate identifier carried different immutable data.
-    #[error("conflicting duplicate runtime ledger entry")]
-    ConflictingDuplicate,
-    /// Available credit cannot cover a requested cap.
-    #[error("insufficient runtime credit")]
-    InsufficientRuntime,
-    /// Settlement references no open reservation.
-    #[error("settlement references an unknown reservation")]
-    UnknownReservation,
-    /// Settlement usage exceeds its reservation.
-    #[error("settlement usage exceeds reservation cap")]
-    UsageExceedsReservation,
-    /// Ledger totals would become negative.
-    #[error("runtime ledger underflow")]
-    LedgerUnderflow,
-}
-
-fn validate_version(version: u8) -> Result<(), RuntimePaymentError> {
-    if version == VERSION {
-        Ok(())
-    } else {
-        Err(RuntimePaymentError::UnsupportedVersion)
-    }
-}
-
-fn validate_pack(minutes: u16) -> Result<(), RuntimePaymentError> {
-    if RUNTIME_PACKS_MINUTES.contains(&minutes) {
-        Ok(())
-    } else {
-        Err(RuntimePaymentError::InvalidPack)
-    }
 }
 
 #[cfg(test)]
@@ -532,163 +95,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pricing_is_canonical_and_independent_of_offer_data() {
-        let pricing = RuntimePricing::enabled(20).unwrap();
-        assert_eq!(pricing.runtime_packs_minutes, [15, 30, 60]);
-        assert!(!serde_json::to_string(&pricing).unwrap().contains("offer"));
-        assert!(RuntimePricing::enabled(0).is_err());
-        assert!(RuntimePricing::enabled(MAX_RUNTIME_RATE_SATS_PER_MINUTE).is_ok());
-        assert!(RuntimePricing::enabled(MAX_RUNTIME_RATE_SATS_PER_MINUTE + 1).is_err());
-    }
-
-    #[test]
-    fn purchase_pins_price_pack_and_amount() {
-        let pricing_event = serde_json::json!({"kind": 10101, "content": "{}"});
-        let good = RuntimePurchase {
-            version: VERSION,
-            channel_id: "channel".into(),
-            pack_minutes: 30,
-            price_per_minute_sats: 20,
-            amount_sats: 600,
-            pricing_event: pricing_event.clone(),
-        };
-        good.validate().unwrap();
-
-        assert!(RuntimePurchase {
-            amount_sats: 599,
-            ..good.clone()
-        }
-        .validate()
-        .is_err());
-        assert!(RuntimePurchase {
-            pack_minutes: 20,
-            ..good.clone()
-        }
-        .validate()
-        .is_err());
-        assert!(RuntimePurchase {
-            pricing_event: serde_json::json!("not an object"),
-            ..good
-        }
-        .validate()
-        .is_err());
-    }
-
-    #[test]
-    fn reservation_cap_is_a_bound_not_a_pack() {
-        let base = RuntimeReservation {
-            version: VERSION,
-            request_id: "credit-1".into(),
-            cap_ms: 744_000, // 12.4 minutes — retained credit is fractional
-            must_start_by: 1,
-        };
-        base.validate().unwrap();
-
-        assert!(RuntimeReservation {
-            cap_ms: 0,
-            ..base.clone()
-        }
-        .validate()
-        .is_err());
-        assert!(RuntimeReservation {
-            cap_ms: MAX_RESERVATION_CAP_MS + 1,
-            ..base.clone()
-        }
-        .validate()
-        .is_err());
-        assert!(RuntimeReservation {
-            cap_ms: MAX_RESERVATION_CAP_MS,
-            ..base
-        }
-        .validate()
-        .is_ok());
-    }
-
-    #[test]
-    fn deposit_arithmetic_is_exact() {
-        RuntimeDeposit {
-            version: VERSION,
-            pack_minutes: 30,
-            credit_ms: 1_800_000,
-            price_per_minute_sats: 20,
-            amount_sats: 600,
-        }
-        .validate()
-        .unwrap();
-    }
-
-    #[test]
-    fn ledger_locks_cap_and_returns_unused_runtime() {
-        let mut ledger = RuntimeLedger::default();
-        ledger
-            .apply_deposit(DepositRecord {
-                payment_id: "payment-1".into(),
-                credit_ms: 1_800_000,
-            })
-            .unwrap();
-        ledger
-            .apply_reservation(ReservationRecord {
-                reservation_id: "reservation-1".into(),
-                cap_ms: 900_000,
-            })
-            .unwrap();
-        assert_eq!(ledger.available_ms().unwrap(), 900_000);
-        ledger
-            .apply_settlement(SettlementRecord {
-                reservation_id: "reservation-1".into(),
-                used_ms: 41_237,
-            })
-            .unwrap();
-        assert_eq!(ledger.available_ms().unwrap(), 1_758_763);
-    }
-
-    #[test]
-    fn duplicate_payment_is_idempotent() {
-        let mut ledger = RuntimeLedger::default();
-        for _ in 0..2 {
-            ledger
-                .apply_deposit(DepositRecord {
-                    payment_id: "same".into(),
-                    credit_ms: 900_000,
-                })
-                .unwrap();
-        }
-        assert_eq!(ledger.credited_ms(), 900_000);
-    }
-
-    #[test]
-    fn concurrent_reservations_cannot_overspend() {
-        let mut ledger = RuntimeLedger::default();
-        ledger
-            .apply_deposit(DepositRecord {
-                payment_id: "payment".into(),
-                credit_ms: 900_000,
-            })
-            .unwrap();
-        ledger
-            .apply_reservation(ReservationRecord {
-                reservation_id: "first".into(),
-                cap_ms: 900_000,
-            })
-            .unwrap();
+    fn enabled_pricing_uses_a_flat_five_minute_window() {
+        let pricing = RuntimePricing::enabled(255).unwrap();
+        assert_eq!(pricing.price_sats, Some(255));
         assert_eq!(
-            ledger.apply_reservation(ReservationRecord {
-                reservation_id: "second".into(),
-                cap_ms: 900_000,
-            }),
-            Err(RuntimePaymentError::InsufficientRuntime)
+            pricing.invocation_window_seconds,
+            Some(INVOCATION_WINDOW_SECONDS)
         );
+        pricing.validate().unwrap();
     }
 
     #[test]
-    fn budget_exhausted_requires_full_cap() {
-        assert!(RuntimeSettlement {
+    fn disabled_pricing_has_no_payment_terms() {
+        let pricing = RuntimePricing::disabled();
+        assert_eq!(pricing.price_sats, None);
+        assert_eq!(pricing.invocation_window_seconds, None);
+        pricing.validate().unwrap();
+    }
+
+    #[test]
+    fn enabled_pricing_rejects_noncanonical_terms() {
+        assert!(RuntimePricing::enabled(0).is_err());
+        assert!(RuntimePricing::enabled(MAX_INVOCATION_PRICE_SATS + 1).is_err());
+        assert!(RuntimePricing {
             version: VERSION,
-            reservation_id: "reservation".into(),
-            instruction_event_id: Some("instruction".into()),
-            cap_ms: 900_000,
-            used_ms: 899_999,
-            outcome: RuntimeOutcome::BudgetExhausted,
+            enabled: true,
+            price_sats: Some(255),
+            invocation_window_seconds: Some(60),
         }
         .validate()
         .is_err());

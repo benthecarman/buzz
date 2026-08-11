@@ -1,13 +1,8 @@
 import * as React from "react";
 
 import { useAppShell } from "@/app/AppShellContext";
-import { useCommunities } from "@/features/communities/useCommunities";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { HomeView } from "@/features/home/ui/HomeView";
-import {
-  useZapHistory,
-  zapHistoryFeedItems,
-} from "@/features/wallet/lib/zapHistory";
 import type { HomeFeedResponse } from "@/shared/api/types";
 import {
   isRelayUnreachableError,
@@ -31,15 +26,8 @@ export function HomeScreen({
 }: HomeScreenProps) {
   const homeFeedQuery = useHomeFeedQuery();
   const { threadActivityFeedItems } = useAppShell();
-  const relayUrl = useCommunities().activeCommunity?.relayUrl;
-  const zapHistory = useZapHistory(currentPubkey, relayUrl);
-  const zapFeedItems = React.useMemo(
-    () => zapHistoryFeedItems(zapHistory),
-    [zapHistory],
-  );
-
   const augmentedFeed = React.useMemo((): HomeFeedResponse | undefined => {
-    const extraActivity = [...threadActivityFeedItems, ...zapFeedItems];
+    const extraActivity = threadActivityFeedItems;
     if (!homeFeedQuery.data && extraActivity.length === 0) return undefined;
     if (homeFeedQuery.data && extraActivity.length === 0) {
       return homeFeedQuery.data;
@@ -68,7 +56,7 @@ export function HomeScreen({
         ],
       },
     };
-  }, [homeFeedQuery.data, threadActivityFeedItems, zapFeedItems]);
+  }, [homeFeedQuery.data, threadActivityFeedItems]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">

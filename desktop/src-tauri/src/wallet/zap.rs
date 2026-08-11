@@ -254,7 +254,11 @@ pub(crate) fn parse_tagged_zap_event(
     for name in ["e", "a", "k"] {
         matching_optional_tag(&event, &intent, name)?;
     }
+    if optional_event_tag(&intent, "h")?.is_some() {
+        matching_optional_tag(&event, &intent, "h")?;
+    }
     let target_event_id = optional_event_tag(&event, "e")?.map(str::to_string);
+    let channel_id = optional_event_tag(&event, "h")?.map(str::to_string);
     let address_target = optional_event_tag(&event, "a")?;
     if target_event_id.is_some() && address_target.is_some() {
         return Err(WalletError::new(
@@ -286,6 +290,7 @@ pub(crate) fn parse_tagged_zap_event(
         intent_event_id: intent.id.to_hex(),
         recipient_pubkey: recipient,
         target_event_id,
+        channel_id,
     })
 }
 
@@ -315,14 +320,14 @@ fn random_zap_id() -> Result<String, WalletError> {
     Ok(hex::encode(bytes))
 }
 
-fn signed_intent_with_runtime_quote(
+fn signed_intent(
     keys: &Keys,
     recipient: &WalletRecipientOffer,
     amount: u64,
     comment: &str,
     target_event_id: Option<&str>,
     target_event_kind: Option<u32>,
-    runtime_purchase_json: Option<&str>,
+    runtime_channel_id: Option<&str>,
 ) -> Result<Event, WalletError> {
     if target_event_id.is_some() != target_event_kind.is_some() {
         return Err(WalletError::new(
@@ -351,12 +356,14 @@ fn signed_intent_with_runtime_quote(
         tag(["zap_id", random_zap_id()?.as_str()])?,
     ];
     if let (Some(event_id), Some(event_kind)) = (target_event_id, target_event_kind) {
-        let event_kind = event_kind.to_string();
         tags.push(tag(["e", event_id])?);
-        tags.push(tag(["k", event_kind.as_str()])?);
+        if runtime_channel_id.is_none() {
+            let event_kind = event_kind.to_string();
+            tags.push(tag(["k", event_kind.as_str()])?);
+        }
     }
-    if let Some(purchase_json) = runtime_purchase_json {
-        tags.push(tag(["agent_runtime_purchase", purchase_json])?);
+    if let Some(channel_id) = runtime_channel_id {
+        tags.push(tag(["h", channel_id])?);
     }
     let intent = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), comment)
         .tags(tags)
@@ -424,14 +431,9 @@ pub struct ZapAttempt {
     /// Exact payer-signed, unbroadcast kind `9737` intent.
     pub intent_event_json: String,
     pub intent_event_id: String,
-    /// Serialized `RuntimePurchase` embedded in the intent. The alias loads
-    /// pre-rename persisted attempts without a version bump.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "runtime_quote_event_json"
-    )]
-    pub runtime_purchase_json: Option<String>,
+    /// Channel that a runtime zap grants access to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_channel_id: Option<String>,
     /// Intent reference sent in the BOLT12 payer note for reconciliation.
     pub payer_note: String,
     /// Relay where the recipient offer was resolved and the proof belongs.
@@ -482,12 +484,13 @@ impl ZapAttempt {
         )
     }
 
-    /// Prepare a runtime-zap attempt whose intent embeds the purchase terms.
+    /// Prepare a runtime zap that targets the Agent's pricing event.
     pub fn prepare_agent_runtime(
         idempotency_key: String,
         recipient: WalletRecipientOffer,
         amount: u64,
-        purchase_json: String,
+        channel_id: String,
+        pricing_event_id: String,
         keys: &Keys,
     ) -> Result<Self, WalletError> {
         Self::prepare_inner(
@@ -495,8 +498,11 @@ impl ZapAttempt {
             recipient,
             amount,
             None,
-            None,
-            Some(purchase_json),
+            Some((
+                pricing_event_id,
+                buzz_core_pkg::kind::KIND_AGENT_RUNTIME_PRICING,
+            )),
+            Some(channel_id),
             keys,
         )
     }
@@ -507,20 +513,20 @@ impl ZapAttempt {
         amount: u64,
         comment: Option<String>,
         target: Option<(String, u32)>,
-        runtime_purchase_json: Option<String>,
+        runtime_channel_id: Option<String>,
         keys: &Keys,
     ) -> Result<Self, WalletError> {
         let comment = comment
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let intent = signed_intent_with_runtime_quote(
+        let intent = signed_intent(
             keys,
             &recipient,
             amount,
             comment.as_deref().unwrap_or_default(),
             target.as_ref().map(|(id, _)| id.as_str()),
             target.as_ref().map(|(_, kind)| *kind),
-            runtime_purchase_json.as_deref(),
+            runtime_channel_id.as_deref(),
         )?;
         let intent_event_id = intent.id.to_hex();
         let (target_event_id, target_event_kind) = target
@@ -537,7 +543,7 @@ impl ZapAttempt {
             offer: recipient.offer,
             offer_event_json: recipient.offer_event_json,
             intent_event_json: intent.as_json(),
-            runtime_purchase_json,
+            runtime_channel_id,
             payer_note: format!("nostr:nipB1:{intent_event_id}"),
             intent_event_id,
             relay_url: None,
@@ -557,6 +563,11 @@ impl ZapAttempt {
         Some(WalletProfileZapResult {
             payment: self.payment.clone()?,
             intent_event_id: self.intent_event_id.clone(),
+            proof_event_id: self
+                .proof_event()
+                .ok()
+                .flatten()
+                .map(|event| event.id.to_hex()),
             proof_published: self.proof_published,
         })
     }
@@ -596,7 +607,9 @@ impl ZapAttempt {
         tags.push(tag(["description", self.intent_event_json.as_str()])?);
         tags.push(tag(["P", keys.public_key().to_hex().as_str()])?);
         tags.push(tag(["proof", PLACEHOLDER_PAYER_PROOF])?);
-        if let Some(channel_id) = channel_id {
+        if let Some(channel_id) = channel_id
+            .filter(|channel_id| !tags.iter().any(|tag| tag.as_slice() == ["h", *channel_id]))
+        {
             tags.push(tag(["h", channel_id])?);
         }
         EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), intent.content)
@@ -1148,6 +1161,38 @@ mod tests {
             .tags
             .iter()
             .any(|tag| tag.as_slice() == ["k", "40002"]));
+    }
+
+    #[test]
+    fn runtime_intent_targets_pricing_without_a_kind_tag() {
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let pricing_event_id = "cd".repeat(32);
+        let channel_id = Uuid::new_v4().to_string();
+        let attempt = ZapAttempt::prepare_agent_runtime(
+            Uuid::new_v4().to_string(),
+            recipient(&recipient_keys),
+            255,
+            channel_id.clone(),
+            pricing_event_id.clone(),
+            &payer,
+        )
+        .unwrap();
+        let intent = Event::from_json(&attempt.intent_event_json).unwrap();
+        assert!(intent
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["e", pricing_event_id.as_str()]));
+        assert!(intent
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["h", channel_id.as_str()]));
+        assert!(!intent.tags.iter().any(|tag| {
+            matches!(
+                tag.as_slice().first().map(String::as_str),
+                Some("k" | "agent_runtime_purchase")
+            )
+        }));
     }
 
     #[test]

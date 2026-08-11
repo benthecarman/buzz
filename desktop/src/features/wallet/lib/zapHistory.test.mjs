@@ -6,7 +6,6 @@ import {
   parseZapHistory,
   persistZapHistoryItem,
   readZapHistory,
-  zapHistoryFeedItems,
 } from "./zapHistory.ts";
 
 function zap(overrides = {}) {
@@ -42,26 +41,6 @@ test("zap history deduplicates events and keeps newest first", () => {
 test("zap history parser drops malformed records", () => {
   assert.deepEqual(parseZapHistory(JSON.stringify([{}, zap()])), [zap()]);
   assert.deepEqual(parseZapHistory("not-json"), []);
-});
-
-test("zap history projects to Inbox activity", () => {
-  assert.deepEqual(zapHistoryFeedItems([zap()]), [
-    {
-      id: "event-a",
-      kind: 9736,
-      pubkey: "payer",
-      content: "₿ 21 · nice work",
-      createdAt: 123,
-      channelId: null,
-      channelName: "",
-      tags: [
-        ["p", "recipient"],
-        ["amount", "21000"],
-        ["buzz_recipient_name", "Agent Smith"],
-      ],
-      category: "activity",
-    },
-  ]);
 });
 
 test("zap history storage is relay-scoped and reports write failures", () => {

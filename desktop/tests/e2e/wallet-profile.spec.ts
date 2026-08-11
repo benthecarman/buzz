@@ -174,7 +174,7 @@ test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("shows an app-wide toast for an incoming wallet payment", async ({
+test("shows the received amount in the incoming payment toast", async ({
   page,
 }) => {
   await installMockBridge(page);
@@ -187,7 +187,7 @@ test("shows an app-wide toast for an incoming wallet payment", async ({
       direction: "inbound",
       status: "completed",
       statusMessage: "Payment completed",
-      amount: 2_100,
+      amount: 49,
       fees: 0,
       note: null,
       payerNote: null,
@@ -201,7 +201,7 @@ test("shows an app-wide toast for an incoming wallet payment", async ({
     .locator("[data-sonner-toast]")
     .filter({ hasText: "Bitcoin received" });
   await expect(toast).toBeVisible();
-  await expect(toast).toContainText("₿ 2,100");
+  await expect(toast).toContainText("₿ 49");
 });
 
 test("message zap sends ₿50 optimistically without progress chrome", async ({
@@ -256,8 +256,14 @@ test("message zap sends ₿50 optimistically without progress chrome", async ({
   await messageRow.hover();
   await expect(zapAction).toBeVisible();
   await expect(zapAction).toHaveAccessibleName("Zap ₿50");
+  await expect(zapAction.locator("img")).toBeVisible();
+  await expect(zapAction).toHaveText("");
   await zapAction.hover();
-  await expect(page.getByRole("tooltip", { name: "Zap ₿50" })).toBeVisible();
+  await expect(
+    page.getByRole("tooltip", {
+      name: "Zap ₿50",
+    }),
+  ).toBeVisible();
   await zapAction.click();
   await expect(page.getByTestId("send-bitcoin-dialog")).toHaveCount(0);
 
@@ -267,7 +273,7 @@ test("message zap sends ₿50 optimistically without progress chrome", async ({
   });
   await expect(optimisticZap).toBeVisible();
   await expect(optimisticZap).toContainText("50");
-  await expect(optimisticZap).toHaveAccessibleName("₿50 across 1 zap");
+  await expect(optimisticZap).toHaveAccessibleName("₿ 50 across 1 zap");
   await expect(optimisticZap.locator(".animate-spin")).toHaveCount(0);
   await expect(optimisticZap).not.toHaveClass(/\bborder-dashed\b/);
   await expect(ordinaryReaction).toBeVisible();

@@ -1184,6 +1184,35 @@ fn test_command_basenames_dotted_name_no_extra_candidates() {
 
 // ── Phase B: cli_install_commands_for_os ────────────────────────────────────
 
+#[test]
+fn release_command_search_prefers_packaged_sidecars() {
+    let dirs = super::ordered_command_search_dirs(
+        std::path::Path::new("/build/buzz"),
+        Some(std::path::Path::new("/home/user/buzz")),
+        Some(std::path::Path::new("/usr/bin")),
+        false,
+    );
+    assert_eq!(dirs.first(), Some(&std::path::PathBuf::from("/usr/bin")));
+    assert_eq!(
+        dirs.get(1),
+        Some(&std::path::PathBuf::from("/build/buzz/target/release"))
+    );
+}
+
+#[test]
+fn debug_command_search_prefers_fresh_debug_sidecars() {
+    let dirs = super::ordered_command_search_dirs(
+        std::path::Path::new("/build/buzz"),
+        None,
+        Some(std::path::Path::new("/build/buzz/target/debug")),
+        true,
+    );
+    assert_eq!(
+        dirs.first(),
+        Some(&std::path::PathBuf::from("/build/buzz/target/debug"))
+    );
+}
+
 /// Claude and Codex have non-empty default cli_install_commands (install.sh).
 #[test]
 fn test_claude_and_codex_have_cli_install_commands() {

@@ -1,32 +1,26 @@
-import type { AgentRuntimeCapMinutes } from "@/features/agents/runtimePayments";
-
 export const AGENT_RUNTIME_CHECKOUT_STORAGE_PREFIX =
-  "buzz.agent-runtime-checkout.v2";
+  "buzz.agent-runtime-checkout.v4";
 
 export type StoredAgentRuntimeCheckoutRow = {
   pubkey: string;
   name: string;
-  rateSats: number;
-  availableMs: number;
+  ownerPubkey: string | null;
+  priceSats: number;
+  invocationWindowSeconds: number;
   zapIdempotencyKey: string;
-  paymentSent: boolean;
-  reservationTag: string[] | null;
+  zapEventId: string | null;
+  validUntilSeconds: number | null;
 };
 
 export type StoredAgentRuntimeCheckout = {
-  version: 2;
+  version: 4;
   channelId: string;
-  capMinutes: AgentRuntimeCapMinutes;
   updatedAtMs: number;
   rows: StoredAgentRuntimeCheckoutRow[];
 };
 
 function storageKey(scopeId: string): string {
   return `${AGENT_RUNTIME_CHECKOUT_STORAGE_PREFIX}:${scopeId}`;
-}
-
-function isCapMinutes(value: unknown): value is AgentRuntimeCapMinutes {
-  return value === 15 || value === 30 || value === 60;
 }
 
 function isRow(value: unknown): value is StoredAgentRuntimeCheckoutRow {
@@ -36,17 +30,18 @@ function isRow(value: unknown): value is StoredAgentRuntimeCheckoutRow {
     typeof row.pubkey === "string" &&
     /^[0-9a-f]{64}$/u.test(row.pubkey) &&
     typeof row.name === "string" &&
-    Number.isSafeInteger(row.rateSats) &&
-    Number(row.rateSats) > 0 &&
-    Number.isSafeInteger(row.availableMs) &&
-    Number(row.availableMs) >= 0 &&
+    (row.ownerPubkey === null || typeof row.ownerPubkey === "string") &&
+    Number.isSafeInteger(row.priceSats) &&
+    Number(row.priceSats) > 0 &&
+    row.invocationWindowSeconds === 300 &&
     typeof row.zapIdempotencyKey === "string" &&
     row.zapIdempotencyKey.length > 0 &&
-    typeof row.paymentSent === "boolean" &&
-    (row.reservationTag === null ||
-      (Array.isArray(row.reservationTag) &&
-        row.reservationTag.length === 3 &&
-        row.reservationTag.every((tag) => typeof tag === "string")))
+    (row.zapEventId === null ||
+      (typeof row.zapEventId === "string" &&
+        /^[0-9a-f]{64}$/u.test(row.zapEventId))) &&
+    (row.validUntilSeconds === null ||
+      (Number.isSafeInteger(row.validUntilSeconds) &&
+        Number(row.validUntilSeconds) > 0))
   );
 }
 
@@ -59,15 +54,12 @@ export function loadAgentRuntimeCheckout(
     if (!encoded) return null;
     const value = JSON.parse(encoded) as Partial<StoredAgentRuntimeCheckout>;
     if (
-      value.version !== 2 ||
+      value.version !== 4 ||
       typeof value.channelId !== "string" ||
-      !isCapMinutes(value.capMinutes) ||
       !Number.isSafeInteger(value.updatedAtMs) ||
       !Array.isArray(value.rows) ||
-      value.rows.length === 0 ||
       !value.rows.every(isRow)
     ) {
-      storage.removeItem(storageKey(scopeId));
       return null;
     }
     return value as StoredAgentRuntimeCheckout;
@@ -80,14 +72,25 @@ export function saveAgentRuntimeCheckout(
   scopeId: string,
   checkout: Omit<StoredAgentRuntimeCheckout, "version" | "updatedAtMs">,
   storage: Storage = window.localStorage,
-): StoredAgentRuntimeCheckout {
-  const stored: StoredAgentRuntimeCheckout = {
-    ...checkout,
-    version: 2,
-    updatedAtMs: Date.now(),
-  };
-  storage.setItem(storageKey(scopeId), JSON.stringify(stored));
-  return stored;
+): void {
+  storage.setItem(
+    storageKey(scopeId),
+    JSON.stringify({ ...checkout, version: 4, updatedAtMs: Date.now() }),
+  );
+}
+
+export function activeStoredRuntimeZap(
+  row: StoredAgentRuntimeCheckoutRow | undefined,
+  nowSeconds: number,
+): string | null {
+  if (
+    !row?.zapEventId ||
+    row.validUntilSeconds === null ||
+    nowSeconds > row.validUntilSeconds
+  ) {
+    return null;
+  }
+  return row.zapEventId;
 }
 
 export function clearAgentRuntimeCheckout(

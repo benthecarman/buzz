@@ -35,7 +35,7 @@ test("offer publication commands include every configured community relay", asyn
     },
   ];
 
-  globalThis.localStorage = {
+  const storage = {
     getItem(key) {
       if (key === "buzz-communities") return JSON.stringify(communities);
       return null;
@@ -43,7 +43,9 @@ test("offer publication commands include every configured community relay", asyn
     setItem() {},
     removeItem() {},
   };
+  globalThis.localStorage = storage;
   globalThis.window = {
+    localStorage: storage,
     __TAURI_INTERNALS__: {
       invoke(command, args) {
         calls.push({ command, args });
@@ -80,7 +82,7 @@ test("offer publication commands include every configured community relay", asyn
   assert.deepEqual(calls, [
     { command: "wallet_enable", args: { relayUrls } },
     { command: "wallet_create_receive_request", args: {} },
-    { command: "wallet_refresh_offer", args: { relayUrls } },
+    { command: "wallet_refresh_offer", args: { relayUrls, rotate: false } },
     { command: "wallet_disable", args: { relayUrls } },
     { command: "wallet_set_polling_enabled", args: { enabled: true } },
     {

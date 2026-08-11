@@ -83,6 +83,7 @@ export interface WalletVerifiedZapEvent {
   intentEventId: string;
   recipientPubkey: string;
   targetEventId: string | null;
+  channelId: string | null;
 }
 
 export interface WalletProfileZapRequest {
@@ -99,17 +100,16 @@ export type WalletProfileZapDraft = WalletProfileZapRequest;
 export interface WalletProfileZapResult {
   payment: WalletPaymentResult;
   intentEventId: string;
+  proofEventId: string | null;
   proofPublished: boolean;
 }
 
 export interface WalletAgentRuntimeZapRequest {
   /** Agent whose published terms this purchase pays against. */
   agentPubkey: string;
-  /** Non-DM channel the credit is scoped to. */
+  /** Non-DM channel in which the invocation window applies. */
   channelId: string;
-  /** Purchased pack duration in minutes. */
-  packMinutes: number;
-  /** Exact signed kind-10101 pricing event being pinned. */
+  /** Exact signed kind-10101 pricing event that the zap targets. */
   pricingEventJson: string;
   /** UUID reused for retries of this exact purchase. */
   idempotencyKey: string;

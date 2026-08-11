@@ -1,7 +1,7 @@
 /**
  * Paid-runtime pricing for a definition's live instances.
  *
- * The per-runtime-minute rate is instance state, never definition state: it
+ * The invocation-access price is instance state, never definition state: it
  * stays out of the persona record, the community catalog, and team snapshots
  * (`AGENTS.md` rule 12). The definition editor is only an entry point — it
  * reads the rate from the live instances it would write to, and writes back
@@ -15,8 +15,13 @@ import type {
   RespondToMode,
   UpdateManagedAgentInput,
 } from "@/shared/api/types";
+import {
+  DEFAULT_INVOCATION_PRICE_SATS,
+  runtimePriceToAccessPrice,
+  validatedInvocationPrice,
+} from "./PaidRuntimeField";
 
-/** Access modes whose instances may carry a rate (`validate_runtime_price`). */
+/** Access modes whose instances may carry a price (`validate_runtime_price`). */
 export function accessTakesPayment(mode: RespondToMode): boolean {
   return mode === "allowlist" || mode === "anyone";
 }
@@ -32,17 +37,17 @@ export function personaLiveInstances(
 
 export type PersonaRuntimePricingState = {
   enabled: boolean;
-  /** Empty when no instance carries a rate. */
+  /** Empty when no instance carries a price. */
   price: string;
-  /** True when the instances do not all carry the same rate. */
+  /** True when the instances do not all carry the same price. */
   mixed: boolean;
 };
 
 /**
  * Project the instances' stored rates into one control state.
  *
- * The displayed rate is the first priced instance's, so a mixed set shows a
- * real rate rather than a blank field; `mixed` tells the caller to say that
+ * The displayed price is the first priced instance's, so a mixed set shows a
+ * real price rather than a blank field; `mixed` tells the caller to say that
  * saving levels the others to it.
  */
 export function derivePersonaRuntimePricing(
@@ -52,17 +57,21 @@ export function derivePersonaRuntimePricing(
     .map((instance) => instance.pricePerMinuteSats)
     .filter((rate): rate is number => rate != null && rate > 0);
   if (priced.length === 0) {
-    return { enabled: false, price: "", mixed: false };
+    return {
+      enabled: false,
+      price: DEFAULT_INVOCATION_PRICE_SATS.toString(),
+      mixed: false,
+    };
   }
   return {
     enabled: true,
-    price: priced[0].toString(),
+    price: runtimePriceToAccessPrice(priced[0]).toString(),
     mixed: priced.length !== instances.length || new Set(priced).size > 1,
   };
 }
 
 /**
- * Whether a rate can be applied to these instances under the draft access.
+ * Whether a price can be applied to these instances under the draft access.
  *
  * The definition's access field is a default for future instances, so it is
  * not the whole answer: instances that already answer an external audience
@@ -79,7 +88,7 @@ export function pricingAppliesToInstances(
   return instances.every((instance) => accessTakesPayment(instance.respondTo));
 }
 
-/** Instances that a rate can only reach by opening their access. */
+/** Instances that a price can only reach by opening their access. */
 export function instancesNeedingAccessLift(
   instances: readonly ManagedAgent[],
 ): ManagedAgent[] {
@@ -95,7 +104,7 @@ export function instancesNeedingAccessLift(
  *
  * An instance that already answers an external audience keeps its own access;
  * only an owner-only instance is lifted to the draft access, because the
- * backend rejects a rate it could never charge.
+ * backend rejects a price it could never charge.
  */
 export function personaRuntimePricingUpdates({
   instances,
@@ -119,8 +128,8 @@ export function personaRuntimePricingUpdates({
       }));
   }
 
-  const rate = Number(price);
-  if (!Number.isSafeInteger(rate) || rate <= 0) return [];
+  const rate = validatedInvocationPrice(Number(price));
+  if (rate === null) return [];
 
   const allowlist = [...respondToAllowlist];
   const updates: UpdateManagedAgentInput[] = [];

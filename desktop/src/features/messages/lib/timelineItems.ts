@@ -17,7 +17,19 @@ import {
   isWithinGroupingWindow,
   startsNewMessageGroup,
 } from "@/features/messages/lib/messageGrouping";
-import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
+import { KIND_BOLT12_ZAP, KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
+
+function isSystemTimelineMessage(
+  message: MainTimelineEntry["message"],
+): boolean {
+  if (message.kind === KIND_SYSTEM_MESSAGE) return true;
+  if (message.kind !== KIND_BOLT12_ZAP) return false;
+  try {
+    return JSON.parse(message.body).type === "agent_runtime_purchased";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * One renderable row in the flattened timeline. Dividers carry no message and
@@ -225,7 +237,7 @@ export function buildTimelineItems(
       items.push({ kind: "unread-divider", key: `unread-${renderKey}` });
     }
 
-    const kind = message.kind === KIND_SYSTEM_MESSAGE ? "system" : "message";
+    const kind = isSystemTimelineMessage(message) ? "system" : "message";
     if (kind === "system") {
       previousGroupEntry = null;
       previousMessageItemIndex = null;

@@ -1,1 +1,0 @@
-{"schema_version":1,"scope_id":"scope-a","action":{"type":"credit_deposited","payment_id":"payment-a","credit_ms":900000},"state_before":{"credited_ms":0,"used_ms":0,"locked_ms":0,"open_reservations":0,"active_meters":0},"state_after":{"credited_ms":900000,"used_ms":0,"locked_ms":0,"open_reservations":0,"active_meters":0}}

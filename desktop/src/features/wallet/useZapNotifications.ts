@@ -1,5 +1,4 @@
 import * as React from "react";
-import { toast } from "sonner";
 
 import { useManagedAgentsQuery } from "@/features/agents/hooks";
 import {
@@ -106,7 +105,6 @@ export function useZapNotifications(
         };
       }
 
-      toast.success(title, { description: body });
       void requestDockBounce();
       if (!notificationSettings.desktopEnabled) {
         return {

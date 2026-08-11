@@ -7,6 +7,7 @@ import { canManageMessageForCurrentUser } from "@/features/messages/lib/canManag
 import type { TimelineMessage } from "@/features/messages/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { cn } from "@/shared/lib/cn";
+import { KIND_BOLT12_ZAP } from "@/shared/constants/kinds";
 import { MessageRow } from "./MessageRow";
 import { MessageThreadSummaryRow } from "./MessageThreadSummaryRow";
 import { SystemMessageRow } from "./SystemMessageRow";
@@ -50,7 +51,11 @@ export function SystemRow({
         groupedMessages={groupedMessages}
         message={firstEntry.message}
         currentPubkey={currentPubkey}
-        onToggleReaction={onToggleReaction}
+        onToggleReaction={
+          firstEntry.message.kind === KIND_BOLT12_ZAP
+            ? undefined
+            : onToggleReaction
+        }
         profiles={profiles}
         ownerProfiles={ownerProfiles}
       />

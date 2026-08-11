@@ -4,10 +4,6 @@ import { useCommunities } from "@/features/communities/useCommunities";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
-import {
-  useZapHistory,
-  zapHistoryFeedItems,
-} from "@/features/wallet/lib/zapHistory";
 import { useZapNotifications } from "@/features/wallet/useZapNotifications";
 import { useAgentWalletRequests } from "@/features/wallet/useAgentWalletRequests";
 import type { Channel, FeedItem, HomeFeedResponse } from "@/shared/api/types";
@@ -432,22 +428,12 @@ export function useHomeFeedNotificationState(
     silentChannelIds,
   );
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
-  const relayUrl = useCommunities().activeCommunity?.relayUrl;
-  const zapHistory = useZapHistory(normalizedPubkey, relayUrl);
-  const zapFeedItems = React.useMemo(
-    () => zapHistoryFeedItems(zapHistory),
-    [zapHistory],
-  );
-  const inboxItems = React.useMemo(
-    () => [...extraInboxItems, ...zapFeedItems],
-    [extraInboxItems, zapFeedItems],
-  );
   const [seenFeedIds, setSeenFeedIds] = React.useState<string[]>(() =>
     readStoredSeenFeedIds(normalizedPubkey),
   );
   const currentFeedItems = React.useMemo(() => {
-    return buildHomeBadgeFeedItems(feed, inboxItems, localUnreadFeedIds);
-  }, [feed, inboxItems, localUnreadFeedIds]);
+    return buildHomeBadgeFeedItems(feed, extraInboxItems, localUnreadFeedIds);
+  }, [extraInboxItems, feed, localUnreadFeedIds]);
   const currentFeedIds = React.useMemo(
     () => currentFeedItems.map((item) => item.id),
     [currentFeedItems],

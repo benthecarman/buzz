@@ -88,20 +88,16 @@ test.describe("agent definition runtime pricing", () => {
     // Owner-only access cannot take payment: the control explains itself
     // rather than disappearing.
     const paymentToggle = dialog.getByRole("checkbox", {
-      name: "Require payment for runtime",
+      name: "Require payment for agent access",
     });
     await expect(paymentToggle).toBeVisible();
     await expect(paymentToggle).toBeDisabled();
-    await expect(
-      dialog.getByText("Applies to this agent's 1 running instance"),
-    ).toBeVisible();
-
     await dialog.locator("#agent-respond-to").click();
     await page.getByRole("menuitemradio", { name: "Anyone" }).click();
 
     await expect(paymentToggle).toBeEnabled();
     await paymentToggle.check();
-    await dialog.locator("#agent-runtime-price").fill("21");
+    await dialog.locator("#agent-runtime-price").fill("315");
     await dialog.getByRole("button", { name: /^Save/ }).click();
     await expect(dialog).not.toBeVisible({ timeout: 10_000 });
 
@@ -110,10 +106,10 @@ test.describe("agent definition runtime pricing", () => {
     const reopened = await openDefinitionAdvanced(page);
     await expect(reopened.locator("#agent-respond-to")).toContainText("Anyone");
     const reopenedToggle = reopened.getByRole("checkbox", {
-      name: "Require payment for runtime",
+      name: "Require payment for agent access",
     });
     await expect(reopenedToggle).toBeChecked();
-    await expect(reopened.locator("#agent-runtime-price")).toHaveValue("21");
+    await expect(reopened.locator("#agent-runtime-price")).toHaveValue("315");
 
     // Turning it off clears the instance's rate.
     await reopenedToggle.uncheck();
@@ -122,7 +118,9 @@ test.describe("agent definition runtime pricing", () => {
 
     const cleared = await openDefinitionAdvanced(page);
     await expect(
-      cleared.getByRole("checkbox", { name: "Require payment for runtime" }),
+      cleared.getByRole("checkbox", {
+        name: "Require payment for agent access",
+      }),
     ).not.toBeChecked();
     await expect(cleared.locator("#agent-runtime-price")).toHaveCount(0);
   });
@@ -148,14 +146,13 @@ test.describe("agent definition runtime pricing", () => {
     const dialog = await openDefinitionAdvanced(page);
 
     await expect(
-      dialog.getByRole("checkbox", { name: "Require payment for runtime" }),
+      dialog.getByRole("checkbox", {
+        name: "Require payment for agent access",
+      }),
     ).toBeDisabled();
     await expect(
       dialog.getByText(
-        "Start this agent in a community before setting a rate",
-        {
-          exact: false,
-        },
+        "Set Who can send instructions to Anyone or Selected people to let others pay to invoke this agent.",
       ),
     ).toBeVisible();
   });
@@ -193,16 +190,16 @@ test.describe("agent definition runtime pricing", () => {
     // answers an allowlist — so it can be charged without changing its access.
     await expect(dialog.locator("#agent-respond-to")).toContainText("Only me");
     const paymentToggle = dialog.getByRole("checkbox", {
-      name: "Require payment for runtime",
+      name: "Require payment for agent access",
     });
     await expect(paymentToggle).toBeEnabled();
     await paymentToggle.check();
-    await dialog.locator("#agent-runtime-price").fill("7");
+    await dialog.locator("#agent-runtime-price").fill("105");
     await dialog.getByRole("button", { name: /^Save/ }).click();
     await expect(dialog).not.toBeVisible({ timeout: 10_000 });
 
     const reopened = await openDefinitionAdvanced(page);
-    await expect(reopened.locator("#agent-runtime-price")).toHaveValue("7");
+    await expect(reopened.locator("#agent-runtime-price")).toHaveValue("105");
     // The instance keeps the access it had; only the rate changed.
     await expect(reopened.locator("#agent-respond-to")).toContainText(
       "Only me",

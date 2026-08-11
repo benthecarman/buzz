@@ -65,9 +65,6 @@ export const KIND_MANAGED_AGENT = 30177;
 export const KIND_USER_STATUS = 30315;
 export const KIND_AGENT_OBSERVER_FRAME = 24200;
 export const KIND_AGENT_TURN_METRIC = 44200;
-export const KIND_AGENT_RUNTIME_DEPOSIT = 44210;
-export const KIND_AGENT_RUNTIME_RESERVATION = 44211;
-export const KIND_AGENT_RUNTIME_SETTLEMENT = 44212;
 export const KIND_EVENT_REMINDER = 30300;
 export const KIND_REPO_ANNOUNCEMENT = 30617;
 export const KIND_REPO_STATE = 30618;
@@ -159,6 +156,7 @@ export const CHANNEL_TIMELINE_CONTENT_KINDS = [
 // created channel carries one channel_created + N member_joined system rows
 // that would otherwise show as phantom unreads ("4 unread, 1 message").
 const NON_CONVERSATIONAL_UNREAD_KINDS: ReadonlySet<number> = new Set([
+  KIND_BOLT12_ZAP, // 9736 — runtime payment rows
   KIND_SYSTEM_MESSAGE, // 40099
   KIND_JOB_REQUEST, // 43001
   KIND_JOB_ACCEPTED, // 43002

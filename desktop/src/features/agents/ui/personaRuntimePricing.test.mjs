@@ -9,6 +9,10 @@ import {
   personaRuntimePricingUpdates,
   pricingAppliesToInstances,
 } from "./personaRuntimePricing.ts";
+import {
+  runtimePriceToAccessPrice,
+  validatedInvocationPrice,
+} from "./PaidRuntimeField.tsx";
 
 // ── Definition-dialog pricing projection ────────────────────────────────────
 //
@@ -20,6 +24,12 @@ import {
 
 const ALICE = "a".repeat(64);
 const BOB = "b".repeat(64);
+
+test("access prices map exactly to protocol prices", () => {
+  assert.equal(runtimePriceToAccessPrice(255), 255);
+  assert.equal(validatedInvocationPrice(255), 255);
+  assert.equal(validatedInvocationPrice(250), 250);
+});
 
 function instance(overrides) {
   return {
@@ -46,10 +56,10 @@ test("live instances are scoped to the edited definition", () => {
   assert.deepEqual(personaLiveInstances([mine, theirs], undefined), []);
 });
 
-test("unpriced instances leave the control off", () => {
+test("unpriced instances use the default session price", () => {
   assert.deepEqual(derivePersonaRuntimePricing([instance({})]), {
     enabled: false,
-    price: "",
+    price: "255",
     mixed: false,
   });
 });
@@ -112,25 +122,25 @@ test("an already-external instance keeps its own access", () => {
       }),
     ],
     enabled: true,
-    price: "21",
+    price: "315",
     respondTo: "owner-only",
     respondToAllowlist: [],
   });
 
-  assert.deepEqual(updates, [{ pubkey: "a", pricePerMinuteSats: 21 }]);
+  assert.deepEqual(updates, [{ pubkey: "a", pricePerMinuteSats: 315 }]);
 });
 
 test("enabling a rate carries the access the rate needs", () => {
   const updates = personaRuntimePricingUpdates({
     instances: [instance({ pubkey: "a" })],
     enabled: true,
-    price: "21",
+    price: "315",
     respondTo: "anyone",
     respondToAllowlist: [],
   });
 
   assert.deepEqual(updates, [
-    { pubkey: "a", pricePerMinuteSats: 21, respondTo: "anyone" },
+    { pubkey: "a", pricePerMinuteSats: 315, respondTo: "anyone" },
   ]);
 });
 
@@ -138,7 +148,7 @@ test("allowlist mode carries the allowlist with the rate", () => {
   const updates = personaRuntimePricingUpdates({
     instances: [instance({ pubkey: "a" })],
     enabled: true,
-    price: "21",
+    price: "315",
     respondTo: "allowlist",
     respondToAllowlist: [ALICE, BOB],
   });
@@ -146,7 +156,7 @@ test("allowlist mode carries the allowlist with the rate", () => {
   assert.deepEqual(updates, [
     {
       pubkey: "a",
-      pricePerMinuteSats: 21,
+      pricePerMinuteSats: 315,
       respondTo: "allowlist",
       respondToAllowlist: [ALICE, BOB],
     },
@@ -156,16 +166,16 @@ test("allowlist mode carries the allowlist with the rate", () => {
 test("an instance already in the requested state is not written", () => {
   const updates = personaRuntimePricingUpdates({
     instances: [
-      instance({ pubkey: "a", respondTo: "anyone", pricePerMinuteSats: 21 }),
+      instance({ pubkey: "a", respondTo: "anyone", pricePerMinuteSats: 315 }),
       instance({ pubkey: "b", respondTo: "anyone", pricePerMinuteSats: 15 }),
     ],
     enabled: true,
-    price: "21",
+    price: "315",
     respondTo: "anyone",
     respondToAllowlist: [],
   });
 
-  assert.deepEqual(updates, [{ pubkey: "b", pricePerMinuteSats: 21 }]);
+  assert.deepEqual(updates, [{ pubkey: "b", pricePerMinuteSats: 315 }]);
 });
 
 test("repricing an external instance never rewrites its allowlist", () => {
@@ -179,19 +189,19 @@ test("repricing an external instance never rewrites its allowlist", () => {
       }),
     ],
     enabled: true,
-    price: "21",
+    price: "315",
     respondTo: "allowlist",
     respondToAllowlist: [BOB],
   });
 
-  assert.deepEqual(updates, [{ pubkey: "a", pricePerMinuteSats: 21 }]);
+  assert.deepEqual(updates, [{ pubkey: "a", pricePerMinuteSats: 315 }]);
 });
 
 test("lifting to allowlist without a pubkey writes nothing", () => {
   const updates = personaRuntimePricingUpdates({
     instances: [instance({ pubkey: "a" })],
     enabled: true,
-    price: "21",
+    price: "315",
     respondTo: "allowlist",
     respondToAllowlist: [],
   });
@@ -206,7 +216,7 @@ test("clearing the rate touches only priced instances and leaves access alone", 
       instance({ pubkey: "b", respondTo: "anyone" }),
     ],
     enabled: false,
-    price: "21",
+    price: "315",
     respondTo: "owner-only",
     respondToAllowlist: [],
   });
@@ -216,7 +226,7 @@ test("clearing the rate touches only priced instances and leaves access alone", 
 
 test("a rate the backend would reject produces no writes", () => {
   for (const [respondTo, price] of [
-    ["owner-only", "21"],
+    ["owner-only", "315"],
     ["anyone", "0"],
     ["anyone", "-5"],
     ["anyone", "1.5"],

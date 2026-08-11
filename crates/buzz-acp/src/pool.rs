@@ -494,27 +494,6 @@ pub enum PromptOutcome {
     /// `CancelReason` on the batch (steer/interrupt requeue, explicit cancel
     /// drops) rather than the hard-cap's unconditional dead-letter.
     CancelDrainTimeout(Duration),
-    /// A paid caller consumed the full reserved runtime cap.
-    BudgetExhausted,
-}
-
-async fn finish_paid_runtime(
-    meter: &mut Option<crate::paid_runtime::PaidRuntimeMeter>,
-    outcome: buzz_core::agent_runtime_payment::RuntimeOutcome,
-) {
-    if let Some(active) = meter.take() {
-        if let Err(error) = active.finish(outcome).await {
-            tracing::error!(error = %error, "publish paid runtime settlement");
-        }
-    }
-}
-
-fn pause_paid_runtime(meter: &mut Option<crate::paid_runtime::PaidRuntimeMeter>) {
-    if let Some(active) = meter.take() {
-        if let Err(error) = active.pause() {
-            tracing::error!(error = %error, "checkpoint paid runtime retry boundary");
-        }
-    }
 }
 
 /// Immutable config subset shared (via `Arc`) by all spawned prompt tasks.
@@ -2193,42 +2172,6 @@ pub async fn run_prompt_task(
         }),
     );
 
-    // Reservation lookup and any zero-usage settlement for additional batched
-    // instructions happen before billing. Queueing, context, session creation,
-    // and this preparation are intentionally free.
-    let paid_binding = if let Some(batch) = batch.as_ref() {
-        let events = batch
-            .events
-            .iter()
-            .map(|entry| entry.event.clone())
-            .collect::<Vec<_>>();
-        match crate::paid_runtime::PaidRuntimeMeter::prepare(
-            &ctx.agent_keys,
-            &ctx.rest_client,
-            &events,
-        )
-        .await
-        {
-            Ok(binding) => binding,
-            Err(error) => {
-                tracing::error!(error = %error, "prepare paid runtime reservation");
-                send_prompt_result(
-                    &result_tx,
-                    &turn_id,
-                    agent,
-                    source,
-                    PromptOutcome::Error(AcpError::Protocol(
-                        "paid runtime reservation could not be prepared".into(),
-                    )),
-                    None,
-                );
-                return;
-            }
-        }
-    } else {
-        None
-    };
-
     // Turn start, labelled exactly as `log_stop_reason` labels the end, so a
     // log reads as start/stop pairs. Purely observational: an unpaired start is
     // the only durable evidence that a turn was entered and never returned, and
@@ -2241,88 +2184,21 @@ pub async fn run_prompt_task(
         prompt_label(&source)
     );
 
-    // This is the billable boundary: persist the running reservation and start
-    // its monotonic clock immediately before polling `session/prompt`.
-    let mut paid_meter = match paid_binding {
-        Some(binding) => match crate::paid_runtime::PaidRuntimeMeter::start(
-            ctx.agent_keys.clone(),
-            ctx.rest_client.clone(),
-            binding,
-        ) {
-            Ok(meter) => Some(meter),
-            Err(error) => {
-                tracing::error!(error = %error, "start paid runtime meter");
-                send_prompt_result(
-                    &result_tx,
-                    &turn_id,
-                    agent,
-                    source,
-                    PromptOutcome::Error(AcpError::Protocol(
-                        "paid runtime meter could not start".into(),
-                    )),
-                    None,
-                );
-                return;
-            }
-        },
-        None => None,
-    };
-    let paid_deadline = paid_meter.as_ref().map(|meter| meter.remaining());
-    let paid_budget_batch = batch.clone();
-    if paid_deadline == Some(Duration::ZERO) {
-        finish_paid_runtime(
-            &mut paid_meter,
-            buzz_core::agent_runtime_payment::RuntimeOutcome::BudgetExhausted,
-        )
-        .await;
-        send_prompt_result(
-            &result_tx,
-            &turn_id,
-            agent,
-            source,
-            PromptOutcome::BudgetExhausted,
-            paid_budget_batch,
-        );
-        return;
-    }
-
     // When control_rx is Some (channel tasks), wrap the prompt in select! so
     // the main loop can cancel, interrupt, or rotate it. Heartbeats
     // (control_rx=None) take the simple await path — they are not controllable.
     //
     let prompt_result = match control_rx {
         None => {
-            // Heartbeat / non-cancellable path.
-            tokio::select! {
-                biased;
-                result = agent.acp.session_prompt_blocks_with_idle_timeout(
+            agent
+                .acp
+                .session_prompt_blocks_with_idle_timeout(
                     &session_id,
                     &prompt_blocks,
                     ctx.idle_timeout,
                     ctx.max_turn_duration,
-                ) => result,
-                _ = tokio::time::sleep(paid_deadline.unwrap_or(Duration::from_secs(31_536_000))), if paid_deadline.is_some() => {
-                    let _ = agent
-                        .acp
-                        .cancel_with_cleanup_grace(&session_id, CONTROL_CANCEL_GRACE)
-                        .await;
-                    agent.state.invalidate(&source);
-                    finish_paid_runtime(
-                        &mut paid_meter,
-                        buzz_core::agent_runtime_payment::RuntimeOutcome::BudgetExhausted,
-                    )
-                    .await;
-                    send_prompt_result(
-                        &result_tx,
-                        &turn_id,
-                        agent,
-                        source,
-                        PromptOutcome::BudgetExhausted,
-                        paid_budget_batch.clone(),
-                    );
-                    return;
-                },
-            }
+                )
+                .await
         }
         Some(rx) => {
             tokio::select! {
@@ -2333,32 +2209,6 @@ pub async fn run_prompt_task(
                     ctx.idle_timeout,
                     ctx.max_turn_duration,
                 ) => result,
-                _ = tokio::time::sleep(paid_deadline.unwrap_or(Duration::from_secs(31_536_000))), if paid_deadline.is_some() => {
-                    let stopped = agent
-                        .acp
-                        .cancel_with_cleanup_grace(&session_id, CONTROL_CANCEL_GRACE)
-                        .await
-                        .is_ok();
-                    if stopped {
-                        agent.state.invalidate(&source);
-                    } else {
-                        agent.state.invalidate_all();
-                    }
-                    finish_paid_runtime(
-                        &mut paid_meter,
-                        buzz_core::agent_runtime_payment::RuntimeOutcome::BudgetExhausted,
-                    )
-                    .await;
-                    send_prompt_result(
-                        &result_tx,
-                        &turn_id,
-                        agent,
-                        source,
-                        PromptOutcome::BudgetExhausted,
-                        paid_budget_batch.clone(),
-                    );
-                    return;
-                },
                 mode = rx => {
                     let control_signal = mode.unwrap_or(ControlSignal::Cancel);
                     // Land the model switch before any cancel/requeue work: setting
@@ -2392,11 +2242,6 @@ pub async fn run_prompt_task(
                                     &session_id,
                                     &turn_id,
                                     Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
-                                )
-                                .await;
-                                finish_paid_runtime(
-                                    &mut paid_meter,
-                                    buzz_core::agent_runtime_payment::RuntimeOutcome::Cancelled,
                                 )
                                 .await;
                                 send_prompt_result(
@@ -2433,11 +2278,6 @@ pub async fn run_prompt_task(
                                     &session_id,
                                     &turn_id,
                                     Some(buzz_core::agent_turn_metric::StopReason::Error),
-                                )
-                                .await;
-                                finish_paid_runtime(
-                                    &mut paid_meter,
-                                    buzz_core::agent_runtime_payment::RuntimeOutcome::Cancelled,
                                 )
                                 .await;
                                 send_prompt_result(
@@ -2501,11 +2341,6 @@ pub async fn run_prompt_task(
                             &session_id,
                             &turn_id,
                             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
-                        )
-                        .await;
-                        finish_paid_runtime(
-                            &mut paid_meter,
-                            buzz_core::agent_runtime_payment::RuntimeOutcome::Completed,
                         )
                         .await;
                         send_prompt_result(
@@ -2582,12 +2417,6 @@ pub async fn run_prompt_task(
             )
             .await;
 
-            finish_paid_runtime(
-                &mut paid_meter,
-                buzz_core::agent_runtime_payment::RuntimeOutcome::Completed,
-            )
-            .await;
-
             send_prompt_result(
                 &result_tx,
                 &turn_id,
@@ -2610,7 +2439,6 @@ pub async fn run_prompt_task(
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
             )
             .await;
-            pause_paid_runtime(&mut paid_meter);
             send_prompt_result(
                 &result_tx,
                 &turn_id,
@@ -2643,7 +2471,6 @@ pub async fn run_prompt_task(
                         Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
                     )
                     .await;
-                    pause_paid_runtime(&mut paid_meter);
                     // Timeout triggers respawn in handle_prompt_result —
                     // session state will be discarded with the old agent.
                     send_prompt_result(
@@ -2672,7 +2499,6 @@ pub async fn run_prompt_task(
                         Some(buzz_core::agent_turn_metric::StopReason::Error),
                     )
                     .await;
-                    pause_paid_runtime(&mut paid_meter);
                     send_prompt_result(
                         &result_tx,
                         &turn_id,
@@ -2698,7 +2524,6 @@ pub async fn run_prompt_task(
                         Some(buzz_core::agent_turn_metric::StopReason::Error),
                     )
                     .await;
-                    pause_paid_runtime(&mut paid_meter);
                     send_prompt_result(
                         &result_tx,
                         &turn_id,
@@ -2728,11 +2553,6 @@ pub async fn run_prompt_task(
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
             )
             .await;
-            finish_paid_runtime(
-                &mut paid_meter,
-                buzz_core::agent_runtime_payment::RuntimeOutcome::Timeout,
-            )
-            .await;
             send_prompt_result(
                 &result_tx,
                 &turn_id,
@@ -2760,7 +2580,6 @@ pub async fn run_prompt_task(
                 Some(buzz_core::agent_turn_metric::StopReason::Error),
             )
             .await;
-            pause_paid_runtime(&mut paid_meter);
             send_prompt_result(
                 &result_tx,
                 &turn_id,
@@ -6750,7 +6569,6 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             PromptOutcome::CancelDrainTimeout(_) => "CancelDrainTimeout",
             PromptOutcome::Error(_) => "Error",
             PromptOutcome::Cancelled => "Cancelled",
-            PromptOutcome::BudgetExhausted => "BudgetExhausted",
             PromptOutcome::Ok(_) => "Ok",
         };
         assert_eq!(

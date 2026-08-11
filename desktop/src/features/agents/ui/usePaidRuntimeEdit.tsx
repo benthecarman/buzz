@@ -2,8 +2,10 @@ import * as React from "react";
 import type { ManagedAgent, RespondToMode } from "@/shared/api/types";
 import { useFeatureEnabled } from "@/shared/features/useFeatureEnabled";
 import {
-  MAX_RUNTIME_PRICE_PER_MINUTE_SATS,
+  DEFAULT_INVOCATION_PRICE_SATS,
   PaidRuntimeField,
+  runtimePriceToAccessPrice,
+  validatedInvocationPrice,
 } from "./PaidRuntimeField";
 
 export function usePaidRuntimeEdit(
@@ -19,23 +21,29 @@ export function usePaidRuntimeEdit(
     agent.pricePerMinuteSats != null,
   );
   const [price, setPrice] = React.useState(
-    agent.pricePerMinuteSats?.toString() ?? "",
+    (agent.pricePerMinuteSats == null
+      ? null
+      : runtimePriceToAccessPrice(agent.pricePerMinuteSats).toString()) ??
+      DEFAULT_INVOCATION_PRICE_SATS.toString(),
   );
   React.useEffect(() => {
     setEnabled(agent.pricePerMinuteSats != null);
-    setPrice(agent.pricePerMinuteSats?.toString() ?? "");
+    setPrice(
+      (agent.pricePerMinuteSats == null
+        ? null
+        : runtimePriceToAccessPrice(agent.pricePerMinuteSats).toString()) ??
+        DEFAULT_INVOCATION_PRICE_SATS.toString(),
+    );
   }, [agent.pricePerMinuteSats]);
 
   const supportsPaidRuntime =
     respondTo === "allowlist" || respondTo === "anyone";
   const numericPrice = Number(price);
+  const ratePerMinute = validatedInvocationPrice(numericPrice);
   const valid =
     !walletEnabled ||
     !enabled ||
-    (supportsPaidRuntime &&
-      Number.isSafeInteger(numericPrice) &&
-      numericPrice > 0 &&
-      numericPrice <= MAX_RUNTIME_PRICE_PER_MINUTE_SATS);
+    (supportsPaidRuntime && ratePerMinute !== null);
   const update = !walletEnabled
     ? undefined
     : !supportsPaidRuntime
@@ -43,8 +51,8 @@ export function usePaidRuntimeEdit(
         ? undefined
         : null
       : enabled
-        ? numericPrice !== agent.pricePerMinuteSats
-          ? numericPrice
+        ? ratePerMinute !== agent.pricePerMinuteSats
+          ? ratePerMinute
           : undefined
         : agent.pricePerMinuteSats == null
           ? undefined

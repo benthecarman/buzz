@@ -59,12 +59,13 @@ payer signature. During the temporary compatibility period, the exact
 `placeholder` marker is valid for the same UI surfaces and totals.
 
 Zap consumption is relay-driven. Message badges, history, notifications, and
-agent-runtime deposits use only validated kind `9736` events and their embedded
-signed data. They do not read balances, transaction history, inbound payments,
-or provider-scoped offers. The zap flow contacts the wallet provider only to
-dispatch an outgoing payment or reconcile an outgoing payment whose result is
-still unknown. Proof publication and replay use the persisted payment attempt
-and the relay, without another wallet lookup.
+paid Agent access use validated kind `9736` events and their embedded signed
+data. Paid Agent access targets the exact kind `10101` pricing event. The zap
+opens a fixed invocation window; it does not create a credit balance or a
+runtime ledger. The zap flow contacts the wallet provider only to send a
+payment or reconcile a payment whose result is unknown. Proof publication and
+replay use the saved payment attempt and the relay. They do not need another
+wallet lookup.
 
 ## Units
 

@@ -2,24 +2,17 @@ import { invokeTauri } from "@/shared/api/tauri";
 import type { AgentRuntimeStatus } from "./runtimeContract";
 
 export {
-  AGENT_RUNTIME_CAPS_MINUTES,
-  agentRuntimePackChargeSats,
-  agentRuntimePackRequired,
-  claimableReservation,
-  runtimeReservationMessageTag,
-  spendableMs,
+  activeAccessZap,
+  runtimeZapMessageTag,
 } from "./runtimeContract";
 export type {
-  AgentRuntimeCapMinutes,
-  AgentRuntimeOpenReservation,
+  AgentRuntimeAccessZap,
   AgentRuntimePricingTerms,
   AgentRuntimeStatus,
 } from "./runtimeContract";
 
 /**
- * Everything the checkout needs about one (agent, channel) scope, read from
- * durable state alone. This is the whole payer protocol: there is nothing to
- * ask the Agent, only state to observe.
+ * Read the current price and a valid access zap for one Agent and channel.
  */
 export function getAgentRuntimeStatus(input: {
   agentPubkey: string;

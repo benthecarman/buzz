@@ -633,6 +633,8 @@ type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 pub struct HarnessRelay {
     /// Receiver for events forwarded by the background task.
     event_rx: mpsc::Receiver<Option<BuzzEvent>>,
+    /// Accepted paid instructions recovered from relay history at startup.
+    replay_events: VecDeque<BuzzEvent>,
     /// Receiver for encrypted observer control events addressed to this agent.
     observer_control_rx: Option<mpsc::Receiver<Event>>,
     /// Sender for commands to the background task.
@@ -733,6 +735,7 @@ impl HarnessRelay {
 
         Ok(Self {
             event_rx,
+            replay_events: VecDeque::new(),
             observer_control_rx: Some(observer_control_rx),
             cmd_tx,
             http: reqwest::Client::builder()
@@ -908,8 +911,16 @@ impl HarnessRelay {
     /// Reads from the background task's event channel. Returns `None` on
     /// connection loss — the caller should call [`reconnect`](Self::reconnect).
     pub async fn next_event(&mut self) -> Option<BuzzEvent> {
+        if let Some(event) = self.replay_events.pop_front() {
+            return Some(event);
+        }
         // The background task sends `None` to signal connection loss.
         self.event_rx.recv().await.flatten()
+    }
+
+    /// Put recovered relay events through the normal admission and queue path.
+    pub fn replay_events(&mut self, events: impl IntoIterator<Item = BuzzEvent>) {
+        self.replay_events.extend(events);
     }
 
     /// Publish a signed event to the relay via the background WebSocket task.

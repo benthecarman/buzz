@@ -1,9 +1,5 @@
 import * as React from "react";
 
-import type { FeedItem } from "@/shared/api/types";
-import { KIND_BOLT12_ZAP } from "@/shared/constants/kinds";
-import { formatBitcoin } from "./formatBitcoin";
-
 export type ZapHistoryItem = {
   amount: number;
   comment: string;
@@ -164,27 +160,4 @@ export function useZapHistory(
   }, [normalizedOwner, normalizedRelay]);
 
   return items;
-}
-
-export function zapHistoryFeedItems(
-  items: readonly ZapHistoryItem[],
-): FeedItem[] {
-  return items.map((item) => ({
-    id: item.eventId,
-    kind: KIND_BOLT12_ZAP,
-    pubkey: item.payerPubkey,
-    content: item.comment.trim()
-      ? `${formatBitcoin(item.amount)} · ${item.comment.trim()}`
-      : `${formatBitcoin(item.amount)} received by ${item.recipientName}`,
-    createdAt: item.createdAt,
-    channelId: null,
-    channelName: "",
-    tags: [
-      ["p", item.recipientPubkey],
-      ["amount", String(item.amount * 1_000)],
-      ["buzz_recipient_name", item.recipientName],
-      ...(item.targetEventId ? [["e", item.targetEventId]] : []),
-    ],
-    category: "activity",
-  }));
 }

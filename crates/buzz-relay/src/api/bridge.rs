@@ -3669,22 +3669,6 @@ mod tests {
     /// Kind 13534 is rejected in ingest_event before signature verification,
     /// so any properly signed Nostr event of this kind triggers the arm.
     ///
-    /// The bridge's ephemeral branch is keyed on the kind range, so the
-    /// ledger kinds must stay on the storage side of that split: a deposit,
-    /// reservation, or settlement routed to the fan-out path would vanish
-    /// instead of becoming durable money state.
-    #[test]
-    fn ledger_kinds_stay_on_the_storage_side_of_the_split() {
-        use buzz_core::kind::{
-            is_ephemeral, KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_RESERVATION,
-            KIND_AGENT_RUNTIME_SETTLEMENT,
-        };
-
-        assert!(!is_ephemeral(KIND_AGENT_RUNTIME_DEPOSIT));
-        assert!(!is_ephemeral(KIND_AGENT_RUNTIME_RESERVATION));
-        assert!(!is_ephemeral(KIND_AGENT_RUNTIME_SETTLEMENT));
-    }
-
     /// Discriminating: if the `reject_with_transport` call in bridge.rs's
     /// IngestError::Rejected match arm is removed, this test fails.
     #[test]

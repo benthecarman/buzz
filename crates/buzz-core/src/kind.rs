@@ -223,27 +223,6 @@ pub const P_GATED_KINDS: &[u32] = &[
     KIND_AGENT_RUNTIME_SETTLEMENT,
 ];
 
-/// Paid-runtime ledger kinds, whose readers are the ledger's two parties.
-///
-/// A subset of [`P_GATED_KINDS`] with one added allowance: the **author** may
-/// read them as well as the `#p` counterparty. Every entry is agent-authored
-/// and NIP-44 encrypted to the payer, and the two parties need opposite
-/// filters to replay the same ledger — the payer reads by `#p=[self]`, while
-/// the agent enumerates what it wrote by `authors=[self]`, because `#p` names
-/// each payer, including ones it has never served. Without the author
-/// allowance an agent cannot settle its own expired reservations, and a priced
-/// agent fails to start.
-///
-/// Reading back one's own signed, counterparty-encrypted events discloses
-/// nothing the author did not write, which is why the allowance is safe here
-/// and not for [`KIND_GIFT_WRAP`] (ephemeral authors) or
-/// [`KIND_DM_VISIBILITY`] (relay-signed).
-pub const AGENT_RUNTIME_LEDGER_KINDS: &[u32] = &[
-    KIND_AGENT_RUNTIME_DEPOSIT,
-    KIND_AGENT_RUNTIME_RESERVATION,
-    KIND_AGENT_RUNTIME_SETTLEMENT,
-];
-
 /// NIP-AP: Agent Persona (parameterized replaceable, owner-authored).
 ///
 /// Persona definition event published by the workspace owner. Addressed by
@@ -624,11 +603,11 @@ pub const KIND_MEMBER_REMOVED_NOTIFICATION: u32 = 44101;
 /// See `docs/nips/NIP-AM.md`.
 pub const KIND_AGENT_TURN_METRIC: u32 = 44200;
 
-/// Buzz Agent Runtime Payments: settled runtime-credit deposit.
+/// Retired paid-runtime credit deposit. Kept for historical event reads.
 pub const KIND_AGENT_RUNTIME_DEPOSIT: u32 = 44210;
-/// Buzz Agent Runtime Payments: payer-bound runtime reservation.
+/// Retired paid-runtime reservation. Kept for historical event reads.
 pub const KIND_AGENT_RUNTIME_RESERVATION: u32 = 44211;
-/// Buzz Agent Runtime Payments: final metered usage settlement.
+/// Retired paid-runtime settlement. Kept for historical event reads.
 pub const KIND_AGENT_RUNTIME_SETTLEMENT: u32 = 44212;
 
 // Forum / social (45000–45999)
@@ -819,9 +798,6 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
     KIND_AGENT_TURN_METRIC,
-    KIND_AGENT_RUNTIME_DEPOSIT,
-    KIND_AGENT_RUNTIME_RESERVATION,
-    KIND_AGENT_RUNTIME_SETTLEMENT,
     KIND_WORKFLOW_DEF,
     KIND_LONG_FORM,
     KIND_USER_STATUS,
