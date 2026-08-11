@@ -38,7 +38,6 @@ use crate::{
 
 const LEDGER_PAGE_SIZE: usize = 250;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
-const MAX_RESERVATION_REQUESTS_PER_WINDOW: usize = 60;
 const MAX_PAID_INVOCATIONS_PER_WINDOW: usize = 30;
 const MAX_RATE_LIMIT_SCOPES: usize = 10_000;
 
@@ -77,7 +76,6 @@ impl SlidingWindowLimiter {
     }
 }
 
-static RESERVATION_REQUEST_LIMITER: OnceLock<Mutex<SlidingWindowLimiter>> = OnceLock::new();
 static PAID_INVOCATION_LIMITER: OnceLock<Mutex<SlidingWindowLimiter>> = OnceLock::new();
 static PROCESS_NONCE: OnceLock<String> = OnceLock::new();
 static ACTIVE_EXECUTION_LEASES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -984,8 +982,11 @@ pub async fn sweep_expired_open_reservations(
     Ok(settled)
 }
 
+/// The persisted link between one reservation and the instruction that
+/// claimed it. Opaque outside this module: callers thread it from
+/// [`PaidRuntimeMeter::prepare`] into [`PaidRuntimeMeter::start`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BoundReservation {
+pub struct BoundReservation {
     reservation_id: String,
     request_id: String,
     instruction_event_id: String,
