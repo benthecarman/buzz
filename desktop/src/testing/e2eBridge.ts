@@ -440,6 +440,10 @@ type E2eConfig = {
     }>;
     /** Result returned by message/profile zap payment commands. */
     walletProfileZapStatus?: "completed" | "failed" | "pending";
+    /** Successive message/profile zap results for reconciliation tests. */
+    walletProfileZapStatuses?: ("completed" | "failed" | "pending")[];
+    /** Successive zap command errors; null entries let that call continue. */
+    walletProfileZapErrors?: ({ code: string; message: string } | null)[];
     /** Delay a message/profile zap result so optimistic UI can be asserted. */
     walletProfileZapDelayMs?: number;
     // NIP-IA gate inputs — see tests/helpers/bridge.ts:MockBridgeOptions for
@@ -12271,6 +12275,8 @@ export function maybeInstallE2eTauriMocks() {
         if (zapDelayMs) {
           await new Promise((resolve) => setTimeout(resolve, zapDelayMs));
         }
+        const zapError = activeConfig?.mock?.walletProfileZapErrors?.shift();
+        if (zapError) throw zapError;
         const recipientPubkey = request?.recipientPubkey ?? BOB_IDENTITY.pubkey;
         const amount = request?.amount ?? 1000;
         const offerEvent = await signedWalletOffer(recipientPubkey);
@@ -12292,24 +12298,30 @@ export function maybeInstallE2eTauriMocks() {
         });
         const settledAtMs = Date.now();
         const status =
-          activeConfig?.mock?.walletProfileZapStatus ?? "completed";
+          activeConfig?.mock?.walletProfileZapStatuses?.shift() ??
+          activeConfig?.mock?.walletProfileZapStatus ??
+          "completed";
+        if (status === "pending") {
+          throw {
+            code: "payment_status_unknown",
+            message: "The payment is still pending",
+          };
+        }
+        if (status === "failed") {
+          throw { code: "payment_failed", message: "Payment failed" };
+        }
         return {
           payment: {
             paymentId: walletPaymentId("fs", intentEvent.id),
-            status,
-            statusMessage:
-              status === "completed"
-                ? "Payment completed"
-                : status === "failed"
-                  ? "Payment failed"
-                  : "Payment pending",
+            status: "completed",
+            statusMessage: "Payment completed",
             amount,
             fees: 1,
             createdAtMs: settledAtMs,
-            finalizedAtMs: status === "pending" ? null : settledAtMs,
+            finalizedAtMs: settledAtMs,
           },
           intentEventId: intentEvent.id,
-          proofPublished: status === "completed",
+          proofPublished: true,
         };
       }
       case "wallet_reveal_recovery_phrase":

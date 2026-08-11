@@ -45,11 +45,10 @@ import { resolveSnapshotSharedBy } from "@/features/messages/lib/snapshotSharedB
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 import type { VideoReviewContext } from "@/shared/ui/VideoPlayer";
 import { VideoReviewCommentMarkdown } from "@/shared/ui/VideoReviewCommentMarkdown";
-import { MessageActionBar } from "./MessageActionBar";
+import { MessageActionBar, type OptimisticZap } from "./MessageActionBar";
 import { editMessage } from "@/shared/api/tauri";
 import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelineMessages";
 import { toast } from "sonner";
-import type { PendingZapDisplay } from "@/features/wallet/ui/SendBitcoinDialog";
 import { MessageAgentOwner } from "./MessageAgentOwner";
 import {
   MessageAuthorText,
@@ -63,10 +62,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 const DiffMessage = React.lazy(() => import("./DiffMessage"));
 const DiffMessageExpanded = React.lazy(() => import("./DiffMessageExpanded"));
-
-type OptimisticMessageZap = PendingZapDisplay & {
-  baselineIntentEventIds: readonly string[];
-};
 
 export type ThreadDepthGuideAction = {
   active?: boolean;
@@ -203,31 +198,15 @@ export const MessageRow = React.memo(
       null,
     );
     const [optimisticZap, setOptimisticZap] =
-      React.useState<OptimisticMessageZap | null>(null);
-    const handlePendingZapChange = React.useCallback(
-      (next: PendingZapDisplay | null) => {
-        if (!next) {
-          setOptimisticZap(null);
-          return;
-        }
-        setOptimisticZap((current) => ({
-          ...next,
-          baselineIntentEventIds:
-            current?.idempotencyKey === next.idempotencyKey
-              ? current.baselineIntentEventIds
-              : (message.zaps?.map((zap) => zap.intentEventId) ?? []),
-        }));
-      },
-      [message.zaps],
+      React.useState<OptimisticZap | null>(null);
+    const handleOptimisticZapChange = React.useCallback(
+      (next: OptimisticZap | null) => setOptimisticZap(next),
+      [],
     );
     const optimisticProofArrived = Boolean(
-      optimisticZap &&
-        message.zaps?.some((zap) =>
-          optimisticZap.intentEventId
-            ? zap.intentEventId === optimisticZap.intentEventId
-            : !optimisticZap.baselineIntentEventIds.includes(
-                zap.intentEventId,
-              ) && zap.amount === optimisticZap.amount,
+      optimisticZap?.intentEventId &&
+        message.zaps?.some(
+          (zap) => zap.intentEventId === optimisticZap.intentEventId,
         ),
     );
     React.useEffect(() => {
@@ -600,7 +579,7 @@ export const MessageRow = React.memo(
           onFollowThread={onFollowThread}
           onMarkUnread={onMarkUnread}
           onMarkRead={onMarkRead}
-          onPendingZapChange={handlePendingZapChange}
+          onOptimisticZapChange={handleOptimisticZapChange}
           onReactionBadgeBurstRequest={
             reactionPending ? undefined : setBadgeBurstEmoji
           }
@@ -617,6 +596,7 @@ export const MessageRow = React.memo(
           onUnfollowThread={onUnfollowThread}
           reactionErrorMessage={reactionErrorMessage}
           reactions={reactions}
+          zapDisabled={Boolean(optimisticZap) && !optimisticProofArrived}
         />
       </div>
     );
@@ -706,7 +686,7 @@ export const MessageRow = React.memo(
           messageId={message.id}
           reactions={reactions}
           zaps={message.zaps}
-          pendingZapAmount={
+          optimisticZapAmount={
             optimisticProofArrived ? null : optimisticZap?.amount
           }
           canToggle={canToggleReactions}

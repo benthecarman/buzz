@@ -204,7 +204,7 @@ test("shows an app-wide toast for an incoming wallet payment", async ({
   await expect(toast).toContainText("₿ 2,100");
 });
 
-test("message zap omits comments and appears while payment is pending", async ({
+test("message zap sends ₿50 optimistically without progress chrome", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -212,7 +212,7 @@ test("message zap omits comments and appears while payment is pending", async ({
   });
   await installMockBridge(page, {
     walletProfileZapDelayMs: 1_000,
-    walletProfileZapStatus: "pending",
+    walletProfileZapStatus: "completed",
   });
   await page.goto("/");
   await page.getByTestId("channel-general").click();
@@ -251,35 +251,267 @@ test("message zap omits comments and appears while payment is pending", async ({
     { messageId: message.id, reactorPubkey: TEST_IDENTITIES.alice.pubkey },
   );
 
-  const zapAction = page.getByTestId(`zap-message-${message.id}`);
+  const messageRow = page.locator(`[data-message-id="${message.id}"]`);
+  const zapAction = messageRow.getByTestId(`zap-message-${message.id}`);
+  await messageRow.hover();
   await expect(zapAction).toBeVisible();
-  await zapAction.click({ force: true });
-  const dialog = page.getByTestId("send-bitcoin-dialog");
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByLabel("Comment")).toHaveCount(0);
+  await expect(zapAction).toHaveAccessibleName("Zap ₿50");
+  await zapAction.hover();
+  await expect(page.getByRole("tooltip", { name: "Zap ₿50" })).toBeVisible();
+  await zapAction.click();
+  await expect(page.getByTestId("send-bitcoin-dialog")).toHaveCount(0);
 
-  await dialog.getByLabel("Amount").fill("21");
-  await dialog.getByRole("button", { exact: true, name: "Send" }).click();
-  await expect(dialog).toHaveCount(0);
-
-  const pendingZap = page.getByTestId("message-zap").filter({ hasText: "21" });
+  const optimisticZap = messageRow.getByTestId("message-zap");
   const ordinaryReaction = page.getByRole("button", {
     name: "Toggle 👍 reaction",
   });
-  await expect(pendingZap).toBeVisible();
+  await expect(optimisticZap).toBeVisible();
+  await expect(optimisticZap).toContainText("50");
+  await expect(optimisticZap).toHaveAccessibleName("₿50 across 1 zap");
+  await expect(optimisticZap.locator(".animate-spin")).toHaveCount(0);
+  await expect(optimisticZap).not.toHaveClass(/\bborder-dashed\b/);
   await expect(ordinaryReaction).toBeVisible();
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await expect(pendingZap).toHaveAttribute("aria-label", /payment pending/);
-  await expect(pendingZap).toHaveClass(/\bborder-border\/70\b/);
-  await expect(pendingZap).toHaveClass(/\bbg-muted\/70\b/);
-  await expect(pendingZap).toHaveClass(/\btext-foreground\/90\b/);
-  await expect(pendingZap).not.toHaveClass(/\bborder-blue-200\b/);
-  await expect(pendingZap).not.toHaveClass(/\bbg-white\b/);
+  await expect(optimisticZap).toHaveClass(/\bborder-border\/70\b/);
+  await expect(optimisticZap).toHaveClass(/\bbg-muted\/70\b/);
+  await expect(optimisticZap).toHaveClass(/\btext-foreground\/90\b/);
+  await expect(optimisticZap).not.toHaveClass(/\bborder-blue-200\b/);
+  await expect(optimisticZap).not.toHaveClass(/\bbg-white\b/);
   const [zapBorderColor, reactionBorderColor] = await Promise.all(
-    [pendingZap, ordinaryReaction].map((locator) =>
+    [optimisticZap, ordinaryReaction].map((locator) =>
       locator.evaluate((element) => getComputedStyle(element).borderTopColor),
     ),
   );
   expect(zapBorderColor).toBe(reactionBorderColor);
-  expect(await renderedTextContrast(pendingZap)).toBeGreaterThanOrEqual(4.5);
+  expect(await renderedTextContrast(optimisticZap)).toBeGreaterThanOrEqual(4.5);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMAND_PAYLOADS__?.some(
+            (candidate) => candidate.command === "wallet_send_profile_zap",
+          ) ?? false,
+      ),
+    )
+    .toBe(true);
+  const request = await page.evaluate(() => {
+    return (
+      window.__BUZZ_E2E_COMMAND_PAYLOADS__?.find(
+        (candidate) => candidate.command === "wallet_send_profile_zap",
+      )?.payload ?? null
+    );
+  });
+  expect(request).toEqual({
+    request: {
+      amount: 50,
+      comment: null,
+      idempotencyKey: expect.any(String),
+      recipientPubkey: TEST_IDENTITIES.bob.pubkey,
+      targetEventId: message.id,
+      targetEventKind: 9,
+    },
+  });
+
+  await expect(zapAction).toBeDisabled();
+  await page.waitForTimeout(1_100);
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
+});
+
+test("split-pane message copies share one in-flight zap", async ({ page }) => {
+  await installMockBridge(page, {
+    walletProfileZapDelayMs: 1_000,
+    walletProfileZapStatus: "completed",
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: "general",
+          }) ?? false,
+      ),
+    )
+    .toBe(true);
+  const message = await page.evaluate((bobPubkey) => {
+    const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+    if (!emit) return null;
+    const root = emit({
+      channelName: "general",
+      content: "Zap this split-pane message",
+      id: "d7".repeat(32),
+      pubkey: bobPubkey,
+    });
+    emit({
+      channelName: "general",
+      content: "Open the thread copy",
+      parentEventId: root.id,
+      pubkey: bobPubkey,
+    });
+    return root;
+  }, TEST_IDENTITIES.bob.pubkey);
+  if (!message) {
+    throw new Error("Mock message emitter is not installed");
+  }
+
+  const timelineRow = page
+    .getByTestId("message-timeline")
+    .locator(`[data-message-id="${message.id}"]`);
+  await timelineRow.hover();
+  await timelineRow.getByRole("button", { name: "Reply" }).click();
+  await expect(page.getByTestId("message-thread-panel")).toBeVisible();
+
+  const zapActions = page.getByTestId(`zap-message-${message.id}`);
+  await expect(zapActions).toHaveCount(2);
+  await Promise.all([
+    zapActions.nth(0).click({ force: true }),
+    zapActions.nth(1).click({ force: true }),
+  ]);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? []).filter(
+            (candidate) => candidate.command === "wallet_send_profile_zap",
+          ).length,
+      ),
+    )
+    .toBe(1);
+  await page.waitForTimeout(1_100);
+  const requests = await page.evaluate(() =>
+    (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [])
+      .filter((candidate) => candidate.command === "wallet_send_profile_zap")
+      .map((candidate) => candidate.payload),
+  );
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toEqual({
+    request: {
+      amount: 50,
+      comment: null,
+      idempotencyKey: expect.any(String),
+      recipientPubkey: TEST_IDENTITIES.bob.pubkey,
+      targetEventId: message.id,
+      targetEventKind: 9,
+    },
+  });
+});
+
+test("message zap rolls back and shows a toast when payment fails", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    walletProfileZapDelayMs: 500,
+    walletProfileZapStatus: "failed",
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: "general",
+          }) ?? false,
+      ),
+    )
+    .toBe(true);
+  const message = await page.evaluate((bobPubkey) => {
+    return window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "general",
+      content: "Roll back this failed zap",
+      id: "d5".repeat(32),
+      pubkey: bobPubkey,
+    });
+  }, TEST_IDENTITIES.bob.pubkey);
+  if (!message) {
+    throw new Error("Mock message emitter is not installed");
+  }
+
+  const messageRow = page.locator(`[data-message-id="${message.id}"]`);
+  const zapAction = messageRow.getByTestId(`zap-message-${message.id}`);
+  await zapAction.click({ force: true });
+  await expect(messageRow.getByTestId("message-zap")).toContainText("50");
+
+  await expect(
+    page.locator("[data-sonner-toast]").filter({ hasText: "Payment failed" }),
+  ).toBeVisible();
+  await expect(messageRow.getByTestId("message-zap")).toHaveCount(0);
+  await expect(zapAction).toBeEnabled();
+});
+
+test("message zap survives a provider outage before pending payment fails", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    walletProfileZapStatuses: ["pending", "failed"],
+    walletProfileZapErrors: [
+      null,
+      { code: "provider_error", message: "Provider temporarily unavailable" },
+      null,
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: "general",
+          }) ?? false,
+      ),
+    )
+    .toBe(true);
+  const message = await page.evaluate((bobPubkey) => {
+    return window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "general",
+      content: "Reconcile this pending zap",
+      id: "d6".repeat(32),
+      pubkey: bobPubkey,
+    });
+  }, TEST_IDENTITIES.bob.pubkey);
+  if (!message) {
+    throw new Error("Mock message emitter is not installed");
+  }
+
+  const messageRow = page.locator(`[data-message-id="${message.id}"]`);
+  const zapAction = messageRow.getByTestId(`zap-message-${message.id}`);
+  await zapAction.click({ force: true });
+  await expect(messageRow.getByTestId("message-zap")).toContainText("50");
+  await expect(zapAction).toBeDisabled();
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? []).filter(
+            (candidate) => candidate.command === "wallet_send_profile_zap",
+          ).length,
+      ),
+    )
+    .toBe(2);
+  await expect(messageRow.getByTestId("message-zap")).toContainText("50");
+  await expect(zapAction).toBeDisabled();
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
+
+  await expect(
+    page.locator("[data-sonner-toast]").filter({ hasText: "Payment failed" }),
+  ).toBeVisible();
+  await expect(messageRow.getByTestId("message-zap")).toHaveCount(0);
+  await expect(zapAction).toBeEnabled();
+
+  const requests = await page.evaluate(() =>
+    (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [])
+      .filter((candidate) => candidate.command === "wallet_send_profile_zap")
+      .map((candidate) => candidate.payload),
+  );
+  expect(requests).toHaveLength(3);
+  expect(requests.slice(1)).toEqual([requests[0], requests[0]]);
 });

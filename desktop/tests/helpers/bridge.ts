@@ -379,6 +379,10 @@ type MockBridgeOptions = {
     requestId: string;
   }>;
   walletProfileZapStatus?: "completed" | "failed" | "pending";
+  /** Successive message/profile zap results for reconciliation tests. */
+  walletProfileZapStatuses?: ("completed" | "failed" | "pending")[];
+  /** Successive zap command errors; null entries let that call continue. */
+  walletProfileZapErrors?: ({ code: string; message: string } | null)[];
   /** Delay a message/profile zap result so optimistic UI can be asserted. */
   walletProfileZapDelayMs?: number;
   /**

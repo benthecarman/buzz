@@ -22,11 +22,9 @@ import { useCustomEmoji } from "@/features/custom-emoji/hooks";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { ReportMessageDialog } from "@/features/moderation/ui/ReportMessageDialog";
 import bitcoinIconUrl from "@/features/profile/assets/bitcoin.svg?inline";
+import { getPendingProfileZap, sendProfileZap } from "@/features/wallet/api";
 import { useBitcoinCompileEnabled } from "@/features/wallet/hooks";
-import {
-  SendBitcoinDialog,
-  type PendingZapDisplay,
-} from "@/features/wallet/ui/SendBitcoinDialog";
+import { walletCommandError } from "@/features/wallet/lib/walletError";
 import { MessageModerationMenuItems } from "@/features/moderation/ui/MessageModerationMenuItems";
 import type {
   TimelineMessage,
@@ -60,6 +58,16 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 const ACTION_BUTTON_CLASS = "h-8 w-8 rounded-full p-0";
 const ACTION_ICON_CLASS = "!h-4 !w-4";
+const MESSAGE_ZAP_AMOUNT = 50;
+const MESSAGE_ZAP_RECONCILE_INITIAL_MS = 1_000;
+const MESSAGE_ZAP_RECONCILE_MAX_MS = 15_000;
+const activeMessageZapClaims = new Map<string, string>();
+
+export type OptimisticZap = {
+  amount: number;
+  idempotencyKey: string;
+  intentEventId?: string;
+};
 
 function MoreActionsMenu({
   channelId,
@@ -377,7 +385,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onFollowThread,
   onMarkUnread,
   onMarkRead,
-  onPendingZapChange,
+  onOptimisticZapChange,
   onReactionBadgeBurstRequest,
   onReactionSelect,
   onRemindLater,
@@ -386,6 +394,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onUnfollowThread,
   reactionErrorMessage = null,
   reactions,
+  zapDisabled = false,
   isFollowingThread,
   isUnread,
 }: {
@@ -398,7 +407,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onFollowThread?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
-  onPendingZapChange?: (pending: PendingZapDisplay | null) => void;
+  onOptimisticZapChange?: (zap: OptimisticZap | null) => void;
   onReactionBadgeBurstRequest?: (emoji: string) => void;
   onReactionSelect?: (emoji: string) => Promise<void>;
   onRemindLater?: (message: TimelineMessage) => void;
@@ -407,6 +416,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onUnfollowThread?: (message: TimelineMessage) => void;
   reactionErrorMessage?: string | null;
   reactions: TimelineReaction[];
+  zapDisabled?: boolean;
   isFollowingThread?: boolean;
   /** Current read state of the clicked message, from the same predicate the
    *  unread badge uses. Drives the single mark-read/unread toggle label. */
@@ -414,7 +424,9 @@ export const MessageActionBar = React.memo(function MessageActionBar({
 }) {
   const [isReactionPickerOpen, setIsReactionPickerOpen] = React.useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = React.useState(false);
-  const [isZapDialogOpen, setIsZapDialogOpen] = React.useState(false);
+  const zapAttemptGenerationRef = React.useRef(0);
+  const zapInFlightRef = React.useRef(false);
+  const wasZapDisabledRef = React.useRef(zapDisabled);
   const customEmoji = useCustomEmoji();
   const bitcoinEnabled = useFeatureEnabled("bitcoin");
   const bitcoinCompiled = useBitcoinCompileEnabled();
@@ -454,6 +466,22 @@ export const MessageActionBar = React.memo(function MessageActionBar({
     Boolean(onSendToChannel) ||
     !message.pending;
 
+  React.useEffect(() => {
+    if (wasZapDisabledRef.current && !zapDisabled) {
+      zapAttemptGenerationRef.current += 1;
+      zapInFlightRef.current = false;
+    }
+    wasZapDisabledRef.current = zapDisabled;
+  }, [zapDisabled]);
+
+  React.useEffect(
+    () => () => {
+      zapAttemptGenerationRef.current += 1;
+      zapInFlightRef.current = false;
+    },
+    [],
+  );
+
   const wouldAddReaction = React.useCallback(
     (emoji: string) =>
       !reactions.some(
@@ -484,6 +512,125 @@ export const MessageActionBar = React.memo(function MessageActionBar({
     },
     [onReactionBadgeBurstRequest, onReactionSelect, wouldAddReaction],
   );
+  const handleMessageZap = React.useCallback(() => {
+    if (
+      zapDisabled ||
+      zapInFlightRef.current ||
+      !message.pubkey ||
+      message.kind === undefined
+    ) {
+      return;
+    }
+
+    const recipientPubkey = message.pubkey;
+    const targetEventKind = message.kind;
+    if (activeMessageZapClaims.has(message.id)) return;
+    const idempotencyKey = crypto.randomUUID();
+    activeMessageZapClaims.set(message.id, idempotencyKey);
+    const optimisticZap: OptimisticZap = {
+      amount: MESSAGE_ZAP_AMOUNT,
+      idempotencyKey,
+    };
+    const attemptGeneration = ++zapAttemptGenerationRef.current;
+    const isCurrentAttempt = () =>
+      zapAttemptGenerationRef.current === attemptGeneration;
+    zapInFlightRef.current = true;
+    onOptimisticZapChange?.(optimisticZap);
+
+    void (async () => {
+      let submittedZap = optimisticZap;
+      let reconcileDelayMs = MESSAGE_ZAP_RECONCILE_INITIAL_MS;
+      let reconcilingPersistedAttempt = false;
+      try {
+        const pendingZap = await getPendingProfileZap(
+          recipientPubkey,
+          message.id,
+        );
+        if (!isCurrentAttempt()) return;
+        reconcilingPersistedAttempt = Boolean(pendingZap);
+        const request = pendingZap ?? {
+          recipientPubkey,
+          amount: MESSAGE_ZAP_AMOUNT,
+          comment: null,
+          idempotencyKey,
+          targetEventId: message.id,
+          targetEventKind,
+        };
+        if (pendingZap) {
+          submittedZap = {
+            amount: pendingZap.amount,
+            idempotencyKey: pendingZap.idempotencyKey,
+          };
+          onOptimisticZapChange?.(submittedZap);
+        }
+
+        while (isCurrentAttempt()) {
+          try {
+            const result = await sendProfileZap(request);
+            if (!isCurrentAttempt()) return;
+            if (result.payment.status === "failed") {
+              onOptimisticZapChange?.(null);
+              toast.error(
+                result.payment.statusMessage || "The Bitcoin payment failed.",
+              );
+              return;
+            }
+
+            onOptimisticZapChange?.({
+              ...submittedZap,
+              intentEventId: result.intentEventId,
+            });
+            if (result.payment.status === "completed") return;
+            reconcilingPersistedAttempt = true;
+          } catch (error) {
+            if (!isCurrentAttempt()) return;
+            const commandError = walletCommandError(error);
+            if (
+              commandError.code === "payment_status_unknown" ||
+              commandError.code === "relay_publish_failed"
+            ) {
+              reconcilingPersistedAttempt = true;
+            }
+            if (
+              commandError.code === "payment_failed" ||
+              !reconcilingPersistedAttempt
+            ) {
+              onOptimisticZapChange?.(null);
+              toast.error(
+                commandError.message ?? "The Bitcoin payment failed.",
+              );
+              return;
+            }
+          }
+
+          await new Promise((resolve) =>
+            window.setTimeout(resolve, reconcileDelayMs),
+          );
+          reconcileDelayMs = Math.min(
+            reconcileDelayMs * 2,
+            MESSAGE_ZAP_RECONCILE_MAX_MS,
+          );
+        }
+      } catch (error) {
+        if (!isCurrentAttempt()) return;
+        onOptimisticZapChange?.(null);
+        toast.error(
+          walletCommandError(error).message ?? "The Bitcoin payment failed.",
+        );
+      } finally {
+        if (isCurrentAttempt()) zapInFlightRef.current = false;
+        if (activeMessageZapClaims.get(message.id) === idempotencyKey) {
+          activeMessageZapClaims.delete(message.id);
+        }
+      }
+    })();
+  }, [
+    message.id,
+    message.kind,
+    message.pubkey,
+    onOptimisticZapChange,
+    zapDisabled,
+  ]);
 
   if (
     !hasReplyAction &&
@@ -501,7 +648,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
         "opacity-100 sm:pointer-events-none sm:opacity-0",
         "sm:group-hover/message:pointer-events-auto sm:group-hover/message:opacity-100",
         "sm:group-focus-within/message:pointer-events-auto sm:group-focus-within/message:opacity-100",
-        isReactionPickerOpen || isDropdownOpen || isZapDialogOpen
+        isReactionPickerOpen || isDropdownOpen
           ? "sm:pointer-events-auto sm:opacity-100"
           : "",
       )}
@@ -597,10 +744,11 @@ export const MessageActionBar = React.memo(function MessageActionBar({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  aria-label="Zap message"
+                  aria-label="Zap ₿50"
                   className={ACTION_BUTTON_CLASS}
                   data-testid={`zap-message-${message.id}`}
-                  onClick={() => setIsZapDialogOpen(true)}
+                  disabled={zapDisabled}
+                  onClick={handleMessageZap}
                   size="sm"
                   type="button"
                   variant="ghost"
@@ -613,7 +761,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
                   />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Zap</TooltipContent>
+              <TooltipContent>Zap ₿50</TooltipContent>
             </Tooltip>
           ) : null}
 
@@ -637,17 +785,6 @@ export const MessageActionBar = React.memo(function MessageActionBar({
           ) : null}
         </div>
       </div>
-      {hasZapAction ? (
-        <SendBitcoinDialog
-          onOpenChange={setIsZapDialogOpen}
-          onPendingZapChange={onPendingZapChange}
-          open={isZapDialogOpen}
-          recipientName={message.author}
-          recipientPubkey={message.pubkey ?? ""}
-          targetEventId={message.id}
-          targetEventKind={message.kind}
-        />
-      ) : null}
     </div>
   );
 });
