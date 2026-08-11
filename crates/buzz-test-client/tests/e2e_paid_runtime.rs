@@ -16,14 +16,16 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use buzz_acp::config::RespondTo;
-use buzz_acp::paid_runtime::{ensure_open_reservations, PaidRuntimeTerms};
+use buzz_acp::paid_runtime::{
+    bind_instruction, ensure_open_reservations, PaidRuntimeMeter, PaidRuntimeTerms,
+};
 use buzz_acp::relay::RestClient;
 use buzz_core::agent_runtime_payment::{
-    RuntimeDeposit, RuntimePricing, RuntimeReservation, MILLIS_PER_MINUTE, VERSION,
+    RuntimeDeposit, RuntimeOutcome, RuntimePricing, RuntimeReservation, MILLIS_PER_MINUTE, VERSION,
 };
 use buzz_core::kind::{
     KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_PRICING, KIND_AGENT_RUNTIME_RESERVATION,
-    KIND_NIP29_GROUP_MEMBERS, KIND_STREAM_MESSAGE,
+    KIND_AGENT_RUNTIME_SETTLEMENT, KIND_NIP29_GROUP_MEMBERS, KIND_STREAM_MESSAGE,
 };
 use buzz_test_client::BuzzTestClient;
 use nostr::nips::nip44;
@@ -313,7 +315,7 @@ async fn paid_runtime_prepaid_flow_with_mocked_wallet() {
     // The same instruction is idempotent; a different one cannot steal the
     // claimed reservation.
     let replay = payer_ws
-        .send_event(instruction)
+        .send_event(instruction.clone())
         .await
         .expect("replay paid instruction");
     assert!(
@@ -342,4 +344,44 @@ async fn paid_runtime_prepaid_flow_with_mocked_wallet() {
         stolen.message
     );
     payer_ws.disconnect().await.expect("disconnect");
+
+    // Agent-side dispatch: the harness admits the paid instruction exactly
+    // like lib.rs does on receipt — bind the reservation, load the binding
+    // at the prompt boundary, start the meter, and settle the measured use.
+    bind_instruction(&terms, &agent_rest, &instruction, &channel_id)
+        .await
+        .expect("agent admits the paid instruction");
+    let binding =
+        PaidRuntimeMeter::prepare(&agent_keys, &agent_rest, std::slice::from_ref(&instruction))
+            .await
+            .expect("agent loads the bound reservation")
+            .expect("the instruction has a binding");
+    let meter = PaidRuntimeMeter::start(agent_keys.clone(), agent_rest.clone(), binding)
+        .expect("billing starts at the prompt boundary");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let used_ms = meter
+        .finish(RuntimeOutcome::Completed)
+        .await
+        .expect("agent settles the reservation");
+    assert!(
+        used_ms > 0 && used_ms < reservation.cap_ms,
+        "settlement must bill measured runtime, got {used_ms}ms"
+    );
+
+    // The payer sees the terminal settlement in the same ledger read, and
+    // the unused remainder is retained: the next maintenance pass locks it
+    // in a fresh reservation without any new payment.
+    let settlements = query_rows(
+        &payer_rest,
+        Filter::new()
+            .author(agent_keys.public_key())
+            .kind(Kind::Custom(KIND_AGENT_RUNTIME_SETTLEMENT as u16))
+            .custom_tags(p_tag, [payer_hex.as_str()]),
+    )
+    .await;
+    assert_eq!(settlements.len(), 1, "payer must see the settlement");
+    let reminted = ensure_open_reservations(&terms, &agent_rest)
+        .await
+        .expect("remint pass");
+    assert_eq!(reminted, 1, "retained credit is locked again for free");
 }

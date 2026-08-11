@@ -1211,12 +1211,12 @@ fn release_execution_lease(keys: &nostr::Keys, reservation_id: &str, completed: 
 
 /// Validate and durably bind an external instruction to one open reservation.
 pub async fn bind_instruction(
-    config: &Config,
+    terms: &PaidRuntimeTerms,
     rest: &RestClient,
     instruction: &Event,
     channel_id: &str,
 ) -> anyhow::Result<()> {
-    let agent_hex = config.keys.public_key().to_hex();
+    let agent_hex = terms.keys.public_key().to_hex();
     let payer = instruction.pubkey;
     let payer_hex = payer.to_hex();
     check_rate_limit(
@@ -1225,8 +1225,8 @@ pub async fn bind_instruction(
         &instruction.id.to_hex(),
         MAX_PAID_INVOCATIONS_PER_WINDOW,
     )?;
-    if config.price_per_minute_sats.is_none()
-        || !payer_has_paid_access(&config.respond_to, &config.respond_to_allowlist, &payer_hex)
+    if !terms.priced
+        || !payer_has_paid_access(&terms.respond_to, &terms.respond_to_allowlist, &payer_hex)
     {
         return Err(protocol_error("paid runtime is unavailable"));
     }
@@ -1244,7 +1244,7 @@ pub async fn bind_instruction(
         .find(|event| event.id == reservation_event_id)
         .ok_or_else(|| protocol_error("runtime reservation is unavailable"))?;
     reservation_event.verify()?;
-    if reservation_event.pubkey != config.keys.public_key()
+    if reservation_event.pubkey != terms.keys.public_key()
         || exactly_one_tag(&reservation_event, "p")? != payer_hex
         || exactly_one_tag(&reservation_event, "h")? != channel_id
         || exactly_one_tag(&reservation_event, "encryption")? != "nip44_v2"
@@ -1252,7 +1252,7 @@ pub async fn bind_instruction(
         return Err(protocol_error("runtime reservation routing does not match"));
     }
     let reservation: RuntimeReservation =
-        decrypt_agent_event(&config.keys, &reservation_event, &payer)?;
+        decrypt_agent_event(&terms.keys, &reservation_event, &payer)?;
     reservation.validate()?;
     let tagged_expiration = exactly_one_tag(&reservation_event, "expiration")?
         .parse::<u64>()
@@ -1269,10 +1269,10 @@ pub async fn bind_instruction(
             "runtime reservation validity interval does not match its signed terms",
         ));
     }
-    let (ledger, _, _) = replay_ledger(&config.keys, rest, &payer, channel_id).await?;
+    let (ledger, _, _) = replay_ledger(&terms.keys, rest, &payer, channel_id).await?;
     if reservation.must_start_by < now_secs() {
         publish_settlement(
-            &config.keys,
+            &terms.keys,
             rest,
             &BoundReservation {
                 reservation_id,
@@ -1303,9 +1303,9 @@ pub async fn bind_instruction(
         channel_id: channel_id.to_string(),
         cap_ms: reservation.cap_ms,
     };
-    let _created = persist_binding_once(&config.keys, &binding)?;
+    let _created = persist_binding_once(&terms.keys, &binding)?;
     crate::runtime_conformance::record_binding(
-        trace_scope(&config.keys, &binding),
+        trace_scope(&terms.keys, &binding),
         &binding.reservation_id,
         &binding.instruction_event_id,
     );
