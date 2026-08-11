@@ -401,3 +401,65 @@ async fn fetch_pricing_terms(
         rate_sats_per_minute: rate,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both halves of the payer boundary pin this fixture: the web layer's
+    /// `runtimeContract.test.mjs` consumes the identical bytes, so a drift on
+    /// either side of the Tauri IPC fails a test instead of a live checkout.
+    const CONTRACT: &str = include_str!("../../../fixtures/agent-runtime-contract.json");
+
+    #[test]
+    fn status_serialization_matches_the_desktop_contract_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(CONTRACT).unwrap();
+        let status = AgentRuntimeStatusResult {
+            available_ms: 0,
+            credited_ms: 900_000,
+            used_ms: 60_000,
+            open_reservation: Some(AgentRuntimeOpenReservation {
+                reservation_event_json: "{\"kind\":44211}".into(),
+                reservation_event_id: "b".repeat(64),
+                cap_ms: 840_000,
+                must_start_by: 4_102_444_800,
+            }),
+            pricing: Some(AgentRuntimePricingTerms {
+                pricing_event_json: "{\"kind\":10101}".into(),
+                rate_sats_per_minute: 20,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&status).unwrap(),
+            fixture["status"],
+            "agent_runtime_get_status no longer emits the pinned contract"
+        );
+    }
+
+    #[test]
+    fn fixture_invocation_builds_a_paid_message() {
+        let fixture: serde_json::Value = serde_json::from_str(CONTRACT).unwrap();
+        let runtime_tags: Vec<Vec<String>> =
+            serde_json::from_value(fixture["expectedInvocation"]["runtimeTags"].clone()).unwrap();
+        let builder = crate::events::build_message(
+            uuid::Uuid::new_v4(),
+            "run it",
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &runtime_tags,
+            "http://localhost:3000",
+        )
+        .expect("the invocation the web layer derives from the fixture must build");
+        let event = builder.sign_with_keys(&nostr::Keys::generate()).unwrap();
+        for tag in &runtime_tags {
+            assert!(
+                event.tags.iter().any(|t| t.as_slice() == tag.as_slice()),
+                "built event lost the runtime tag"
+            );
+        }
+    }
+}

@@ -3,10 +3,11 @@ import { useRelayAgentsQuery } from "@/features/agents/hooks";
 import { useCommunities } from "@/features/communities/useCommunities";
 import {
   type AgentRuntimeCapMinutes,
-  type AgentRuntimeStatus,
   agentRuntimePackRequired,
+  claimableReservation,
   getAgentRuntimeStatus,
   runtimeReservationMessageTag,
+  spendableMs,
 } from "@/features/agents/runtimePayments";
 import { sendAgentRuntimeZap } from "@/features/wallet/api";
 import { walletCommandError } from "@/features/wallet/lib/walletError";
@@ -197,29 +198,6 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
       rows: checkout?.rows ?? [],
     },
   };
-}
-
-/** A claimable lock: open in the ledger and not past its deadline. */
-function claimableReservation(
-  status: AgentRuntimeStatus,
-): AgentRuntimeStatus["openReservation"] {
-  const reservation = status.openReservation;
-  if (!reservation) return null;
-  return reservation.mustStartBy > Math.floor(Date.now() / 1_000)
-    ? reservation
-    : null;
-}
-
-/**
- * What this scope can spend on one more invocation: free credit plus the cap
- * already locked for it. `availableMs` alone would double-charge a payer
- * whose credit sits inside an open reservation. The dialog and the purchase
- * decision must use this same figure or the price shown is not the price
- * charged.
- */
-function spendableMs(status: AgentRuntimeStatus | undefined): number {
-  if (!status) return 0;
-  return status.availableMs + (claimableReservation(status)?.capMs ?? 0);
 }
 
 async function completeCheckout(
