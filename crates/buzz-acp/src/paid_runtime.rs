@@ -15,12 +15,11 @@ use std::{
 
 use buzz_core::agent_runtime_payment::{
     DepositRecord, ReservationRecord, RuntimeDeposit, RuntimeLedger, RuntimeOutcome,
-    RuntimePricing, RuntimeQuote, RuntimeReservation, RuntimeReservationRequest,
-    RuntimeReservationResponse, RuntimeSettlement, SettlementRecord, VERSION,
+    RuntimeReservation, RuntimeSettlement, SettlementRecord, RESERVATION_VALIDITY_SECS, VERSION,
 };
 use buzz_core::kind::{
-    KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_REQUEST, KIND_AGENT_RUNTIME_RESERVATION,
-    KIND_AGENT_RUNTIME_RESPONSE, KIND_AGENT_RUNTIME_SETTLEMENT, KIND_BOLT12_OFFER,
+    KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_RESERVATION, KIND_AGENT_RUNTIME_SETTLEMENT,
+    KIND_BOLT12_OFFER,
 };
 use lightning::offers::offer::Offer;
 use nostr::{
@@ -30,13 +29,13 @@ use nostr::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::{
     config::{Config, RespondTo},
     relay::RestClient,
 };
 
-const REQUEST_TTL_SECS: u64 = 5 * 60;
 const LEDGER_PAGE_SIZE: usize = 250;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 const MAX_RESERVATION_REQUESTS_PER_WINDOW: usize = 60;
@@ -400,7 +399,7 @@ async fn replay_ledger(
                 let deposit: RuntimeDeposit = serde_json::from_str(&event.content)?;
                 deposit.validate()?;
                 let payment_id = exactly_one_tag(&event, "zap_intent")?.to_string();
-                EventId::from_hex(exactly_one_tag(&event, "quote")?)?;
+                EventId::from_hex(exactly_one_tag(&event, "pricing")?)?;
                 EventId::from_hex(exactly_one_tag(&event, "zap")?)?;
                 EventId::from_hex(&payment_id)?;
                 ledger.apply_deposit(DepositRecord {
@@ -435,7 +434,11 @@ async fn replay_ledger(
                 if exactly_one_tag(&event, "encryption")? != "nip44_v2"
                     || expiration != reservation.must_start_by
                     || event.created_at.as_secs() > expiration
-                    || expiration > event.created_at.as_secs().saturating_add(REQUEST_TTL_SECS)
+                    || expiration
+                        > event
+                            .created_at
+                            .as_secs()
+                            .saturating_add(RESERVATION_VALIDITY_SECS)
                 {
                     return Err(protocol_error(
                         "runtime reservation validity does not match its signed tags",
@@ -560,65 +563,17 @@ fn trace_outcome(
     }
 }
 
-fn signed_encrypted_response(
-    config: &Config,
-    payer: &PublicKey,
-    response: &RuntimeReservationResponse,
-    expires_at: u64,
-) -> anyhow::Result<Event> {
-    response.validate()?;
-    let plaintext = serde_json::to_string(response)?;
-    let ciphertext = nip44::encrypt(config.keys.secret_key(), payer, plaintext, Version::V2)?;
-    Ok(
-        EventBuilder::new(Kind::Custom(KIND_AGENT_RUNTIME_RESPONSE as u16), ciphertext)
-            .tags([
-                Tag::parse(["p", payer.to_hex().as_str()])?,
-                Tag::parse(["expiration", expires_at.to_string().as_str()])?,
-                Tag::parse(["encryption", "nip44_v2"])?,
-            ])
-            .sign_with_keys(&config.keys)?,
-    )
-}
-
-fn reservation_path(config: &Config, request_id: &str) -> PathBuf {
-    runtime_directory(&config.keys).join(format!("reservation-{}.json", hex::encode(request_id)))
-}
-
-fn persist_reservation(config: &Config, request_id: &str, event: &Event) -> anyhow::Result<()> {
-    let path = reservation_path(config, request_id);
-    if create_once(&path, event.as_json().as_bytes())? {
-        return Ok(());
-    }
-    match load_json::<Event>(&path)? {
-        Some(existing) if existing.id == event.id && existing == *event => Ok(()),
-        Some(_) => Err(protocol_error(
-            "request identifier already has a conflicting durable reservation",
-        )),
-        None => Err(protocol_error("durable runtime reservation disappeared")),
-    }
-}
-
-fn validate_persisted_reservation(
-    config: &Config,
-    payer: &PublicKey,
-    request: &RuntimeReservationRequest,
-    event: &Event,
-) -> anyhow::Result<()> {
-    event.verify()?;
-    let reservation: RuntimeReservation = decrypt_agent_event(&config.keys, event, payer)?;
-    let expected_cap = u64::from(request.cap_minutes) * 60_000;
-    if event.pubkey != config.keys.public_key()
-        || event.kind.as_u16() as u32 != KIND_AGENT_RUNTIME_RESERVATION
-        || exactly_one_tag(event, "p")? != payer.to_hex()
-        || exactly_one_tag(event, "h")? != request.channel_id
-        || reservation.request_id != request.request_id
-        || reservation.cap_ms != expected_cap
-    {
-        return Err(protocol_error(
-            "durable reservation does not match the retry request",
-        ));
-    }
-    Ok(())
+/// Durable copy of a mint whose relay submit has not been confirmed.
+///
+/// One file per (payer, channel) scope: if a submit times out ambiguously the
+/// next maintenance pass republishes this exact event instead of minting a
+/// second lock over the same credit. Removed once the ledger replay shows the
+/// event landed, or once its own deadline passes.
+fn pending_mint_path(keys: &nostr::Keys, payer_hex: &str, channel_id: &str) -> PathBuf {
+    runtime_directory(keys).join(format!(
+        "pending-mint-{}.json",
+        hex::encode(format!("{payer_hex}:{channel_id}"))
+    ))
 }
 
 async fn settle_expired_scope_reservations(
@@ -661,6 +616,250 @@ async fn settle_expired_scope_reservations(
 /// Replay every payer/channel scope with an authored reservation and close
 /// expired unconsumed locks. This runs even when pricing is currently off so
 /// retained balances cannot remain stranded behind an abandoned checkout.
+/// The terms the maintenance loop needs to hand out reservations, owned so
+/// the loop does not borrow the whole harness config for the process lifetime.
+pub struct PaidRuntimeTerms {
+    pub keys: nostr::Keys,
+    pub respond_to: RespondTo,
+    pub respond_to_allowlist: HashSet<String>,
+    /// False when the agent charges nothing, which stops all minting.
+    pub priced: bool,
+}
+
+impl PaidRuntimeTerms {
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            keys: config.keys.clone(),
+            respond_to: config.respond_to.clone(),
+            respond_to_allowlist: config.respond_to_allowlist.clone(),
+            priced: config.price_per_minute_sats.is_some(),
+        }
+    }
+}
+
+/// Keep one claimable reservation open for every funded payer.
+///
+/// The payer buys against the agent's published price and reads its
+/// reservation out of the ledger — there is no request to answer, so the
+/// agent mints ahead of the instruction instead of in response to one. Runs
+/// on the maintenance loop; a scope funded while the agent was offline is
+/// served on the next pass rather than lost.
+///
+/// One open lock per scope. A lock is returned (settled unused) and replaced
+/// on the next pass when it enters the second half of its validity, or when
+/// new credit or a larger purchased pack means a bigger cap should be locked.
+/// Replacement is settle-now, mint-next-pass, keeping every pass idempotent.
+pub async fn ensure_open_reservations(
+    terms: &PaidRuntimeTerms,
+    rest: &RestClient,
+) -> anyhow::Result<u64> {
+    if !terms.priced || kill_switch_active() {
+        return Ok(0);
+    }
+    let keys = &terms.keys;
+    let agent = keys.public_key();
+    // Deposits name every scope that has ever been funded, and carry the pack
+    // size that scope last bought.
+    let events = query_events(
+        rest,
+        nostr::Filter::new()
+            .author(agent)
+            .kind(Kind::Custom(KIND_AGENT_RUNTIME_DEPOSIT as u16)),
+    )
+    .await?;
+    let mut scopes = BTreeMap::<(String, String), (PublicKey, Timestamp, u16)>::new();
+    for event in events {
+        event.verify()?;
+        if event.pubkey != agent {
+            return Err(protocol_error("deposit scan returned another author"));
+        }
+        let payer_hex = exactly_one_tag(&event, "p")?.to_string();
+        let channel_id = exactly_one_tag(&event, "h")?.to_string();
+        let payer = PublicKey::from_hex(&payer_hex)?;
+        let deposit: RuntimeDeposit = serde_json::from_str(&event.content)?;
+        deposit.validate()?;
+        let key = (payer_hex, channel_id);
+        if scopes
+            .get(&key)
+            .is_none_or(|(_, seen, _)| event.created_at >= *seen)
+        {
+            scopes.insert(key, (payer, event.created_at, deposit.pack_minutes));
+        }
+    }
+
+    let mut minted = 0u64;
+    for ((payer_hex, channel_id), (payer, _, pack_minutes)) in scopes {
+        // Access is re-read every pass: a payer who lost it keeps their
+        // credit but stops receiving new locks.
+        if !payer_has_paid_access(&terms.respond_to, &terms.respond_to_allowlist, &payer_hex) {
+            continue;
+        }
+        if maintain_scope_reservation(terms, rest, &payer, &payer_hex, &channel_id, pack_minutes)
+            .await?
+        {
+            minted = minted.saturating_add(1);
+        }
+    }
+    Ok(minted)
+}
+
+/// What one pass should do about a scope's open lock.
+#[derive(Debug, PartialEq, Eq)]
+enum LockAction {
+    /// The open lock is current — nothing to do.
+    Keep,
+    /// Return the open lock; the next pass mints its replacement.
+    Return,
+    /// No open lock — mint one at this cap.
+    Mint(u64),
+}
+
+/// Decide a scope's lock action. Pure so the policy is testable without a
+/// relay: replacement happens in the lock's second half of validity or when
+/// more could be locked than currently is; minting locks the smaller of
+/// available credit and the last purchased pack.
+fn lock_action(
+    open: Option<(u64, u64)>, // (cap_ms, must_start_by)
+    available_ms: u64,
+    pack_ms: u64,
+    now: u64,
+) -> LockAction {
+    match open {
+        Some((cap_ms, must_start_by)) => {
+            let expiring = must_start_by < now.saturating_add(RESERVATION_VALIDITY_SECS / 2);
+            let lockable = available_ms.saturating_add(cap_ms).min(pack_ms);
+            if expiring || lockable > cap_ms {
+                LockAction::Return
+            } else {
+                LockAction::Keep
+            }
+        }
+        None => {
+            let cap = available_ms.min(pack_ms);
+            if cap == 0 {
+                LockAction::Keep
+            } else {
+                LockAction::Mint(cap)
+            }
+        }
+    }
+}
+
+/// Bring one scope to its desired lock state. Returns true when a mint or
+/// republish happened.
+async fn maintain_scope_reservation(
+    terms: &PaidRuntimeTerms,
+    rest: &RestClient,
+    payer: &PublicKey,
+    payer_hex: &str,
+    channel_id: &str,
+    pack_minutes: u16,
+) -> anyhow::Result<bool> {
+    let keys = &terms.keys;
+    let (ledger, _, reservations) = replay_ledger(keys, rest, payer, channel_id).await?;
+    let now = now_secs();
+    let pack_ms = u64::from(pack_minutes).saturating_mul(60_000);
+    let pending_path = pending_mint_path(keys, payer_hex, channel_id);
+
+    let open: Vec<&(Event, RuntimeReservation)> = reservations
+        .iter()
+        .filter(|(event, _)| ledger.reservation_is_open(&event.id.to_hex()))
+        .collect();
+
+    if let Some((event, reservation)) = open.first() {
+        // The pending mint landed — the file has served its purpose.
+        if load_json::<Event>(&pending_path)?.is_some_and(|pending| pending.id == event.id) {
+            let _ = std::fs::remove_file(&pending_path);
+        }
+        let action = lock_action(
+            Some((reservation.cap_ms, reservation.must_start_by)),
+            ledger.available_ms()?,
+            pack_ms,
+            now,
+        );
+        if action != LockAction::Return {
+            return Ok(false);
+        }
+        // Settle-now-mint-next-pass keeps this pass idempotent.
+        let binding = BoundReservation {
+            reservation_id: event.id.to_hex(),
+            request_id: reservation.request_id.clone(),
+            instruction_event_id: String::new(),
+            payer_pubkey: payer_hex.to_string(),
+            channel_id: channel_id.to_string(),
+            cap_ms: reservation.cap_ms,
+        };
+        publish_settlement(
+            keys,
+            rest,
+            &binding,
+            0,
+            RuntimeOutcome::UnusedExpired,
+            false,
+        )
+        .await?;
+        return Ok(false);
+    }
+
+    // An unconfirmed earlier mint is republished verbatim, never doubled.
+    if let Some(pending) = load_json::<Event>(&pending_path)? {
+        let stale = exactly_one_tag(&pending, "expiration")?
+            .parse::<u64>()
+            .map(|deadline| deadline < now)
+            .unwrap_or(true);
+        if stale {
+            let _ = std::fs::remove_file(&pending_path);
+        } else {
+            rest.submit_event(&pending).await?;
+            return Ok(true);
+        }
+    }
+
+    let LockAction::Mint(cap_ms) = lock_action(None, ledger.available_ms()?, pack_ms, now) else {
+        return Ok(false);
+    };
+    // The purchase channel must still be a place the pair may transact.
+    if !channel_allows_purchase(rest, channel_id, payer_hex, &keys.public_key().to_hex()).await? {
+        return Ok(false);
+    }
+
+    let must_start_by = now.saturating_add(RESERVATION_VALIDITY_SECS);
+    let reservation = RuntimeReservation {
+        version: VERSION,
+        request_id: format!("credit:{}", Uuid::new_v4()),
+        cap_ms,
+        must_start_by,
+    };
+    reservation.validate()?;
+    let plaintext = serde_json::to_string(&reservation)?;
+    let ciphertext = nip44::encrypt(keys.secret_key(), payer, plaintext, Version::V2)?;
+    let event = EventBuilder::new(
+        Kind::Custom(KIND_AGENT_RUNTIME_RESERVATION as u16),
+        ciphertext,
+    )
+    .tags([
+        Tag::parse(["p", payer_hex])?,
+        Tag::parse(["h", channel_id])?,
+        Tag::parse(["expiration", must_start_by.to_string().as_str()])?,
+        Tag::parse(["encryption", "nip44_v2"])?,
+    ])
+    .sign_with_keys(keys)?;
+    atomic_write(&pending_path, event.as_json().as_bytes())?;
+    crate::runtime_conformance::record(
+        crate::runtime_conformance::scope_id(&keys.public_key().to_hex(), payer_hex, channel_id),
+        buzz_conformance::paid_agent_runtime::RuntimeTraceAction::RuntimeReserved {
+            reservation_id: crate::runtime_conformance::entity_id(
+                "reservation",
+                &event.id.to_hex(),
+            ),
+            cap_ms,
+        },
+    );
+    rest.submit_event(&event).await?;
+    let _ = std::fs::remove_file(&pending_path);
+    Ok(true)
+}
+
 pub async fn sweep_expired_open_reservations(
     keys: &nostr::Keys,
     rest: &RestClient,
@@ -711,223 +910,6 @@ pub async fn sweep_expired_open_reservations(
         }
     }
     Ok(settled)
-}
-
-async fn process_request(
-    config: &Config,
-    rest: &RestClient,
-    payer: &PublicKey,
-    request: &RuntimeReservationRequest,
-) -> anyhow::Result<RuntimeReservationResponse> {
-    request.validate()?;
-    if kill_switch_active() {
-        return Err(protocol_error("paid runtime is disabled by the operator"));
-    }
-    let payer_hex = payer.to_hex();
-    check_rate_limit(
-        &RESERVATION_REQUEST_LIMITER,
-        &format!("{}:{}", payer_hex, request.channel_id),
-        &request.request_id,
-        MAX_RESERVATION_REQUESTS_PER_WINDOW,
-    )?;
-    if !payer_has_paid_access(&config.respond_to, &config.respond_to_allowlist, &payer_hex) {
-        return Err(protocol_error("payer is unavailable"));
-    }
-    let rate = config
-        .price_per_minute_sats
-        .ok_or_else(|| protocol_error("runtime pricing is unavailable"))?;
-    let pricing = RuntimePricing::enabled(rate)?;
-    pricing.validate()?;
-    if !channel_allows_purchase(
-        rest,
-        &request.channel_id,
-        &payer_hex,
-        &config.keys.public_key().to_hex(),
-    )
-    .await?
-    {
-        return Err(protocol_error("purchase channel is unavailable"));
-    }
-    let offer_event = latest_offer(rest, config.keys.public_key()).await?;
-    if let Some(persisted) = load_json::<Event>(&reservation_path(config, &request.request_id))? {
-        validate_persisted_reservation(config, payer, request, &persisted)?;
-        rest.submit_event(&persisted).await?;
-    }
-    let (mut ledger, mut reservations, all_reservations) =
-        replay_ledger(&config.keys, rest, payer, &request.channel_id).await?;
-    if settle_expired_scope_reservations(
-        &config.keys,
-        rest,
-        payer,
-        &request.channel_id,
-        &ledger,
-        &all_reservations,
-    )
-    .await?
-    {
-        (ledger, reservations, _) =
-            replay_ledger(&config.keys, rest, payer, &request.channel_id).await?;
-    }
-    if let Some((event, existing)) = reservations.get(&request.request_id) {
-        let expected_cap = u64::from(request.cap_minutes) * 60_000;
-        if existing.cap_ms != expected_cap {
-            return Err(protocol_error(
-                "request identifier conflicts with an existing cap",
-            ));
-        }
-        if !ledger.reservation_is_open(&event.id.to_hex()) {
-            return Err(protocol_error(
-                "request identifier belongs to a closed reservation",
-            ));
-        }
-        crate::runtime_conformance::record(
-            crate::runtime_conformance::scope_id(
-                &config.keys.public_key().to_hex(),
-                &payer_hex,
-                &request.channel_id,
-            ),
-            buzz_conformance::paid_agent_runtime::RuntimeTraceAction::DuplicateReused {
-                entity_id: crate::runtime_conformance::entity_id("reservation", &event.id.to_hex()),
-            },
-        );
-        return Ok(RuntimeReservationResponse::Reserved {
-            version: VERSION,
-            request_id: request.request_id.clone(),
-            reservation_event: serde_json::to_value(event)?,
-        });
-    }
-
-    let cap_ms = u64::from(request.cap_minutes) * 60_000;
-    if ledger.available_ms()? >= cap_ms {
-        let expires_at = now_secs().saturating_add(REQUEST_TTL_SECS);
-        let reservation = RuntimeReservation {
-            version: VERSION,
-            request_id: request.request_id.clone(),
-            cap_ms,
-            must_start_by: expires_at,
-        };
-        reservation.validate()?;
-        let plaintext = serde_json::to_string(&reservation)?;
-        let ciphertext = nip44::encrypt(config.keys.secret_key(), payer, plaintext, Version::V2)?;
-        let event = EventBuilder::new(
-            Kind::Custom(KIND_AGENT_RUNTIME_RESERVATION as u16),
-            ciphertext,
-        )
-        .tags([
-            Tag::parse(["p", payer_hex.as_str()])?,
-            Tag::parse(["h", request.channel_id.as_str()])?,
-            Tag::parse(["expiration", expires_at.to_string().as_str()])?,
-            Tag::parse(["encryption", "nip44_v2"])?,
-        ])
-        .sign_with_keys(&config.keys)?;
-        ledger.apply_reservation(ReservationRecord {
-            reservation_id: event.id.to_hex(),
-            cap_ms,
-        })?;
-        persist_reservation(config, &request.request_id, &event)?;
-        crate::runtime_conformance::record(
-            crate::runtime_conformance::scope_id(
-                &config.keys.public_key().to_hex(),
-                &payer_hex,
-                &request.channel_id,
-            ),
-            buzz_conformance::paid_agent_runtime::RuntimeTraceAction::RuntimeReserved {
-                reservation_id: crate::runtime_conformance::entity_id(
-                    "reservation",
-                    &event.id.to_hex(),
-                ),
-                cap_ms,
-            },
-        );
-        rest.submit_event(&event).await?;
-        return Ok(RuntimeReservationResponse::Reserved {
-            version: VERSION,
-            request_id: request.request_id.clone(),
-            reservation_event: serde_json::to_value(event)?,
-        });
-    }
-
-    let expires_at = now_secs().saturating_add(REQUEST_TTL_SECS);
-    let amount_sats = rate
-        .checked_mul(u64::from(request.cap_minutes))
-        .ok_or_else(|| protocol_error("runtime quote amount overflow"))?;
-    crate::runtime_conformance::record(
-        crate::runtime_conformance::scope_id(
-            &config.keys.public_key().to_hex(),
-            &payer_hex,
-            &request.channel_id,
-        ),
-        buzz_conformance::paid_agent_runtime::RuntimeTraceAction::QuoteRequested {
-            allowlisted: true,
-            non_dm: true,
-            same_community: true,
-        },
-    );
-    Ok(RuntimeReservationResponse::PaymentRequired {
-        quote: RuntimeQuote {
-            version: VERSION,
-            request_id: request.request_id.clone(),
-            agent_pubkey: config.keys.public_key().to_hex(),
-            payer_pubkey: payer_hex,
-            channel_id: request.channel_id.clone(),
-            cap_minutes: request.cap_minutes,
-            pack_minutes: request.cap_minutes,
-            price_per_minute_sats: rate,
-            amount_sats,
-            offer_event: serde_json::to_value(offer_event)?,
-            expires_at,
-        },
-    })
-}
-
-/// Validate an encrypted request and publish a generic unavailable, quote, or reservation response.
-pub async fn handle_request(config: &Config, rest: &RestClient, event: Event) {
-    if event.kind.as_u16() as u32 != KIND_AGENT_RUNTIME_REQUEST
-        || event.verify().is_err()
-        || exactly_one_tag(&event, "p").ok() != Some(config.keys.public_key().to_hex().as_str())
-    {
-        return;
-    }
-    let payer = event.pubkey;
-    let expiration = exactly_one_tag(&event, "expiration")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok());
-    if expiration.is_none_or(|value| value < now_secs() || value > now_secs() + REQUEST_TTL_SECS) {
-        return;
-    }
-    let request = nip44::decrypt(config.keys.secret_key(), &payer, &event.content)
-        .ok()
-        .and_then(|plaintext| serde_json::from_str::<RuntimeReservationRequest>(&plaintext).ok());
-    let Some(request) = request else {
-        return;
-    };
-    let response_expires = now_secs().saturating_add(REQUEST_TTL_SECS);
-    let response = match process_request(config, rest, &payer, &request).await {
-        Ok(response) => response,
-        Err(error) => {
-            tracing::warn!(error = %error, "paid runtime reservation unavailable");
-            crate::runtime_conformance::record(
-                crate::runtime_conformance::scope_id(
-                    &config.keys.public_key().to_hex(),
-                    &payer.to_hex(),
-                    &request.channel_id,
-                ),
-                buzz_conformance::paid_agent_runtime::RuntimeTraceAction::InvocationRejected,
-            );
-            RuntimeReservationResponse::Unavailable {
-                version: VERSION,
-                request_id: request.request_id.clone(),
-            }
-        }
-    };
-    match signed_encrypted_response(config, &payer, &response, response_expires) {
-        Ok(response_event) => {
-            if let Err(error) = rest.submit_event(&response_event).await {
-                tracing::warn!(error = %error, "publish paid runtime response");
-            }
-        }
-        Err(error) => tracing::warn!(error = %error, "sign paid runtime response"),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1208,7 +1190,7 @@ pub async fn bind_instruction(
             > reservation_event
                 .created_at
                 .as_secs()
-                .saturating_add(REQUEST_TTL_SECS)
+                .saturating_add(RESERVATION_VALIDITY_SECS)
     {
         return Err(protocol_error(
             "runtime reservation validity interval does not match its signed terms",
@@ -1970,5 +1952,60 @@ mod tests {
         assert!(!create_once(&path, b"second").expect("duplicate create"));
         assert_eq!(std::fs::read(&path).expect("read winner"), b"first");
         std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+}
+
+#[cfg(test)]
+mod lock_policy_tests {
+    use super::*;
+
+    const PACK: u64 = 15 * 60_000;
+    const NOW: u64 = 1_000_000_000;
+
+    /// A fresh lock over the full balance stays put.
+    #[test]
+    fn current_full_lock_is_kept() {
+        let far = NOW + RESERVATION_VALIDITY_SECS - 60;
+        assert_eq!(
+            lock_action(Some((PACK, far)), 0, PACK, NOW),
+            LockAction::Keep
+        );
+    }
+
+    /// New credit behind an existing lock forces a replacement, so a payer
+    /// who topped up is never stuck at yesterday's cap.
+    #[test]
+    fn extra_credit_returns_the_lock() {
+        let far = NOW + RESERVATION_VALIDITY_SECS - 60;
+        assert_eq!(
+            lock_action(Some((PACK / 3, far)), PACK, PACK, NOW),
+            LockAction::Return
+        );
+    }
+
+    /// A lock in the second half of its validity is refreshed even when the
+    /// cap is right, so a claimable lock always outlives a payer's absence.
+    #[test]
+    fn aging_lock_is_returned() {
+        let aging = NOW + RESERVATION_VALIDITY_SECS / 2 - 1;
+        assert_eq!(
+            lock_action(Some((PACK, aging)), 0, PACK, NOW),
+            LockAction::Return
+        );
+    }
+
+    /// Fractional retained credit mints a fractional cap — the state the
+    /// pack-SKU validation used to make unrepresentable.
+    #[test]
+    fn fractional_credit_mints_a_fractional_cap() {
+        assert_eq!(
+            lock_action(None, 744_000, PACK, NOW),
+            LockAction::Mint(744_000)
+        );
+        assert_eq!(lock_action(None, 0, PACK, NOW), LockAction::Keep);
+        assert_eq!(
+            lock_action(None, PACK * 4, PACK, NOW),
+            LockAction::Mint(PACK)
+        );
     }
 }

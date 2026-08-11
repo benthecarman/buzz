@@ -322,7 +322,7 @@ fn signed_intent_with_runtime_quote(
     comment: &str,
     target_event_id: Option<&str>,
     target_event_kind: Option<u32>,
-    runtime_quote_event_json: Option<&str>,
+    runtime_purchase_json: Option<&str>,
 ) -> Result<Event, WalletError> {
     if target_event_id.is_some() != target_event_kind.is_some() {
         return Err(WalletError::new(
@@ -355,8 +355,8 @@ fn signed_intent_with_runtime_quote(
         tags.push(tag(["e", event_id])?);
         tags.push(tag(["k", event_kind.as_str()])?);
     }
-    if let Some(quote_event_json) = runtime_quote_event_json {
-        tags.push(tag(["agent_runtime_quote", quote_event_json])?);
+    if let Some(purchase_json) = runtime_purchase_json {
+        tags.push(tag(["agent_runtime_purchase", purchase_json])?);
     }
     let intent = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), comment)
         .tags(tags)
@@ -424,9 +424,14 @@ pub struct ZapAttempt {
     /// Exact payer-signed, unbroadcast kind `9737` intent.
     pub intent_event_json: String,
     pub intent_event_id: String,
-    /// Exact signed kind-24211 quote for an agent-runtime purchase.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_quote_event_json: Option<String>,
+    /// Serialized `RuntimePurchase` embedded in the intent. The alias loads
+    /// pre-rename persisted attempts without a version bump.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "runtime_quote_event_json"
+    )]
+    pub runtime_purchase_json: Option<String>,
     /// Intent reference sent in the BOLT12 payer note for reconciliation.
     pub payer_note: String,
     /// Relay where the recipient offer was resolved and the proof belongs.
@@ -477,12 +482,12 @@ impl ZapAttempt {
         )
     }
 
-    /// Prepare a runtime-zap attempt whose intent embeds the exact signed quote.
+    /// Prepare a runtime-zap attempt whose intent embeds the purchase terms.
     pub fn prepare_agent_runtime(
         idempotency_key: String,
         recipient: WalletRecipientOffer,
         amount: u64,
-        quote_event_json: String,
+        purchase_json: String,
         keys: &Keys,
     ) -> Result<Self, WalletError> {
         Self::prepare_inner(
@@ -491,7 +496,7 @@ impl ZapAttempt {
             amount,
             None,
             None,
-            Some(quote_event_json),
+            Some(purchase_json),
             keys,
         )
     }
@@ -502,7 +507,7 @@ impl ZapAttempt {
         amount: u64,
         comment: Option<String>,
         target: Option<(String, u32)>,
-        runtime_quote_event_json: Option<String>,
+        runtime_purchase_json: Option<String>,
         keys: &Keys,
     ) -> Result<Self, WalletError> {
         let comment = comment
@@ -515,7 +520,7 @@ impl ZapAttempt {
             comment.as_deref().unwrap_or_default(),
             target.as_ref().map(|(id, _)| id.as_str()),
             target.as_ref().map(|(_, kind)| *kind),
-            runtime_quote_event_json.as_deref(),
+            runtime_purchase_json.as_deref(),
         )?;
         let intent_event_id = intent.id.to_hex();
         let (target_event_id, target_event_kind) = target
@@ -532,7 +537,7 @@ impl ZapAttempt {
             offer: recipient.offer,
             offer_event_json: recipient.offer_event_json,
             intent_event_json: intent.as_json(),
-            runtime_quote_event_json,
+            runtime_purchase_json,
             payer_note: format!("nostr:nipB1:{intent_event_id}"),
             intent_event_id,
             relay_url: None,

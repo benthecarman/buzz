@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
 use buzz_core_pkg::{
-    agent_runtime_payment::{RuntimeDeposit, RuntimeQuote, RuntimeReservationResponse, VERSION},
-    kind::{KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_RESPONSE, KIND_BOLT12_ZAP},
+    agent_runtime_payment::{RuntimeDeposit, RuntimePricing, RuntimePurchase, VERSION},
+    kind::{KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_PRICING, KIND_BOLT12_ZAP},
 };
-use nostr::{nips::nip44, Event, EventBuilder, JsonUtil, Kind, Tag};
+use nostr::{Event, EventBuilder, JsonUtil, Kind, Tag};
 use tauri::{AppHandle, State};
 
 use super::{
@@ -187,50 +187,23 @@ async fn reconcile_agent_runtime_deposits(
             if recipient_offer(&offer_event, &agent.pubkey).is_err() {
                 continue;
             }
-            let Some(quote_event_json) = exact_tag(&intent, "agent_runtime_quote") else {
+            let Some(purchase_json) = exact_tag(&intent, "agent_runtime_purchase") else {
                 continue;
             };
-            let Ok(quote_event) = Event::from_json(quote_event_json) else {
+            // The purchase pins the exact agent-signed pricing the payer paid
+            // against, so attestation needs no live party and no relay fetch.
+            // A pinned rate is honored even if the agent has since repriced:
+            // the agent's own signature advertised it, and there is no refund
+            // path — crediting at the signed rate is the bounded-harm choice.
+            let Ok(purchase) = validate_agent_runtime_purchase(purchase_json, &agent.pubkey) else {
                 continue;
             };
-            if quote_event.verify().is_err()
-                || quote_event.kind != Kind::Custom(KIND_AGENT_RUNTIME_RESPONSE as u16)
-                || quote_event.pubkey != agent_keys.public_key()
-                || exact_tag(&quote_event, "p") != Some(intent.pubkey.to_hex().as_str())
-            {
-                continue;
-            }
-            let Ok(plaintext) = nip44::decrypt(
-                agent_keys.secret_key(),
-                &intent.pubkey,
-                &quote_event.content,
-            ) else {
+            let Ok(pricing_event) = Event::from_json(purchase.pricing_event.to_string()) else {
                 continue;
             };
-            let Ok(RuntimeReservationResponse::PaymentRequired { quote }) =
-                serde_json::from_str::<RuntimeReservationResponse>(&plaintext)
-            else {
-                continue;
-            };
-            if quote.validate().is_err()
-                || quote.agent_pubkey != agent.pubkey
-                || quote.payer_pubkey != intent.pubkey.to_hex()
-                || quote.amount_sats != amount_sats
-                || serde_json::to_value(&offer_event).ok() != Some(quote.offer_event.clone())
-                || exact_tag(&quote_event, "expiration")
-                    .and_then(|value| value.parse::<u64>().ok())
-                    != Some(quote.expires_at)
-                || exact_tag(&quote_event, "encryption") != Some("nip44_v2")
-                // A delayed relay replay is valid, but the signed intent must
-                // have accepted the quote before its deadline.
-                || quote_event.created_at.as_secs() > quote.expires_at
-                || quote.expires_at
-                    > quote_event
-                        .created_at
-                        .as_secs()
-                        .saturating_add(5 * 60)
-                || intent.created_at < quote_event.created_at
-                || intent.created_at.as_secs() > quote.expires_at
+            if purchase.amount_sats != amount_sats
+                // The purchase must have been priced before it was paid.
+                || intent.created_at < pricing_event.created_at
             {
                 continue;
             }
@@ -241,7 +214,7 @@ async fn reconcile_agent_runtime_deposits(
                     WalletError::unavailable(format!("decode persisted deposit: {error}"))
                 })?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    let credit_ms = u64::from(quote.pack_minutes)
+                    let credit_ms = u64::from(purchase.pack_minutes)
                         .checked_mul(60_000)
                         .ok_or_else(|| {
                             WalletError::new(
@@ -251,9 +224,9 @@ async fn reconcile_agent_runtime_deposits(
                         })?;
                     let deposit = RuntimeDeposit {
                         version: VERSION,
-                        pack_minutes: quote.pack_minutes,
+                        pack_minutes: purchase.pack_minutes,
                         credit_ms,
-                        price_per_minute_sats: quote.price_per_minute_sats,
+                        price_per_minute_sats: purchase.price_per_minute_sats,
                         amount_sats,
                     };
                     deposit.validate().map_err(|error| {
@@ -268,9 +241,9 @@ async fn reconcile_agent_runtime_deposits(
                     .tags([
                         Tag::parse(["p", intent.pubkey.to_hex().as_str()])
                             .map_err(|error| WalletError::unavailable(error.to_string()))?,
-                        Tag::parse(["h", quote.channel_id.as_str()])
+                        Tag::parse(["h", purchase.channel_id.as_str()])
                             .map_err(|error| WalletError::unavailable(error.to_string()))?,
-                        Tag::parse(["quote", quote_event.id.to_hex().as_str()])
+                        Tag::parse(["pricing", pricing_event.id.to_hex().as_str()])
                             .map_err(|error| WalletError::unavailable(error.to_string()))?,
                         Tag::parse(["zap", zap.id.to_hex().as_str()])
                             .map_err(|error| WalletError::unavailable(error.to_string()))?,
@@ -303,14 +276,14 @@ async fn reconcile_agent_runtime_deposits(
                 || deposit_event.pubkey != agent_keys.public_key()
                 || deposit_event.kind != Kind::Custom(KIND_AGENT_RUNTIME_DEPOSIT as u16)
                 || exact_tag(&deposit_event, "p") != Some(intent.pubkey.to_hex().as_str())
-                || exact_tag(&deposit_event, "h") != Some(quote.channel_id.as_str())
-                || exact_tag(&deposit_event, "quote") != Some(quote_event.id.to_hex().as_str())
+                || exact_tag(&deposit_event, "h") != Some(purchase.channel_id.as_str())
+                || exact_tag(&deposit_event, "pricing") != Some(pricing_event.id.to_hex().as_str())
                 || exact_tag(&deposit_event, "zap") != Some(zap.id.to_hex().as_str())
                 || exact_tag(&deposit_event, "zap_intent") != Some(intent_id)
                 || persisted.validate().is_err()
-                || persisted.pack_minutes != quote.pack_minutes
-                || persisted.credit_ms != u64::from(quote.pack_minutes) * 60_000
-                || persisted.price_per_minute_sats != quote.price_per_minute_sats
+                || persisted.pack_minutes != purchase.pack_minutes
+                || persisted.credit_ms != u64::from(purchase.pack_minutes) * 60_000
+                || persisted.price_per_minute_sats != purchase.price_per_minute_sats
                 || persisted.amount_sats != amount_sats
             {
                 return Err(WalletError::unavailable(
@@ -450,7 +423,7 @@ async fn reconcile_paying_zap_attempts(
         }
 
         store.record_reconcile(&attempt)?;
-        let personal_note = if attempt.runtime_quote_event_json.is_some() {
+        let personal_note = if attempt.runtime_purchase_json.is_some() {
             format!("Buzz agent runtime payment {}", attempt.intent_event_id)
         } else if attempt.target_event_id.is_some() {
             format!("Buzz message zap {}", attempt.intent_event_id)
@@ -495,10 +468,10 @@ async fn reconcile_paying_zap_attempts(
         }
 
         let runtime_channel = attempt
-            .runtime_quote_event_json
+            .runtime_purchase_json
             .as_deref()
-            .and_then(|quote| validate_agent_runtime_quote(&keys, quote).ok())
-            .map(|(quote, _)| quote.channel_id);
+            .and_then(|json| serde_json::from_str::<RuntimePurchase>(json).ok())
+            .map(|purchase| purchase.channel_id);
         let result = profile_payment_result(
             state,
             &keys,
@@ -605,101 +578,44 @@ pub async fn wallet_get_pending_profile_zap(
         &relay,
     )
 }
-
-fn validate_agent_runtime_quote(
-    keys: &nostr::Keys,
-    quote_event_json: &str,
-) -> Result<(RuntimeQuote, WalletRecipientOffer), WalletError> {
-    let quote_event = Event::from_json(quote_event_json)
-        .map_err(|error| WalletError::new("runtime_quote_invalid", error.to_string()))?;
-    quote_event
-        .verify()
-        .map_err(|error| WalletError::new("runtime_quote_invalid", error.to_string()))?;
-    if quote_event.kind != Kind::Custom(KIND_AGENT_RUNTIME_RESPONSE as u16) {
-        return Err(WalletError::new(
-            "runtime_quote_invalid",
-            "runtime quote must be a signed kind-24211 event",
-        ));
-    }
-    let payer = keys.public_key().to_hex();
-    let payer_tags = quote_event
-        .tags
-        .iter()
-        .filter_map(|tag| {
-            let parts = tag.as_slice();
-            (parts.first().map(String::as_str) == Some("p"))
-                .then(|| parts.get(1).cloned())
-                .flatten()
-        })
-        .collect::<Vec<_>>();
-    if payer_tags.as_slice() != [payer.as_str()] {
-        return Err(WalletError::new(
-            "runtime_quote_invalid",
-            "runtime quote must address exactly the active payer",
-        ));
-    }
-    let encryption_tags = quote_event
-        .tags
-        .iter()
-        .filter(|tag| tag.as_slice().first().map(String::as_str) == Some("encryption"))
-        .collect::<Vec<_>>();
-    if encryption_tags.len() != 1
-        || encryption_tags[0].as_slice().get(1).map(String::as_str) != Some("nip44_v2")
-    {
-        return Err(WalletError::new(
-            "runtime_quote_invalid",
-            "runtime quote must declare NIP-44 v2 encryption",
-        ));
-    }
-    let plaintext = nip44::decrypt(keys.secret_key(), &quote_event.pubkey, &quote_event.content)
-        .map_err(|error| WalletError::new("runtime_quote_invalid", error.to_string()))?;
-    let response: RuntimeReservationResponse = serde_json::from_str(&plaintext)
-        .map_err(|error| WalletError::new("runtime_quote_invalid", error.to_string()))?;
-    response
+/// Validate purchase terms against the agent-signed pricing they pin.
+///
+/// The pricing event must be signed by the Agent the zap pays, advertise an
+/// enabled rate equal to the purchase's, and offer the purchased pack. The
+/// arithmetic is re-checked by `RuntimePurchase::validate`.
+fn validate_agent_runtime_purchase(
+    purchase_json: &str,
+    agent_pubkey: &str,
+) -> Result<RuntimePurchase, WalletError> {
+    let purchase: RuntimePurchase = serde_json::from_str(purchase_json)
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    purchase
         .validate()
-        .map_err(|error| WalletError::new("runtime_quote_invalid", error.to_string()))?;
-    let RuntimeReservationResponse::PaymentRequired { quote } = response else {
-        return Err(WalletError::new(
-            "runtime_quote_invalid",
-            "runtime zap requires a payment-required response",
-        ));
-    };
-    if quote.agent_pubkey != quote_event.pubkey.to_hex() || quote.payer_pubkey != payer {
-        return Err(WalletError::new(
-            "runtime_quote_invalid",
-            "runtime quote parties do not match its signature and recipient",
-        ));
-    }
-    let expirations = quote_event
-        .tags
-        .iter()
-        .filter_map(|tag| {
-            let parts = tag.as_slice();
-            (parts.first().map(String::as_str) == Some("expiration"))
-                .then(|| parts.get(1).cloned())
-                .flatten()
-        })
-        .collect::<Vec<_>>();
-    if expirations.len() != 1 || expirations[0].parse::<u64>().ok() != Some(quote.expires_at) {
-        return Err(WalletError::new(
-            "runtime_quote_invalid",
-            "runtime quote expiration tag does not match its signed terms",
-        ));
-    }
-    if quote_event.created_at.as_secs() > quote.expires_at
-        || quote.expires_at > quote_event.created_at.as_secs().saturating_add(5 * 60)
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    let pricing_event = Event::from_json(purchase.pricing_event.to_string())
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    pricing_event
+        .verify()
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    let pricing: RuntimePricing = serde_json::from_str(&pricing_event.content)
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    pricing
+        .validate()
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    if pricing_event.pubkey.to_hex() != agent_pubkey
+        || pricing_event.kind != Kind::Custom(KIND_AGENT_RUNTIME_PRICING as u16)
+        || !pricing.enabled
+        || pricing.rate_sats_per_minute != Some(purchase.price_per_minute_sats)
+        || !pricing
+            .runtime_packs_minutes
+            .contains(&purchase.pack_minutes)
     {
         return Err(WalletError::new(
-            "runtime_quote_invalid",
-            "runtime quote has an invalid validity interval",
+            "runtime_purchase_invalid",
+            "purchase terms do not match the agent's signed pricing",
         ));
     }
-    let offer_json = serde_json::to_string(&quote.offer_event)
-        .map_err(|error| WalletError::new("runtime_quote_invalid", error.to_string()))?;
-    let offer_event = Event::from_json(&offer_json)
-        .map_err(|error| WalletError::new("runtime_quote_invalid", error.to_string()))?;
-    let recipient = recipient_offer(&offer_event, &quote.agent_pubkey)?;
-    Ok((quote, recipient))
+    Ok(purchase)
 }
 
 #[tauri::command]
@@ -718,10 +634,33 @@ pub async fn wallet_send_agent_runtime_zap(
     request: WalletAgentRuntimeZapRequest,
 ) -> Result<WalletProfileZapResult, WalletError> {
     let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-    let (quote, recipient) = validate_agent_runtime_quote(&keys, &request.quote_event_json)?;
+    let pricing_event = Event::from_json(&request.pricing_event_json)
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    let pricing: RuntimePricing = serde_json::from_str(&pricing_event.content)
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    let rate = pricing.rate_sats_per_minute.ok_or_else(|| {
+        WalletError::new("runtime_purchase_invalid", "agent pricing is disabled")
+    })?;
+    let amount_sats = rate
+        .checked_mul(u64::from(request.pack_minutes))
+        .ok_or_else(|| WalletError::new("runtime_purchase_invalid", "purchase amount overflow"))?;
+    let purchase = RuntimePurchase {
+        version: VERSION,
+        channel_id: request.channel_id,
+        pack_minutes: request.pack_minutes,
+        price_per_minute_sats: rate,
+        amount_sats,
+        pricing_event: serde_json::to_value(&pricing_event)
+            .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?,
+    };
+    let purchase_json = serde_json::to_string(&purchase)
+        .map_err(|error| WalletError::new("runtime_purchase_invalid", error.to_string()))?;
+    let purchase = validate_agent_runtime_purchase(&purchase_json, &request.agent_pubkey)?;
+    let relay = relay_api_base_url_with_override(&state);
+    let recipient = resolve_recipient_offer(&state, &keys, &relay, &request.agent_pubkey).await?;
     let payment_request = WalletProfileZapRequest {
-        recipient_pubkey: quote.agent_pubkey.clone(),
-        amount: quote.amount_sats,
+        recipient_pubkey: request.agent_pubkey,
+        amount: purchase.amount_sats,
         comment: None,
         idempotency_key: request.idempotency_key,
         target_event_id: None,
@@ -731,7 +670,7 @@ pub async fn wallet_send_agent_runtime_zap(
         app,
         state,
         payment_request,
-        Some((quote, recipient, request.quote_event_json)),
+        Some((purchase, recipient, purchase_json)),
     )
     .await
 }
@@ -740,7 +679,7 @@ async fn wallet_send_zap_attempt(
     app: AppHandle,
     state: State<'_, AppState>,
     request: WalletProfileZapRequest,
-    prepared_runtime: Option<(RuntimeQuote, WalletRecipientOffer, String)>,
+    prepared_runtime: Option<(RuntimePurchase, WalletRecipientOffer, String)>,
 ) -> Result<WalletProfileZapResult, WalletError> {
     let keys = state.signing_keys().map_err(WalletError::unavailable)?;
     let payer_pubkey = keys.public_key().to_hex();
@@ -765,10 +704,10 @@ async fn wallet_send_zap_attempt(
         .map(str::trim)
         .filter(|comment| !comment.is_empty())
         .map(str::to_string);
-    let quote_json = prepared_runtime.as_ref().map(|(_, _, json)| json.clone());
+    let purchase_json = prepared_runtime.as_ref().map(|(_, _, json)| json.clone());
     let runtime_channel = prepared_runtime
         .as_ref()
-        .map(|(quote, _, _)| quote.channel_id.clone());
+        .map(|(purchase, _, _)| purchase.channel_id.clone());
     let mut attempt = match store.load(&request.idempotency_key)? {
         Some(attempt)
             if attempt.recipient_pubkey == request.recipient_pubkey
@@ -776,7 +715,7 @@ async fn wallet_send_zap_attempt(
                 && attempt.comment == comment
                 && attempt.target_event_id == request.target_event_id
                 && attempt.target_event_kind == request.target_event_kind
-                && attempt.runtime_quote_event_json == quote_json =>
+                && attempt.runtime_purchase_json == purchase_json =>
         {
             attempt
         }
@@ -788,18 +727,12 @@ async fn wallet_send_zap_attempt(
             ));
         }
         None => {
-            let mut attempt = if let Some((quote, recipient, quote_json)) = prepared_runtime {
-                if now_ms() / 1_000 > quote.expires_at {
-                    return Err(WalletError::new(
-                        "runtime_quote_expired",
-                        "runtime quote has expired; request a new reservation",
-                    ));
-                }
+            let mut attempt = if let Some((_, recipient, purchase_json)) = prepared_runtime {
                 ZapAttempt::prepare_agent_runtime(
                     request.idempotency_key,
                     recipient,
                     request.amount,
-                    quote_json,
+                    purchase_json,
                     &keys,
                 )?
             } else {
@@ -865,7 +798,7 @@ async fn wallet_send_zap_attempt(
         ZapAttemptState::Prepared | ZapAttemptState::Paying => {}
     }
 
-    let personal_note = if attempt.runtime_quote_event_json.is_some() {
+    let personal_note = if attempt.runtime_purchase_json.is_some() {
         format!("Buzz agent runtime payment {}", attempt.intent_event_id)
     } else if attempt.target_event_id.is_some() {
         format!("Buzz message zap {}", attempt.intent_event_id)

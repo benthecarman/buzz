@@ -184,9 +184,15 @@ pub struct WalletProfileZapRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletAgentRuntimeZapRequest {
-    /// Exact signed, encrypted kind-24211 event returned by the agent.
-    pub quote_event_json: String,
-    /// Client-generated UUID reused for every retry of this exact quote.
+    /// Agent whose published terms this purchase pays against.
+    pub agent_pubkey: String,
+    /// Non-DM channel the credit is scoped to.
+    pub channel_id: String,
+    /// Purchased pack duration in minutes.
+    pub pack_minutes: u16,
+    /// Exact signed kind-10101 pricing event being pinned.
+    pub pricing_event_json: String,
+    /// Client-generated UUID reused for every retry of this exact purchase.
     pub idempotency_key: String,
 }
 

@@ -1,22 +1,20 @@
 import type { AgentRuntimeCapMinutes } from "@/features/agents/runtimePayments";
 
 export const AGENT_RUNTIME_CHECKOUT_STORAGE_PREFIX =
-  "buzz.agent-runtime-checkout.v1";
+  "buzz.agent-runtime-checkout.v2";
 
 export type StoredAgentRuntimeCheckoutRow = {
   pubkey: string;
   name: string;
   rateSats: number;
   availableMs: number;
-  requestId: string;
   zapIdempotencyKey: string;
-  quoteEventJson: string | null;
   paymentSent: boolean;
   reservationTag: string[] | null;
 };
 
 export type StoredAgentRuntimeCheckout = {
-  version: 1;
+  version: 2;
   channelId: string;
   capMinutes: AgentRuntimeCapMinutes;
   updatedAtMs: number;
@@ -42,13 +40,8 @@ function isRow(value: unknown): value is StoredAgentRuntimeCheckoutRow {
     Number(row.rateSats) > 0 &&
     Number.isSafeInteger(row.availableMs) &&
     Number(row.availableMs) >= 0 &&
-    typeof row.requestId === "string" &&
-    row.requestId.length > 0 &&
     typeof row.zapIdempotencyKey === "string" &&
     row.zapIdempotencyKey.length > 0 &&
-    (row.quoteEventJson === null ||
-      (typeof row.quoteEventJson === "string" &&
-        row.quoteEventJson.length > 0)) &&
     typeof row.paymentSent === "boolean" &&
     (row.reservationTag === null ||
       (Array.isArray(row.reservationTag) &&
@@ -66,7 +59,7 @@ export function loadAgentRuntimeCheckout(
     if (!encoded) return null;
     const value = JSON.parse(encoded) as Partial<StoredAgentRuntimeCheckout>;
     if (
-      value.version !== 1 ||
+      value.version !== 2 ||
       typeof value.channelId !== "string" ||
       !isCapMinutes(value.capMinutes) ||
       !Number.isSafeInteger(value.updatedAtMs) ||
@@ -90,7 +83,7 @@ export function saveAgentRuntimeCheckout(
 ): StoredAgentRuntimeCheckout {
   const stored: StoredAgentRuntimeCheckout = {
     ...checkout,
-    version: 1,
+    version: 2,
     updatedAtMs: Date.now(),
   };
   storage.setItem(storageKey(scopeId), JSON.stringify(stored));

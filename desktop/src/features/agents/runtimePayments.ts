@@ -4,45 +4,34 @@ export const AGENT_RUNTIME_CAPS_MINUTES = [15, 30, 60] as const;
 export type AgentRuntimeCapMinutes =
   (typeof AGENT_RUNTIME_CAPS_MINUTES)[number];
 
-export type AgentRuntimeQuote = {
-  version: 1;
-  request_id: string;
-  agent_pubkey: string;
-  payer_pubkey: string;
-  channel_id: string;
-  cap_minutes: AgentRuntimeCapMinutes;
-  pack_minutes: AgentRuntimeCapMinutes;
-  price_per_minute_sats: number;
-  amount_sats: number;
-  offer_event: Record<string, unknown>;
-  expires_at: number;
+/**
+ * One open, claimable reservation read out of the payer's own ledger.
+ *
+ * The prepaid protocol has no request/response round: the Agent mints a lock
+ * from settled credit on its maintenance loop, and the payer discovers it by
+ * reading durable state. Attach `reservationEventId` to the instruction; the
+ * relay's claim trigger makes it single-use.
+ */
+export type AgentRuntimeOpenReservation = {
+  reservationEventJson: string;
+  reservationEventId: string;
+  capMs: number;
+  mustStartBy: number;
 };
 
-export type AgentRuntimeReservationResponse =
-  | {
-      version: 1;
-      status: "reserved";
-      request_id: string;
-      reservation_event: Record<string, unknown>;
-    }
-  | ({ status: "payment_required" } & AgentRuntimeQuote)
-  | {
-      version: 1;
-      status: "unavailable";
-      request_id: string;
-    };
-
-export type AgentRuntimeReservationResult = {
-  requestId: string;
-  requestEventId: string;
-  responseEventJson: string;
-  response: AgentRuntimeReservationResponse;
+/** The Agent's published terms a new purchase would pay against. */
+export type AgentRuntimePricingTerms = {
+  /** Exact signed kind-10101 event; pinned verbatim into the zap intent. */
+  pricingEventJson: string;
+  rateSatsPerMinute: number;
 };
 
-export type AgentRuntimeBalance = {
+export type AgentRuntimeStatus = {
   availableMs: number;
   creditedMs: number;
   usedMs: number;
+  openReservation: AgentRuntimeOpenReservation | null;
+  pricing: AgentRuntimePricingTerms | null;
 };
 
 export function agentRuntimePackRequired(
@@ -62,34 +51,26 @@ export function agentRuntimePackChargeSats(
     : 0;
 }
 
-export function getAgentRuntimeBalance(input: {
+/**
+ * Everything the checkout needs about one (agent, channel) scope, read from
+ * durable state alone. This is the whole payer protocol: there is nothing to
+ * ask the Agent, only state to observe.
+ */
+export function getAgentRuntimeStatus(input: {
   agentPubkey: string;
   channelId: string;
-}): Promise<AgentRuntimeBalance> {
-  return invokeTauri<AgentRuntimeBalance>("agent_runtime_get_balance", {
+}): Promise<AgentRuntimeStatus> {
+  return invokeTauri<AgentRuntimeStatus>("agent_runtime_get_status", {
     input,
   });
 }
 
-export function requestAgentRuntimeReservation(input: {
-  agentPubkey: string;
-  channelId: string;
-  capMinutes: AgentRuntimeCapMinutes;
-  requestId?: string;
-}): Promise<AgentRuntimeReservationResult> {
-  return invokeTauri<AgentRuntimeReservationResult>(
-    "agent_runtime_request_reservation",
-    { input },
-  );
-}
-
 export function runtimeReservationMessageTag(
   agentPubkey: string,
-  reservationEvent: Record<string, unknown>,
+  reservationEventId: string,
 ): string[] {
-  const reservationId = reservationEvent.id;
-  if (typeof reservationId !== "string" || reservationId.length !== 64) {
-    throw new Error("Agent returned an invalid runtime reservation event.");
+  if (!/^[0-9a-f]{64}$/u.test(reservationEventId)) {
+    throw new Error("Agent minted an invalid runtime reservation event.");
   }
-  return ["agent_runtime", agentPubkey, reservationId];
+  return ["agent_runtime", agentPubkey, reservationEventId];
 }

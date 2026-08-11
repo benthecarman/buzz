@@ -38,7 +38,7 @@ proptest! {
         let active = RuntimeAbstractState { active_meters: 1, ..locked };
         let settled = RuntimeAbstractState { credited_ms: credit_ms, used_ms, ..zero };
         let trace = vec![
-            step(RuntimeTraceAction::QuoteRequested { allowlisted: true, non_dm: true, same_community: true }, zero, zero),
+            step(RuntimeTraceAction::ScopeAuthorized { allowlisted: true, non_dm: true, same_community: true }, zero, zero),
             step(RuntimeTraceAction::PaymentSettled { payment_id: RuntimeOpaqueId("payment".into()), verified: true }, zero, zero),
             step(RuntimeTraceAction::CreditDeposited { payment_id: RuntimeOpaqueId("payment".into()), credit_ms }, zero, credited),
             step(RuntimeTraceAction::RuntimeReserved { reservation_id: RuntimeOpaqueId("reservation".into()), cap_ms }, credited, locked),

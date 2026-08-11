@@ -1,20 +1,22 @@
 -------------------------- MODULE PaidAgentRuntime --------------------------
 (***************************************************************************)
 (* Prepaid, agent-specific runtime credit. Payments become credit only      *)
-(* after wallet settlement verification. Reservations lock a cap before an  *)
-(* instruction can start. Only time inside an active ACP session/prompt is  *)
-(* checkpointed as billable runtime.                                        *)
+(* after wallet settlement verification, with no quote preceding them: the  *)
+(* payer buys against published terms. The agent authorizes the scope       *)
+(* (access mode, non-DM channel, community) before it locks any credit.     *)
+(* Reservations lock a cap before an instruction can start. Only time       *)
+(* inside an active ACP session/prompt is checkpointed as billable runtime. *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Payments, Reservations, Instructions, Caps, Durations, None
 
-VARIABLES quoteRequested, settledPayments, deposits, totalCredit,
+VARIABLES scopeAuthorized, settledPayments, deposits, totalCredit,
           reservationCap, reservationInstruction, reservationDispatched,
           meterState, checkpoint,
           settlement, totalLocked, totalUsed
 
-vars == <<quoteRequested, settledPayments, deposits, totalCredit,
+vars == <<scopeAuthorized, settledPayments, deposits, totalCredit,
           reservationCap, reservationInstruction, reservationDispatched,
           meterState, checkpoint,
           settlement, totalLocked, totalUsed>>
@@ -22,7 +24,7 @@ vars == <<quoteRequested, settledPayments, deposits, totalCredit,
 Available == totalCredit - totalUsed - totalLocked
 
 Init ==
-    /\ quoteRequested = FALSE
+    /\ scopeAuthorized = FALSE
     /\ settledPayments = {}
     /\ deposits = [p \in Payments |-> 0]
     /\ totalCredit = 0
@@ -35,18 +37,17 @@ Init ==
     /\ totalLocked = 0
     /\ totalUsed = 0
 
-RequestQuote ==
-    /\ ~quoteRequested
-    /\ quoteRequested' = TRUE
+AuthorizeScope ==
+    /\ ~scopeAuthorized
+    /\ scopeAuthorized' = TRUE
     /\ UNCHANGED <<settledPayments, deposits, totalCredit, reservationCap,
                     reservationInstruction, reservationDispatched, meterState, checkpoint,
                     settlement, totalLocked, totalUsed>>
 
 SettlePayment(p) ==
-    /\ quoteRequested
     /\ p \in Payments
     /\ settledPayments' = settledPayments \cup {p}
-    /\ UNCHANGED <<quoteRequested, deposits, totalCredit, reservationCap,
+    /\ UNCHANGED <<scopeAuthorized, deposits, totalCredit, reservationCap,
                     reservationInstruction, reservationDispatched, meterState, checkpoint,
                     settlement, totalLocked, totalUsed>>
 
@@ -56,18 +57,19 @@ DepositCredit(p, amount) ==
     /\ amount \in Durations \ {0}
     /\ deposits' = [deposits EXCEPT ![p] = amount]
     /\ totalCredit' = totalCredit + amount
-    /\ UNCHANGED <<quoteRequested, settledPayments, reservationCap,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, reservationCap,
                     reservationInstruction, reservationDispatched, meterState, checkpoint,
                     settlement, totalLocked, totalUsed>>
 
 ReserveRuntime(r, cap) ==
+    /\ scopeAuthorized
     /\ r \in Reservations
     /\ reservationCap[r] = 0
     /\ cap \in Caps
     /\ cap <= Available
     /\ reservationCap' = [reservationCap EXCEPT ![r] = cap]
     /\ totalLocked' = totalLocked + cap
-    /\ UNCHANGED <<quoteRequested, settledPayments, deposits, totalCredit,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, deposits, totalCredit,
                     reservationInstruction, reservationDispatched, meterState, checkpoint,
                     settlement, totalUsed>>
 
@@ -77,7 +79,7 @@ BindInstruction(r, i) ==
     /\ reservationCap[r] > 0
     /\ reservationInstruction[r] = None
     /\ reservationInstruction' = [reservationInstruction EXCEPT ![r] = i]
-    /\ UNCHANGED <<quoteRequested, settledPayments, deposits, totalCredit,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, deposits, totalCredit,
                     reservationCap, reservationDispatched, meterState, checkpoint, settlement,
                     totalLocked, totalUsed>>
 
@@ -87,7 +89,7 @@ DispatchInstruction(r, i) ==
     /\ reservationInstruction[r] = i
     /\ ~reservationDispatched[r]
     /\ reservationDispatched' = [reservationDispatched EXCEPT ![r] = TRUE]
-    /\ UNCHANGED <<quoteRequested, settledPayments, deposits, totalCredit,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, deposits, totalCredit,
                     reservationCap, reservationInstruction, meterState,
                     checkpoint, settlement, totalLocked, totalUsed>>
 
@@ -97,7 +99,7 @@ StartMeter(r) ==
     /\ meterState[r] # "settled"
     /\ checkpoint[r] < reservationCap[r]
     /\ meterState' = [meterState EXCEPT ![r] = "active"]
-    /\ UNCHANGED <<quoteRequested, settledPayments, deposits, totalCredit,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, deposits, totalCredit,
                     reservationCap, reservationInstruction, reservationDispatched, checkpoint,
                     settlement, totalLocked, totalUsed>>
 
@@ -107,14 +109,14 @@ CheckpointMeter(r, elapsed) ==
     /\ checkpoint[r] <= elapsed
     /\ elapsed <= reservationCap[r]
     /\ checkpoint' = [checkpoint EXCEPT ![r] = elapsed]
-    /\ UNCHANGED <<quoteRequested, settledPayments, deposits, totalCredit,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, deposits, totalCredit,
                     reservationCap, reservationInstruction, reservationDispatched, meterState,
                     settlement, totalLocked, totalUsed>>
 
 PauseMeter(r) ==
     /\ meterState[r] = "active"
     /\ meterState' = [meterState EXCEPT ![r] = "paused"]
-    /\ UNCHANGED <<quoteRequested, settledPayments, deposits, totalCredit,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, deposits, totalCredit,
                     reservationCap, reservationInstruction, reservationDispatched, checkpoint,
                     settlement, totalLocked, totalUsed>>
 
@@ -127,7 +129,7 @@ SettleReservation(r, used) ==
     /\ totalLocked' = totalLocked - reservationCap[r]
     /\ totalUsed' = totalUsed + used
     /\ meterState' = [meterState EXCEPT ![r] = "settled"]
-    /\ UNCHANGED <<quoteRequested, settledPayments, deposits, totalCredit,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, deposits, totalCredit,
                     reservationCap, reservationInstruction, reservationDispatched, checkpoint>>
 
 BudgetExhausted(r) ==
@@ -138,13 +140,13 @@ BudgetExhausted(r) ==
     /\ totalLocked' = totalLocked - reservationCap[r]
     /\ totalUsed' = totalUsed + reservationCap[r]
     /\ meterState' = [meterState EXCEPT ![r] = "settled"]
-    /\ UNCHANGED <<quoteRequested, settledPayments, deposits, totalCredit,
+    /\ UNCHANGED <<scopeAuthorized, settledPayments, deposits, totalCredit,
                     reservationCap, reservationInstruction, reservationDispatched, checkpoint>>
 
 DuplicateReuse == UNCHANGED vars
 
 Next ==
-    \/ RequestQuote
+    \/ AuthorizeScope
     \/ \E p \in Payments : SettlePayment(p)
     \/ \E p \in Payments, amount \in Durations : DepositCredit(p, amount)
     \/ \E r \in Reservations, cap \in Caps : ReserveRuntime(r, cap)

@@ -117,8 +117,8 @@ const GATED_OBSERVER_QUEUE_CAP: usize = 256;
 use std::time::Instant;
 
 use buzz_core::kind::{
-    KIND_AGENT_OBSERVER_FRAME, KIND_AGENT_RUNTIME_REQUEST, KIND_MEMBER_ADDED_NOTIFICATION,
-    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_TYPING_INDICATOR,
+    KIND_AGENT_OBSERVER_FRAME, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
+    KIND_TYPING_INDICATOR,
 };
 use futures_util::{SinkExt, StreamExt};
 use nostr::{Event, EventBuilder, Keys, Kind, RelayUrl, Tag};
@@ -3368,13 +3368,13 @@ async fn send_membership_subscribe(
     }
 }
 
-/// Send a NIP-01 REQ for p-gated agent control and paid-runtime requests.
+/// Send a NIP-01 REQ for p-gated agent control frames.
 async fn send_observer_control_subscribe(ws: &mut WsStream, agent_pubkey_hex: &str) -> bool {
     let req = json!([
         "REQ",
         OBSERVER_CONTROL_SUB_ID,
         {
-            "kinds": [KIND_AGENT_OBSERVER_FRAME, KIND_AGENT_RUNTIME_REQUEST],
+            "kinds": [KIND_AGENT_OBSERVER_FRAME],
             "#p": [agent_pubkey_hex],
             "since": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

@@ -60,9 +60,11 @@ export function AgentRuntimeCheckoutDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Reserve Agent runtime</AlertDialogTitle>
           <AlertDialogDescription>
-            Choose one runtime cap for each paid Agent. Existing runtime is used
-            first. If it is insufficient, Buzz buys a full matching pack with a
-            separate BOLT12 zap for each Agent. Unused runtime stays available.
+            Choose one runtime pack for each paid Agent. Retained runtime is
+            used first; if it is insufficient, Buzz buys a matching pack with a
+            separate BOLT12 zap at the Agent's published rate, then waits for
+            the Agent to confirm the credit — usually under a minute. Unused
+            runtime stays available.
           </AlertDialogDescription>
         </AlertDialogHeader>
 

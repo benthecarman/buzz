@@ -3669,23 +3669,17 @@ mod tests {
     /// Kind 13534 is rejected in ingest_event before signature verification,
     /// so any properly signed Nostr event of this kind triggers the arm.
     ///
-    /// The bridge's ephemeral branch is keyed on the kind range, so the split
-    /// between "fan out" and "store" has to land exactly where the storage
-    /// layer draws it. A runtime request routed into `ingest_event` is
-    /// refused by storage and answered with a 500 — the paid-invocation bug.
+    /// The bridge's ephemeral branch is keyed on the kind range, so the
+    /// ledger kinds must stay on the storage side of that split: a deposit,
+    /// reservation, or settlement routed to the fan-out path would vanish
+    /// instead of becoming durable money state.
     #[test]
-    fn paid_runtime_kinds_split_across_the_storage_boundary() {
+    fn ledger_kinds_stay_on_the_storage_side_of_the_split() {
         use buzz_core::kind::{
-            is_ephemeral, KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_REQUEST,
-            KIND_AGENT_RUNTIME_RESERVATION, KIND_AGENT_RUNTIME_RESPONSE,
+            is_ephemeral, KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_RESERVATION,
             KIND_AGENT_RUNTIME_SETTLEMENT,
         };
 
-        // Negotiation is pub/sub only: never stored, so never ingested.
-        assert!(is_ephemeral(KIND_AGENT_RUNTIME_REQUEST));
-        assert!(is_ephemeral(KIND_AGENT_RUNTIME_RESPONSE));
-
-        // The ledger is the durable half — these must keep taking ingest.
         assert!(!is_ephemeral(KIND_AGENT_RUNTIME_DEPOSIT));
         assert!(!is_ephemeral(KIND_AGENT_RUNTIME_RESERVATION));
         assert!(!is_ephemeral(KIND_AGENT_RUNTIME_SETTLEMENT));

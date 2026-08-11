@@ -103,9 +103,15 @@ export interface WalletProfileZapResult {
 }
 
 export interface WalletAgentRuntimeZapRequest {
-  /** Exact signed, encrypted kind-24211 payment-required response. */
-  quoteEventJson: string;
-  /** UUID reused for retries of this exact quote. */
+  /** Agent whose published terms this purchase pays against. */
+  agentPubkey: string;
+  /** Non-DM channel the credit is scoped to. */
+  channelId: string;
+  /** Purchased pack duration in minutes. */
+  packMinutes: number;
+  /** Exact signed kind-10101 pricing event being pinned. */
+  pricingEventJson: string;
+  /** UUID reused for retries of this exact purchase. */
   idempotencyKey: string;
 }
 

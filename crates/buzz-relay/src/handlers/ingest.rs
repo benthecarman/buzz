@@ -13,11 +13,10 @@ use buzz_auth::Scope;
 use buzz_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
     is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_RUNTIME_DEPOSIT,
-    KIND_AGENT_RUNTIME_PRICING, KIND_AGENT_RUNTIME_REQUEST, KIND_AGENT_RUNTIME_RESERVATION,
-    KIND_AGENT_RUNTIME_RESPONSE, KIND_AGENT_RUNTIME_SETTLEMENT, KIND_AGENT_TURN_METRIC,
-    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOLT12_OFFER, KIND_BOLT12_ZAP,
-    KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION,
-    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET,
+    KIND_AGENT_RUNTIME_PRICING, KIND_AGENT_RUNTIME_RESERVATION, KIND_AGENT_RUNTIME_SETTLEMENT,
+    KIND_AGENT_TURN_METRIC, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOLT12_OFFER,
+    KIND_BOLT12_ZAP, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST,
+    KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET,
     KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE,
     KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
     KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
@@ -72,56 +71,6 @@ fn parse_nostr_pubkey(value: &str) -> Option<PublicKey> {
     PublicKey::from_hex(value)
         .ok()
         .filter(|public_key| public_key.xonly().is_ok())
-}
-
-fn validate_agent_runtime_ephemeral_envelope(event: &Event) -> Result<(), IngestError> {
-    let mut payer_count = 0usize;
-    let mut expiration_count = 0usize;
-    let mut encryption_count = 0usize;
-    for tag in event.tags.iter() {
-        let parts = tag.as_slice();
-        match parts.first().map(String::as_str) {
-            Some("p") => {
-                if parts.len() != 2
-                    || parse_nostr_pubkey(parts[1].as_str())
-                        .map(|pubkey| pubkey.to_hex() != parts[1])
-                        .unwrap_or(true)
-                {
-                    return Err(IngestError::Rejected(
-                        "invalid: runtime request/response p tag must contain one canonical pubkey"
-                            .into(),
-                    ));
-                }
-                payer_count += 1;
-            }
-            Some("expiration") => {
-                if parts.len() != 2 || parts[1].parse::<u64>().ok().filter(|v| *v > 0).is_none() {
-                    return Err(IngestError::Rejected(
-                        "invalid: runtime request/response expiration must be a unix timestamp"
-                            .into(),
-                    ));
-                }
-                expiration_count += 1;
-            }
-            Some("encryption") => {
-                if parts.len() != 2 || parts[1].as_str() != "nip44_v2" {
-                    return Err(IngestError::Rejected(
-                        "invalid: runtime request/response must declare nip44_v2".into(),
-                    ));
-                }
-                encryption_count += 1;
-            }
-            _ => {}
-        }
-    }
-    if payer_count != 1 || expiration_count != 1 || encryption_count != 1 {
-        return Err(IngestError::Rejected(
-            "invalid: runtime request/response requires exactly one p, expiration, and encryption tag"
-                .into(),
-        ));
-    }
-    validate_engram_nip44_content(&event.content)
-        .map_err(|error| IngestError::Rejected(format!("invalid: {error}")))
 }
 
 fn validate_agent_runtime_ledger_envelope(event: &Event, kind: u32) -> Result<(), IngestError> {
@@ -531,8 +480,6 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         }
         // NIP-AM: agent turn metrics are agent-authored global events (encrypted to owner).
         KIND_AGENT_TURN_METRIC
-        | KIND_AGENT_RUNTIME_REQUEST
-        | KIND_AGENT_RUNTIME_RESPONSE
         | KIND_AGENT_RUNTIME_DEPOSIT
         | KIND_AGENT_RUNTIME_RESERVATION
         | KIND_AGENT_RUNTIME_SETTLEMENT => Ok(Scope::MessagesWrite),
@@ -797,8 +744,6 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             // NIP-AM: agent turn metrics are owner-scoped global events.
             // Channel identity is encrypted inside the payload — no `h` tag.
             | KIND_AGENT_TURN_METRIC
-            | KIND_AGENT_RUNTIME_REQUEST
-            | KIND_AGENT_RUNTIME_RESPONSE
             | KIND_AGENT_RUNTIME_DEPOSIT
             | KIND_AGENT_RUNTIME_RESERVATION
             | KIND_AGENT_RUNTIME_SETTLEMENT
@@ -2753,13 +2698,6 @@ async fn ingest_event_inner(
 
     if kind_u32 == KIND_AGENT_RUNTIME_PRICING {
         validate_agent_runtime_pricing(&event)?;
-    }
-
-    if matches!(
-        kind_u32,
-        KIND_AGENT_RUNTIME_REQUEST | KIND_AGENT_RUNTIME_RESPONSE
-    ) {
-        validate_agent_runtime_ephemeral_envelope(&event)?;
     }
 
     if matches!(

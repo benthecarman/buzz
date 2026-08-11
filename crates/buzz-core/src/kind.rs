@@ -210,8 +210,6 @@ pub const P_GATED_KINDS: &[u32] = &[
     KIND_NWC_REQUEST,
     KIND_NWC_RESPONSE,
     KIND_AGENT_OBSERVER_FRAME,
-    KIND_AGENT_RUNTIME_REQUEST,
-    KIND_AGENT_RUNTIME_RESPONSE,
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
     KIND_GIFT_WRAP,
@@ -626,10 +624,6 @@ pub const KIND_MEMBER_REMOVED_NOTIFICATION: u32 = 44101;
 /// See `docs/nips/NIP-AM.md`.
 pub const KIND_AGENT_TURN_METRIC: u32 = 44200;
 
-/// Buzz Agent Runtime Payments: encrypted reservation request (ephemeral).
-pub const KIND_AGENT_RUNTIME_REQUEST: u32 = 24210;
-/// Buzz Agent Runtime Payments: encrypted reservation/quote response (ephemeral).
-pub const KIND_AGENT_RUNTIME_RESPONSE: u32 = 24211;
 /// Buzz Agent Runtime Payments: settled runtime-credit deposit.
 pub const KIND_AGENT_RUNTIME_DEPOSIT: u32 = 44210;
 /// Buzz Agent Runtime Payments: payer-bound runtime reservation.
@@ -796,8 +790,6 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_BLOSSOM_AUTH,
     KIND_PAIRING,
     KIND_AGENT_OBSERVER_FRAME,
-    KIND_AGENT_RUNTIME_REQUEST,
-    KIND_AGENT_RUNTIME_RESPONSE,
     KIND_NWC_REQUEST,
     KIND_NWC_RESPONSE,
     KIND_HTTP_AUTH,

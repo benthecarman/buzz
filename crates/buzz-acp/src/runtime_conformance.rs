@@ -292,7 +292,7 @@ pub fn begin_scope(scope: RuntimeOpaqueId) -> bool {
     if inserted {
         record(
             scope,
-            RuntimeTraceAction::QuoteRequested {
+            RuntimeTraceAction::ScopeAuthorized {
                 allowlisted: true,
                 non_dm: true,
                 same_community: true,
@@ -322,7 +322,7 @@ pub fn initialize_scope(
     drop(guard);
     record(
         scope.clone(),
-        RuntimeTraceAction::QuoteRequested {
+        RuntimeTraceAction::ScopeAuthorized {
             allowlisted: true,
             non_dm: true,
             same_community: true,

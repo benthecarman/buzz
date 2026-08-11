@@ -11,7 +11,7 @@ or provider data.
 
 Schema version: 1
 
-The version-1 `allowlisted` boolean on quote and instruction actions is a
+The version-1 `allowlisted` boolean on authorization and instruction actions is a
 legacy field name. It means the external caller passed the Agent's active
 access policy, whether that policy is an explicit allowlist or `anyone`.
 
@@ -40,7 +40,7 @@ pubkeys, channel IDs, raw events, offers, notes, invoices, or wallet data.
 
 | Trace action | TLA+ action | Critical |
 |---|---|---|
-| `quote_requested` | `RequestQuote` | yes |
+| `scope_authorized` | `AuthorizeScope` | yes |
 | `payment_settled` | `SettlePayment` | yes |
 | `credit_deposited` | `DepositCredit` | yes |
 | `runtime_reserved` | `ReserveRuntime` | yes |

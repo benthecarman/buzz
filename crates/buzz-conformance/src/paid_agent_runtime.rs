@@ -55,8 +55,10 @@ pub struct RuntimeAbstractState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeTraceAction {
-    /// An authorized, non-DM, same-community request produced a quote.
-    QuoteRequested {
+    /// The Agent verified the scope's access mode, non-DM channel, and
+    /// community before locking any credit for it. Under the prepaid
+    /// protocol this happens at mint time — nothing precedes the payment.
+    ScopeAuthorized {
         /// External access was authorized by the active access mode.
         ///
         /// The serialized field retains its version-1 `allowlisted` name for
@@ -157,7 +159,7 @@ impl RuntimeTraceAction {
     /// Stable action name for coverage requirements.
     pub const fn kind(&self) -> &'static str {
         match self {
-            Self::QuoteRequested { .. } => "quote_requested",
+            Self::ScopeAuthorized { .. } => "scope_authorized",
             Self::PaymentSettled { .. } => "payment_settled",
             Self::CreditDeposited { .. } => "credit_deposited",
             Self::RuntimeReserved { .. } => "runtime_reserved",
@@ -255,7 +257,7 @@ struct ReservationModel {
 
 #[derive(Debug, Default)]
 struct ScopeModel {
-    quote_requested: bool,
+    scope_authorized: bool,
     settled_payments: BTreeSet<RuntimeOpaqueId>,
     deposits: BTreeMap<RuntimeOpaqueId, u64>,
     reservations: BTreeMap<RuntimeOpaqueId, ReservationModel>,
@@ -300,21 +302,23 @@ impl ScopeModel {
 
     fn apply(&mut self, action: &RuntimeTraceAction) -> Result<(), String> {
         match action {
-            RuntimeTraceAction::QuoteRequested {
+            RuntimeTraceAction::ScopeAuthorized {
                 allowlisted,
                 non_dm,
                 same_community,
             } => {
                 if !(*allowlisted && *non_dm && *same_community) {
-                    return Err("quote issued without access, channel, and community checks".into());
+                    return Err(
+                        "scope authorized without access, channel, and community checks".into(),
+                    );
                 }
-                self.quote_requested = true;
+                self.scope_authorized = true;
             }
             RuntimeTraceAction::PaymentSettled {
                 payment_id,
                 verified,
             } => {
-                if !self.quote_requested || !verified {
+                if !verified {
                     return Err("payment settlement was not independently verified".into());
                 }
                 self.settled_payments.insert(payment_id.clone());
@@ -340,6 +344,9 @@ impl ScopeModel {
             } => {
                 if *cap_ms == 0 {
                     return Err("reservation cap is zero".into());
+                }
+                if !self.scope_authorized {
+                    return Err("reservation minted before scope authorization checks".into());
                 }
                 if let Some(existing) = self.reservations.get(reservation_id) {
                     if existing.cap_ms != *cap_ms {

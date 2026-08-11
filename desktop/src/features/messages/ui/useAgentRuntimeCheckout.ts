@@ -3,8 +3,9 @@ import { useRelayAgentsQuery } from "@/features/agents/hooks";
 import { useCommunities } from "@/features/communities/useCommunities";
 import {
   type AgentRuntimeCapMinutes,
-  getAgentRuntimeBalance,
-  requestAgentRuntimeReservation,
+  type AgentRuntimeStatus,
+  agentRuntimePackRequired,
+  getAgentRuntimeStatus,
   runtimeReservationMessageTag,
 } from "@/features/agents/runtimePayments";
 import { sendAgentRuntimeZap } from "@/features/wallet/api";
@@ -20,13 +21,21 @@ import {
 import type { RuntimeCheckoutRow } from "./AgentRuntimeCheckoutDialog";
 import { getErrorMessage } from "./useMentionSendFlow.helpers";
 
+/**
+ * Prepaid checkout: there is no negotiation with the Agent. Each row settles
+ * by observing durable state — an open reservation in the payer's own ledger
+ * — after at most one payment against the Agent's published terms. Waiting is
+ * bounded by the attestation loop (~15s on the owner's desktop) plus the
+ * Agent's mint loop (~30s), so the observation window is generous but finite;
+ * a timeout leaves the paid credit retained and the checkout resumable.
+ */
+const RESERVATION_POLL_INTERVAL_MS = 3_000;
+const RESERVATION_POLL_BUDGET_MS = 120_000;
+
 type PendingRow = RuntimeCheckoutRow & {
-  requestId: string;
   zapIdempotencyKey: string;
-  quoteEventJson: string | null;
   paymentSent: boolean;
   reservationTag: string[] | null;
-  restored: boolean;
 };
 
 type PendingCheckout = { channelId: string; rows: PendingRow[] };
@@ -78,9 +87,9 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
       if (channelType === "dm") {
         throw new Error("Paid Agent invocation is unavailable in DMs.");
       }
-      const balances = await Promise.all(
+      const statuses = await Promise.all(
         paidAgents.map((agent) =>
-          getAgentRuntimeBalance({ agentPubkey: agent.pubkey, channelId }),
+          getAgentRuntimeStatus({ agentPubkey: agent.pubkey, channelId }),
         ),
       );
       let rows = paidAgents
@@ -88,14 +97,13 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
           (agent, index): PendingRow => ({
             pubkey: normalizePubkey(agent.pubkey),
             name: agent.name,
-            rateSats: agent.pricePerMinuteSats,
-            availableMs: balances[index]?.availableMs ?? 0,
-            requestId: crypto.randomUUID(),
+            rateSats:
+              statuses[index]?.pricing?.rateSatsPerMinute ??
+              agent.pricePerMinuteSats,
+            availableMs: statuses[index]?.availableMs ?? 0,
             zapIdempotencyKey: crypto.randomUUID(),
-            quoteEventJson: null,
             paymentSent: false,
             reservationTag: null,
-            restored: false,
           }),
         )
         .sort((left, right) => left.pubkey.localeCompare(right.pubkey));
@@ -106,19 +114,14 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
         stored?.rows.length === rows.length &&
         stored.rows.every((row, index) => row.pubkey === rows[index]?.pubkey);
       if (stored && sameAgents) {
+        // Resume the durable idempotency keys so a renderer restart can never
+        // pay the same purchase twice: the wallet replays the same attempt.
         setCapMinutes(stored.capMinutes);
         rows = rows.map((row, index) => ({
           ...row,
-          requestId: stored.rows[index]?.requestId ?? row.requestId,
           zapIdempotencyKey:
             stored.rows[index]?.zapIdempotencyKey ?? row.zapIdempotencyKey,
-          quoteEventJson: stored.rows[index]?.quoteEventJson ?? null,
           paymentSent: stored.rows[index]?.paymentSent ?? false,
-          // Re-query the same request id after a renderer restart. The Agent
-          // will return the exact open reservation, or reject it if its
-          // admission deadline already closed.
-          reservationTag: null,
-          restored: true,
         }));
       } else if (stored) {
         clearAgentRuntimeCheckout(storageScope);
@@ -196,102 +199,59 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
   };
 }
 
+/** A claimable lock: open in the ledger and not past its deadline. */
+function claimableReservation(
+  status: AgentRuntimeStatus,
+): AgentRuntimeStatus["openReservation"] {
+  const reservation = status.openReservation;
+  if (!reservation) return null;
+  return reservation.mustStartBy > Math.floor(Date.now() / 1_000)
+    ? reservation
+    : null;
+}
+
 async function completeCheckout(
   checkout: PendingCheckout,
   capMinutes: AgentRuntimeCapMinutes,
   updateRows: (rows: PendingRow[]) => void,
 ): Promise<string[][]> {
   const rows = [...checkout.rows];
-  const initial = await Promise.all(
-    rows.map((row) =>
-      row.reservationTag
-        ? null
-        : requestAgentRuntimeReservation({
-            agentPubkey: row.pubkey,
-            channelId: checkout.channelId,
-            capMinutes,
-            requestId: row.requestId,
-          }),
-    ),
-  );
   for (let index = 0; index < rows.length; index += 1) {
     let row = rows[index];
     if (!row || row.reservationTag) continue;
-    let result = initial[index];
-    if (!result) continue;
-    if (result.response.status === "unavailable" && row.restored) {
-      if (row.quoteEventJson && !row.paymentSent) {
-        try {
-          await sendAgentRuntimeZap({
-            quoteEventJson: row.quoteEventJson,
-            idempotencyKey: row.zapIdempotencyKey,
-          });
-          row = { ...row, paymentSent: true };
-          rows[index] = row;
-          updateRows([...rows]);
-        } catch (cause) {
-          const code = walletCommandError(cause).code;
-          if (code !== "runtime_quote_expired" && code !== "payment_failed") {
-            throw cause;
-          }
-          // An existing wallet attempt may replay after quote expiry. This
-          // error therefore proves no attempt was created for the old key.
-          row = {
-            ...row,
-            zapIdempotencyKey: crypto.randomUUID(),
-            quoteEventJson: null,
-          };
-          rows[index] = row;
-          updateRows([...rows]);
-        }
-      }
-      row = {
-        ...row,
-        requestId: crypto.randomUUID(),
-        reservationTag: null,
-        restored: false,
-      };
-      rows[index] = row;
-      updateRows([...rows]);
-      result = await requestAgentRuntimeReservation({
-        agentPubkey: row.pubkey,
-        channelId: checkout.channelId,
-        capMinutes,
-        requestId: row.requestId,
-      });
-    }
-    if (result.response.status === "unavailable") {
-      throw new Error(`${row.name} is unavailable for paid runtime.`);
-    }
-    if (result.response.status === "payment_required" && !row.paymentSent) {
-      if (
-        row.quoteEventJson &&
-        row.quoteEventJson !== result.responseEventJson
-      ) {
+
+    let status = await getAgentRuntimeStatus({
+      agentPubkey: row.pubkey,
+      channelId: checkout.channelId,
+    });
+
+    // Pay only when neither a claimable lock nor covering credit exists.
+    // `paymentSent` survives restarts, and the wallet's idempotency key makes
+    // a re-send replay the same attempt rather than paying again.
+    const needsPurchase =
+      !row.paymentSent &&
+      claimableReservation(status) === null &&
+      agentRuntimePackRequired(status.availableMs, capMinutes);
+    if (needsPurchase) {
+      const pricing = status.pricing;
+      if (!pricing) {
         throw new Error(
-          `${row.name} returned conflicting terms for the same runtime request.`,
+          `${row.name} does not currently advertise runtime pricing.`,
         );
       }
-      const quoteEventJson = row.quoteEventJson ?? result.responseEventJson;
-      row = {
-        ...row,
-        quoteEventJson,
-      };
-      rows[index] = row;
-      // Persist the exact signed quote before the wallet can create an attempt.
-      updateRows([...rows]);
       try {
         await sendAgentRuntimeZap({
-          quoteEventJson,
+          agentPubkey: row.pubkey,
+          channelId: checkout.channelId,
+          packMinutes: capMinutes,
+          pricingEventJson: pricing.pricingEventJson,
           idempotencyKey: row.zapIdempotencyKey,
         });
       } catch (cause) {
         if (walletCommandError(cause).code === "payment_failed") {
-          row = {
-            ...row,
-            zapIdempotencyKey: crypto.randomUUID(),
-            quoteEventJson: null,
-          };
+          // A failed payment is terminal for its key; the next attempt needs
+          // a fresh one so the wallet does not replay the failure.
+          row = { ...row, zapIdempotencyKey: crypto.randomUUID() };
           rows[index] = row;
           updateRows([...rows]);
         }
@@ -301,28 +261,34 @@ async function completeCheckout(
       rows[index] = row;
       updateRows([...rows]);
     }
-    for (let attempt = 0; result.response.status !== "reserved"; attempt += 1) {
-      if (attempt >= 30) {
+
+    // Observe the ledger until the Agent's lock appears. Attestation and
+    // minting run on other machines' timers; the budget covers both plus
+    // slack, and expiry leaves credit retained and the checkout resumable.
+    const deadline = Date.now() + RESERVATION_POLL_BUDGET_MS;
+    let reservation = claimableReservation(status);
+    while (!reservation) {
+      if (Date.now() > deadline) {
         throw new Error(
-          `${row.name} received payment, but its runtime deposit is still pending. Retry to continue without paying again.`,
+          `${row.name} has your payment, but its runtime reservation has not appeared yet. Your credit is retained — retry without paying again.`,
         );
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 1_000));
-      result = await requestAgentRuntimeReservation({
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, RESERVATION_POLL_INTERVAL_MS),
+      );
+      status = await getAgentRuntimeStatus({
         agentPubkey: row.pubkey,
         channelId: checkout.channelId,
-        capMinutes,
-        requestId: row.requestId,
       });
-      if (result.response.status === "unavailable") {
-        throw new Error(`${row.name} is unavailable for paid runtime.`);
-      }
+      reservation = claimableReservation(status);
     }
+
     rows[index] = {
       ...row,
+      availableMs: status.availableMs,
       reservationTag: runtimeReservationMessageTag(
         row.pubkey,
-        result.response.reservation_event,
+        reservation.reservationEventId,
       ),
     };
     updateRows([...rows]);

@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use nostr::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -14,95 +13,70 @@ use thiserror::Error;
 pub const VERSION: u8 = 1;
 /// Supported prepaid runtime pack sizes.
 pub const RUNTIME_PACKS_MINUTES: [u16; 3] = [15, 30, 60];
+
+/// Largest cap one reservation may lock: the largest purchasable pack.
+pub const MAX_RESERVATION_CAP_MS: u64 = 60 * MILLIS_PER_MINUTE;
+
+/// How long an agent-minted reservation stays claimable.
+///
+/// Nobody asks for a reservation under the prepaid protocol, so the deadline
+/// is not "start soon after asking". Thirty days keeps a funded payer's lock
+/// waiting across any realistic absence; the Agent's maintenance loop
+/// replaces a lock in its second half, so a claimable one always exists while
+/// credit does. Validators on both sides bound a reservation's signed
+/// validity interval with this constant.
+pub const RESERVATION_VALIDITY_SECS: u64 = 30 * 24 * 60 * 60;
 /// Largest rate whose 60-minute charge remains an exact JavaScript integer.
 pub const MAX_RUNTIME_RATE_SATS_PER_MINUTE: u64 = 150_119_987_579_016;
 /// Milliseconds in one runtime minute.
 pub const MILLIS_PER_MINUTE: u64 = 60_000;
 /// Maximum byte length for caller-provided idempotency identifiers.
-pub const MAX_REQUEST_ID_BYTES: usize = 128;
+pub const MAX_SCOPE_ID_BYTES: usize = 128;
 
-/// Decrypted content of an ephemeral kind `24210` reservation request.
+/// Plaintext purchase terms carried inside a runtime zap intent.
+///
+/// Under the prepaid protocol nobody asks the Agent for a quote: the payer
+/// computes the price from the Agent's published kind `10101` terms and pays.
+/// This struct pins exactly what was paid against, so the wallet host can
+/// attest the deposit without any live party — the embedded pricing event
+/// proves the Agent advertised the rate, and the arithmetic proves the amount
+/// bought the pack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeReservationRequest {
+pub struct RuntimePurchase {
     /// Schema version.
     pub version: u8,
-    /// Payer-generated idempotency identifier.
-    pub request_id: String,
-    /// Non-DM channel in which the instruction will be published.
+    /// Non-DM channel the credit is scoped to.
     pub channel_id: String,
-    /// Selected invocation cap. Must be 15, 30, or 60.
-    pub cap_minutes: u16,
-}
-
-impl RuntimeReservationRequest {
-    /// Validate the request before authorization checks are applied.
-    pub fn validate(&self) -> Result<(), RuntimePaymentError> {
-        validate_version(self.version)?;
-        validate_request_id(&self.request_id)?;
-        if self.channel_id.is_empty() || self.channel_id.len() > MAX_REQUEST_ID_BYTES {
-            return Err(RuntimePaymentError::InvalidRequest(
-                "channel_id must contain 1 to 128 bytes",
-            ));
-        }
-        validate_pack(self.cap_minutes)
-    }
-}
-
-/// Agent-authored price-locked quote returned in kind `24211`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeQuote {
-    /// Schema version.
-    pub version: u8,
-    /// Request identifier from the reservation request.
-    pub request_id: String,
-    /// Agent receiving the payment and providing runtime.
-    pub agent_pubkey: String,
-    /// User paying for the runtime pack.
-    pub payer_pubkey: String,
-    /// Purchase and invocation community channel.
-    pub channel_id: String,
-    /// Selected invocation cap.
-    pub cap_minutes: u16,
-    /// Purchased pack size. Must equal `cap_minutes`.
+    /// Purchased pack duration. Must be a supported pack.
     pub pack_minutes: u16,
-    /// Locked whole-satoshi rate.
+    /// The rate paid, taken from the pinned pricing event.
     pub price_per_minute_sats: u64,
-    /// Exact required amount in satoshis.
+    /// Exact zap amount in satoshis. Must equal rate × pack.
     pub amount_sats: u64,
-    /// Exact signed kind-10058 offer event. Pricing is never placed in it.
-    pub offer_event: serde_json::Value,
-    /// Quote expiration as a Unix timestamp.
-    pub expires_at: u64,
+    /// The exact agent-signed kind `10101` event the payer priced against.
+    /// Embedded, not referenced: attestation must not depend on a relay
+    /// fetch, and a replaceable event may no longer be queryable by the time
+    /// the payment settles.
+    pub pricing_event: serde_json::Value,
 }
 
-impl RuntimeQuote {
-    /// Validate immutable quote terms and checked price arithmetic.
+impl RuntimePurchase {
+    /// Validate the purchase arithmetic and embedded-event shape.
+    ///
+    /// Signature verification of `pricing_event` is the caller's job — this
+    /// type has no crypto dependencies beyond hex parsing.
     pub fn validate(&self) -> Result<(), RuntimePaymentError> {
         validate_version(self.version)?;
-        validate_request_id(&self.request_id)?;
-        validate_hex_pubkey(&self.agent_pubkey)?;
-        validate_hex_pubkey(&self.payer_pubkey)?;
-        if self.agent_pubkey == self.payer_pubkey {
-            return Err(RuntimePaymentError::InvalidQuote(
-                "payer and agent must be different pubkeys",
-            ));
-        }
-        if self.channel_id.is_empty() || self.channel_id.len() > MAX_REQUEST_ID_BYTES {
-            return Err(RuntimePaymentError::InvalidQuote(
+        if self.channel_id.is_empty() || self.channel_id.len() > MAX_SCOPE_ID_BYTES {
+            return Err(RuntimePaymentError::InvalidPurchase(
                 "channel_id must contain 1 to 128 bytes",
             ));
         }
-        validate_pack(self.cap_minutes)?;
         validate_pack(self.pack_minutes)?;
-        if self.pack_minutes != self.cap_minutes {
-            return Err(RuntimePaymentError::InvalidQuote(
-                "pack_minutes must equal cap_minutes",
-            ));
-        }
         if self.price_per_minute_sats == 0
             || self.price_per_minute_sats > MAX_RUNTIME_RATE_SATS_PER_MINUTE
         {
-            return Err(RuntimePaymentError::InvalidQuote(
+            return Err(RuntimePaymentError::InvalidPurchase(
                 "price_per_minute_sats is outside the supported whole-satoshi range",
             ));
         }
@@ -111,79 +85,16 @@ impl RuntimeQuote {
             .checked_mul(u64::from(self.pack_minutes))
             .ok_or(RuntimePaymentError::ArithmeticOverflow)?;
         if self.amount_sats != expected_amount {
-            return Err(RuntimePaymentError::InvalidQuote(
+            return Err(RuntimePaymentError::InvalidPurchase(
                 "amount_sats does not match price and pack",
             ));
         }
-        if !self.offer_event.is_object() {
-            return Err(RuntimePaymentError::InvalidQuote(
-                "offer_event must be an exact signed event object",
-            ));
-        }
-        if self.expires_at == 0 {
-            return Err(RuntimePaymentError::InvalidQuote(
-                "expires_at must be a positive unix timestamp",
+        if !self.pricing_event.is_object() {
+            return Err(RuntimePaymentError::InvalidPurchase(
+                "pricing_event must be an exact signed event object",
             ));
         }
         Ok(())
-    }
-}
-
-/// Decrypted content of an ephemeral kind `24211` response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum RuntimeReservationResponse {
-    /// Runtime was atomically reserved from retained balance.
-    Reserved {
-        /// Schema version.
-        version: u8,
-        /// Correlated payer request.
-        request_id: String,
-        /// Exact signed kind-44211 reservation event.
-        reservation_event: serde_json::Value,
-    },
-    /// A BOLT12 payment is required before reservation can succeed.
-    PaymentRequired {
-        /// Flattened immutable quote terms.
-        #[serde(flatten)]
-        quote: RuntimeQuote,
-    },
-    /// Generic failure that intentionally reveals no authorization detail.
-    Unavailable {
-        /// Schema version.
-        version: u8,
-        /// Correlated payer request.
-        request_id: String,
-    },
-}
-
-impl RuntimeReservationResponse {
-    /// Validate response correlation fields and embedded signed-event shapes.
-    pub fn validate(&self) -> Result<(), RuntimePaymentError> {
-        match self {
-            Self::Reserved {
-                version,
-                request_id,
-                reservation_event,
-            } => {
-                validate_version(*version)?;
-                validate_request_id(request_id)?;
-                if !reservation_event.is_object() {
-                    return Err(RuntimePaymentError::InvalidResponse(
-                        "reservation_event must be an exact signed event object",
-                    ));
-                }
-                Ok(())
-            }
-            Self::PaymentRequired { quote } => quote.validate(),
-            Self::Unavailable {
-                version,
-                request_id,
-            } => {
-                validate_version(*version)?;
-                validate_request_id(request_id)
-            }
-        }
     }
 }
 
@@ -316,19 +227,17 @@ impl RuntimeReservation {
     /// Validate the reservation payload.
     pub fn validate(&self) -> Result<(), RuntimePaymentError> {
         validate_version(self.version)?;
-        if self.request_id.is_empty() || self.request_id.len() > 128 {
+        if self.request_id.is_empty() || self.request_id.len() > MAX_SCOPE_ID_BYTES {
             return Err(RuntimePaymentError::InvalidReservation(
                 "request_id must contain 1 to 128 bytes",
             ));
         }
-        let minutes = self.cap_ms / MILLIS_PER_MINUTE;
-        if !self.cap_ms.is_multiple_of(MILLIS_PER_MINUTE)
-            || !RUNTIME_PACKS_MINUTES
-                .iter()
-                .any(|pack| u64::from(*pack) == minutes)
-        {
+        // The cap bounds one invocation's spend; it is not a pack SKU.
+        // Retained credit is fractional after any settlement, and a lock over
+        // exactly the remaining balance must be expressible.
+        if self.cap_ms == 0 || self.cap_ms > MAX_RESERVATION_CAP_MS {
             return Err(RuntimePaymentError::InvalidReservation(
-                "cap_ms must equal a supported runtime pack",
+                "cap_ms must be positive and at most the largest runtime pack",
             ));
         }
         if self.must_start_by == 0 {
@@ -564,15 +473,9 @@ pub enum RuntimePaymentError {
     /// Invalid public pricing terms.
     #[error("invalid runtime pricing: {0}")]
     InvalidPricing(&'static str),
-    /// Invalid reservation request payload.
-    #[error("invalid runtime reservation request: {0}")]
-    InvalidRequest(&'static str),
-    /// Invalid signed quote terms.
-    #[error("invalid runtime quote: {0}")]
-    InvalidQuote(&'static str),
-    /// Invalid reservation response payload.
-    #[error("invalid runtime reservation response: {0}")]
-    InvalidResponse(&'static str),
+    /// Invalid zap-intent purchase terms.
+    #[error("invalid runtime purchase: {0}")]
+    InvalidPurchase(&'static str),
     /// Unsupported pack size.
     #[error("runtime pack must be 15, 30, or 60 minutes")]
     InvalidPack,
@@ -624,29 +527,6 @@ fn validate_pack(minutes: u16) -> Result<(), RuntimePaymentError> {
     }
 }
 
-fn validate_request_id(request_id: &str) -> Result<(), RuntimePaymentError> {
-    if request_id.is_empty() || request_id.len() > MAX_REQUEST_ID_BYTES {
-        Err(RuntimePaymentError::InvalidRequest(
-            "request_id must contain 1 to 128 bytes",
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_hex_pubkey(pubkey: &str) -> Result<(), RuntimePaymentError> {
-    if PublicKey::from_hex(pubkey)
-        .and_then(|public_key| public_key.xonly())
-        .is_ok()
-    {
-        Ok(())
-    } else {
-        Err(RuntimePaymentError::InvalidQuote(
-            "agent and payer pubkeys must be valid x-only secp256k1 public keys",
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,30 +542,66 @@ mod tests {
     }
 
     #[test]
-    fn runtime_quote_rejects_hex_that_is_not_a_secp256k1_pubkey() {
-        let payer = nostr::Keys::generate().public_key().to_hex();
-        let quote = RuntimeQuote {
+    fn purchase_pins_price_pack_and_amount() {
+        let pricing_event = serde_json::json!({"kind": 10101, "content": "{}"});
+        let good = RuntimePurchase {
             version: VERSION,
-            request_id: "request".into(),
-            // secp256k1 field modulus: 32-byte hex, but not a valid x
-            // coordinate because field elements must be strictly smaller.
-            agent_pubkey: "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f".into(),
-            payer_pubkey: payer,
             channel_id: "channel".into(),
-            cap_minutes: 15,
-            pack_minutes: 15,
+            pack_minutes: 30,
             price_per_minute_sats: 20,
-            amount_sats: 300,
-            offer_event: serde_json::json!({}),
-            expires_at: 1,
+            amount_sats: 600,
+            pricing_event: pricing_event.clone(),
         };
+        good.validate().unwrap();
 
-        assert!(matches!(
-            quote.validate(),
-            Err(RuntimePaymentError::InvalidQuote(
-                "agent and payer pubkeys must be valid x-only secp256k1 public keys"
-            ))
-        ));
+        assert!(RuntimePurchase {
+            amount_sats: 599,
+            ..good.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(RuntimePurchase {
+            pack_minutes: 20,
+            ..good.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(RuntimePurchase {
+            pricing_event: serde_json::json!("not an object"),
+            ..good
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn reservation_cap_is_a_bound_not_a_pack() {
+        let base = RuntimeReservation {
+            version: VERSION,
+            request_id: "credit-1".into(),
+            cap_ms: 744_000, // 12.4 minutes — retained credit is fractional
+            must_start_by: 1,
+        };
+        base.validate().unwrap();
+
+        assert!(RuntimeReservation {
+            cap_ms: 0,
+            ..base.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(RuntimeReservation {
+            cap_ms: MAX_RESERVATION_CAP_MS + 1,
+            ..base.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(RuntimeReservation {
+            cap_ms: MAX_RESERVATION_CAP_MS,
+            ..base
+        }
+        .validate()
+        .is_ok());
     }
 
     #[test]
