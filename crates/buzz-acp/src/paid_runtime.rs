@@ -347,8 +347,12 @@ async fn replay_ledger(
     Vec<(Event, RuntimeReservation)>,
 )> {
     let p_tag = SingleLetterTag::lowercase(Alphabet::P);
-    let h_tag = SingleLetterTag::lowercase(Alphabet::H);
     let agent = keys.public_key();
+    // No `#h` in this filter, deliberately: ledger kinds are stored
+    // channel-less (global-only at ingest), and the relay's `#h` handling
+    // scopes to the stored channel column — which is NULL — so an `#h`
+    // filter returns nothing. Channel scoping happens below against the
+    // signed `h` tag instead.
     let mut events = query_events(
         rest,
         nostr::Filter::new()
@@ -358,8 +362,7 @@ async fn replay_ledger(
                 Kind::Custom(KIND_AGENT_RUNTIME_RESERVATION as u16),
                 Kind::Custom(KIND_AGENT_RUNTIME_SETTLEMENT as u16),
             ])
-            .custom_tags(p_tag, [payer.to_hex()])
-            .custom_tags(h_tag, [channel_id]),
+            .custom_tags(p_tag, [payer.to_hex()]),
     )
     .await?;
     // Nostr timestamps have one-second precision. Preserve deterministic
@@ -386,13 +389,14 @@ async fn replay_ledger(
     let trace_replay = crate::runtime_conformance::begin_scope(trace_scope.clone());
     for event in events {
         event.verify()?;
-        if event.pubkey != agent
-            || exactly_one_tag(&event, "p")? != payer.to_hex()
-            || exactly_one_tag(&event, "h")? != channel_id
-        {
+        if event.pubkey != agent || exactly_one_tag(&event, "p")? != payer.to_hex() {
             return Err(protocol_error(
-                "runtime ledger event does not match its scoped author, payer, or channel",
+                "runtime ledger event does not match its scoped author or payer",
             ));
+        }
+        // The query is payer-wide; this replay is per channel.
+        if exactly_one_tag(&event, "h")? != channel_id {
+            continue;
         }
         match event.kind.as_u16() as u32 {
             KIND_AGENT_RUNTIME_DEPOSIT => {
@@ -858,6 +862,72 @@ async fn maintain_scope_reservation(
     rest.submit_event(&event).await?;
     let _ = std::fs::remove_file(&pending_path);
     Ok(true)
+}
+
+/// Read-only walk of every funded scope, describing the decision the mint
+/// loop would take. Powers the `query_probe` diagnostic; mints nothing.
+pub async fn diagnose_scopes(
+    terms: &PaidRuntimeTerms,
+    rest: &RestClient,
+) -> anyhow::Result<Vec<String>> {
+    let mut out = Vec::new();
+    if !terms.priced {
+        out.push("not priced — minting disabled".into());
+        return Ok(out);
+    }
+    if kill_switch_active() {
+        out.push("kill switch active".into());
+        return Ok(out);
+    }
+    let keys = &terms.keys;
+    let agent = keys.public_key();
+    let events = query_events(
+        rest,
+        nostr::Filter::new()
+            .author(agent)
+            .kind(Kind::Custom(KIND_AGENT_RUNTIME_DEPOSIT as u16)),
+    )
+    .await?;
+    out.push(format!("deposit events: {}", events.len()));
+    let mut scopes = BTreeMap::<(String, String), (PublicKey, Timestamp, u16)>::new();
+    for event in events {
+        event.verify()?;
+        let payer_hex = exactly_one_tag(&event, "p")?.to_string();
+        let channel_id = exactly_one_tag(&event, "h")?.to_string();
+        let payer = PublicKey::from_hex(&payer_hex)?;
+        let deposit: RuntimeDeposit = serde_json::from_str(&event.content)?;
+        deposit.validate()?;
+        let key = (payer_hex, channel_id);
+        if scopes
+            .get(&key)
+            .is_none_or(|(_, seen, _)| event.created_at >= *seen)
+        {
+            scopes.insert(key, (payer, event.created_at, deposit.pack_minutes));
+        }
+    }
+    for ((payer_hex, channel_id), (payer, _, pack_minutes)) in scopes {
+        let scope = format!("scope payer={}.. channel={}", &payer_hex[..8], channel_id);
+        if !payer_has_paid_access(&terms.respond_to, &terms.respond_to_allowlist, &payer_hex) {
+            out.push(format!("{scope}: SKIP access"));
+            continue;
+        }
+        let (ledger, _, reservations) = replay_ledger(keys, rest, &payer, &channel_id).await?;
+        let now = now_secs();
+        let pack_ms = u64::from(pack_minutes).saturating_mul(60_000);
+        let open = reservations
+            .iter()
+            .find(|(event, _)| ledger.reservation_is_open(&event.id.to_hex()))
+            .map(|(_, reservation)| (reservation.cap_ms, reservation.must_start_by));
+        let available = ledger.available_ms()?;
+        let action = lock_action(open, available, pack_ms, now);
+        let pending = pending_mint_path(keys, &payer_hex, &channel_id).exists();
+        let channel_ok =
+            channel_allows_purchase(rest, &channel_id, &payer_hex, &agent.to_hex()).await?;
+        out.push(format!(
+            "{scope}: available={available}ms pack={pack_ms}ms open={open:?} pending_file={pending} channel_ok={channel_ok} action={action:?}"
+        ));
+    }
+    Ok(out)
 }
 
 pub async fn sweep_expired_open_reservations(

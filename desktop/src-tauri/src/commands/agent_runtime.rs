@@ -238,6 +238,10 @@ pub async fn agent_runtime_get_status(
         .map_err(|error| format!("invalid agent pubkey: {error}"))?;
     let relay = relay_api_base_url_with_override(&state);
     let payer_hex = keys.public_key().to_hex();
+    // No `#h` here, deliberately: ledger kinds are stored channel-less, and
+    // the relay's `#h` handling scopes to the stored channel column (NULL for
+    // these kinds), so an `#h` filter returns nothing. The signed `h` tag is
+    // checked per event below instead.
     let filter = serde_json::json!({
         "kinds": [
             KIND_AGENT_RUNTIME_DEPOSIT,
@@ -245,8 +249,7 @@ pub async fn agent_runtime_get_status(
             KIND_AGENT_RUNTIME_SETTLEMENT
         ],
         "authors": [input.agent_pubkey],
-        "#p": [payer_hex],
-        "#h": [input.channel_id]
+        "#p": [payer_hex]
     });
     let mut events = query_all_runtime_events(&state, &relay, &keys, filter).await?;
     events.sort_by_key(|event| {
@@ -264,11 +267,12 @@ pub async fn agent_runtime_get_status(
         event
             .verify()
             .map_err(|error| format!("verify runtime ledger event: {error}"))?;
-        if event.pubkey != agent
-            || exactly_one_tag(&event, "p")? != keys.public_key().to_hex()
-            || exactly_one_tag(&event, "h")? != input.channel_id
-        {
+        if event.pubkey != agent || exactly_one_tag(&event, "p")? != keys.public_key().to_hex() {
             return Err("runtime ledger routing does not match the requested scope".into());
+        }
+        // The query is payer-wide; this status is per channel.
+        if exactly_one_tag(&event, "h")? != input.channel_id {
+            continue;
         }
         match u32::from(event.kind.as_u16()) {
             KIND_AGENT_RUNTIME_DEPOSIT => {
