@@ -668,12 +668,13 @@ const MENTION_REF = [
   "1111111111111111111111111111111111111111111111111111111111111111",
 ];
 
-test("splitOutgoingTags: undefined input yields three empty arrays", () => {
+test("splitOutgoingTags: undefined input yields empty channels", () => {
   assert.deepEqual(splitOutgoingTags(undefined), {
     mediaTags: [],
     emojiTags: [],
     mentionTags: [],
     linkPreviewTags: [],
+    runtimeTags: [],
   });
 });
 
@@ -733,4 +734,33 @@ test("splitOutgoingTags is the inverse of mergeOutgoingTags", () => {
   assert.deepEqual(emojiTags, [EMOJI_A, EMOJI_B]);
   assert.deepEqual(mentionTags, []);
   assert.deepEqual(linkPreviewTags, []);
+});
+
+// The exact shape runtimeReservationMessageTag() produces for a paid
+// invocation (importing it here would drag in the Tauri bridge).
+const AGENT_RUNTIME = ["agent_runtime", "a".repeat(64), "b".repeat(64)];
+
+test("splitOutgoingTags: routes agent_runtime to its own channel", () => {
+  // Regression: this tag once fell through to mediaTags, where the Rust
+  // imeta guard rejected the whole message — the paid checkout closed but
+  // the instruction never published and the reservation sat unclaimed.
+  const { mediaTags, emojiTags, mentionTags, linkPreviewTags, runtimeTags } =
+    splitOutgoingTags([IMETA, AGENT_RUNTIME, EMOJI_A]);
+  assert.deepEqual(mediaTags, [IMETA]);
+  assert.deepEqual(emojiTags, [EMOJI_A]);
+  assert.deepEqual(mentionTags, []);
+  assert.deepEqual(linkPreviewTags, []);
+  assert.deepEqual(runtimeTags, [AGENT_RUNTIME]);
+});
+
+test("splitOutgoingTags: agent_runtime survives the checkout merge path", () => {
+  // Mirror useMentionSendFlow's finishSend: media tags merged with the
+  // checkout's reservation tags, then split at the Tauri boundary.
+  const merged = mergeOutgoingTags(
+    [IMETA],
+    mergeOutgoingTags([], [AGENT_RUNTIME]) ?? [],
+  );
+  const { mediaTags, runtimeTags } = splitOutgoingTags(merged);
+  assert.deepEqual(mediaTags, [IMETA]);
+  assert.deepEqual(runtimeTags, [AGENT_RUNTIME]);
 });
