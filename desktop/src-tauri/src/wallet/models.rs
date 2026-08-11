@@ -180,7 +180,8 @@ pub struct WalletProfileZapRequest {
     pub target_event_kind: Option<u32>,
 }
 
-/// Exact agent-signed runtime quote approved for one idempotent BOLT12 zap.
+/// Purchase of one runtime pack against the Agent's published terms,
+/// idempotent per key.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletAgentRuntimeZapRequest {

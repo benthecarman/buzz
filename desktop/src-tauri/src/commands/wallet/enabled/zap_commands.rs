@@ -201,10 +201,7 @@ async fn reconcile_agent_runtime_deposits(
             let Ok(pricing_event) = Event::from_json(purchase.pricing_event.to_string()) else {
                 continue;
             };
-            if purchase.amount_sats != amount_sats
-                // The purchase must have been priced before it was paid.
-                || intent.created_at < pricing_event.created_at
-            {
+            if purchase.amount_sats != amount_sats {
                 continue;
             }
 

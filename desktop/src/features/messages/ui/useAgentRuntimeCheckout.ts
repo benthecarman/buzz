@@ -100,7 +100,7 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
             rateSats:
               statuses[index]?.pricing?.rateSatsPerMinute ??
               agent.pricePerMinuteSats,
-            availableMs: statuses[index]?.availableMs ?? 0,
+            availableMs: spendableMs(statuses[index]),
             zapIdempotencyKey: crypto.randomUUID(),
             paymentSent: false,
             reservationTag: null,
@@ -210,6 +210,18 @@ function claimableReservation(
     : null;
 }
 
+/**
+ * What this scope can spend on one more invocation: free credit plus the cap
+ * already locked for it. `availableMs` alone would double-charge a payer
+ * whose credit sits inside an open reservation. The dialog and the purchase
+ * decision must use this same figure or the price shown is not the price
+ * charged.
+ */
+function spendableMs(status: AgentRuntimeStatus | undefined): number {
+  if (!status) return 0;
+  return status.availableMs + (claimableReservation(status)?.capMs ?? 0);
+}
+
 async function completeCheckout(
   checkout: PendingCheckout,
   capMinutes: AgentRuntimeCapMinutes,
@@ -225,13 +237,14 @@ async function completeCheckout(
       channelId: checkout.channelId,
     });
 
-    // Pay only when neither a claimable lock nor covering credit exists.
-    // `paymentSent` survives restarts, and the wallet's idempotency key makes
-    // a re-send replay the same attempt rather than paying again.
+    // Pay when the scope's spendable credit — free balance plus the open
+    // lock's cap, the same figure the dialog displayed — does not cover the
+    // selected pack. `paymentSent` survives restarts, and the wallet's
+    // idempotency key makes a re-send replay the same attempt, never a
+    // second payment.
     const needsPurchase =
       !row.paymentSent &&
-      claimableReservation(status) === null &&
-      agentRuntimePackRequired(status.availableMs, capMinutes);
+      agentRuntimePackRequired(spendableMs(status), capMinutes);
     if (needsPurchase) {
       const pricing = status.pricing;
       if (!pricing) {

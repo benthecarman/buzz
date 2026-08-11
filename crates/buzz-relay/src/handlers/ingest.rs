@@ -104,7 +104,7 @@ fn validate_agent_runtime_ledger_envelope(event: &Event, kind: u32) -> Result<()
         ));
     }
     if kind == KIND_AGENT_RUNTIME_DEPOSIT {
-        for required in ["quote", "zap", "zap_intent"] {
+        for required in ["pricing", "zap", "zap_intent"] {
             let count = event
                 .tags
                 .iter()
