@@ -791,6 +791,88 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
     }
 }
 
+/// Fan out one ephemeral event without storing it.
+///
+/// Both WebSocket and HTTP transports use this function. The storage layer
+/// refuses ephemeral kinds, so this is their only delivery path.
+pub(crate) async fn publish_ephemeral_event(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+    author_pubkey_bytes: &[u8],
+    auth_pubkey: &nostr::PublicKey,
+) -> Result<(), String> {
+    if event_kind_u32(event) == KIND_PRESENCE_UPDATE {
+        let raw = event.content.to_string();
+        let status = if raw.starts_with('{') {
+            serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|value| value.get("status")?.as_str().map(String::from))
+                .unwrap_or(raw)
+        } else if raw.len() > 128 {
+            let mut end = 128;
+            while !raw.is_char_boundary(end) {
+                end -= 1;
+            }
+            raw[..end].to_string()
+        } else {
+            raw
+        };
+
+        if status == "offline" {
+            let _ = state.pubsub.clear_presence(tenant, auth_pubkey).await;
+        } else {
+            let _ = state
+                .pubsub
+                .set_presence(tenant, auth_pubkey, &status)
+                .await;
+        }
+    }
+
+    if let Some(channel_id) = super::ingest::extract_channel_id(event) {
+        super::ingest::check_channel_membership(
+            tenant,
+            state,
+            channel_id,
+            author_pubkey_bytes,
+            None,
+        )
+        .await?;
+
+        state.mark_local_event(tenant.community(), &event.id);
+        if let Err(error) = state
+            .pubsub
+            .publish_event(tenant, EventTopic::Channel(channel_id), event)
+            .await
+        {
+            state
+                .local_event_ids
+                .invalidate(&(tenant.community(), event.id.to_bytes()));
+            warn!(event_id = %event.id, "Ephemeral publish failed: {error}");
+        }
+
+        let stored_event = StoredEvent::new(event.clone(), Some(channel_id));
+        fan_out_event_to_local_subscribers(state, tenant.community(), &stored_event).await;
+    } else {
+        state.mark_local_event(tenant.community(), &event.id);
+        if let Err(error) = state
+            .pubsub
+            .publish_event(tenant, EventTopic::Global, event)
+            .await
+        {
+            state
+                .local_event_ids
+                .invalidate(&(tenant.community(), event.id.to_bytes()));
+            warn!(event_id = %event.id, "Ephemeral global publish failed: {error}");
+        }
+
+        let stored_event = StoredEvent::new(event.clone(), None);
+        fan_out_event_to_local_subscribers(state, tenant.community(), &stored_event).await;
+    }
+
+    Ok(())
+}
+
 /// Handle ephemeral events (kind 20000–29999) — WS-only, never stored.
 async fn handle_ephemeral_event(
     event: Event,

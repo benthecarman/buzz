@@ -82,6 +82,15 @@ are logged but never prevent the free Agent from starting. These state-integrity
 checks remain fail-closed when paid runtime is configured. Pricing announcement
 is best-effort in both modes.
 
+## Direction of travel
+
+The live request/response negotiation described below is scheduled for
+replacement — see
+[Paid Agent runtime without a live negotiation](../paid-runtime-without-negotiation.md).
+It requires three processes online for one purchase and makes the payer poll,
+and its two ephemeral kinds are the source of the storage mismatch that broke
+paid invocation.
+
 ## Ledger read access
 
 Kinds `44210`, `44211`, and `44212` are `#p`-gated, with one addition: the

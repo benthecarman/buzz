@@ -753,6 +753,60 @@ impl SubmitOutcome {
 /// parse, and ingest.  Returns a [`SubmitOutcome`] that carries both the log
 /// fields and the HTTP response so the thin wrapper can emit exactly one
 /// terminal attribution line covering every outcome.
+/// Verify and fan out an ephemeral event submitted over HTTP.
+///
+/// Mirrors the socket's ephemeral branch: the signature is checked here
+/// because `ingest_event` — which normally owns verification — is bypassed.
+async fn submit_ephemeral_event(
+    state: &Arc<AppState>,
+    tenant: &TenantContext,
+    event: nostr::Event,
+    author_pubkey_bytes: &[u8],
+    auth_pubkey: nostr::PublicKey,
+) -> SubmitOutcome {
+    let event_id = event.id.to_hex();
+    let to_verify = event.clone();
+    let verified =
+        tokio::task::spawn_blocking(move || buzz_core::verification::verify_event(&to_verify))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()));
+    if let Err(error) = verified {
+        crate::handlers::ingest::reject_with_transport("http", "invalid");
+        return SubmitOutcome::Err {
+            status: StatusCode::BAD_REQUEST,
+            response: api_error(StatusCode::BAD_REQUEST, &format!("invalid: {error}")),
+        };
+    }
+
+    match crate::handlers::event::publish_ephemeral_event(
+        tenant,
+        state,
+        &event,
+        author_pubkey_bytes,
+        &auth_pubkey,
+    )
+    .await
+    {
+        Ok(()) => SubmitOutcome::Ok {
+            accepted: true,
+            kind: buzz_core::kind::event_kind_u32(&event),
+            response: Json(serde_json::json!({
+                "event_id": event_id,
+                "accepted": true,
+                "message": "",
+            })),
+        },
+        Err(message) => {
+            crate::handlers::ingest::reject_with_transport("http", "auth");
+            SubmitOutcome::Err {
+                status: StatusCode::FORBIDDEN,
+                response: api_error(StatusCode::FORBIDDEN, &message),
+            }
+        }
+    }
+}
+
 async fn submit_event_authed(
     state: &Arc<AppState>,
     tenant: &TenantContext,
@@ -830,6 +884,15 @@ async fn submit_event_authed(
     }
 
     let kind_u32 = buzz_core::kind::event_kind_u32(&event);
+
+    // Ephemeral kinds are pub/sub only — the storage layer refuses them, so
+    // routing them into `ingest_event` answers a legitimate publish with a
+    // 500. The socket has always branched here; the bridge must too, or a
+    // feature that publishes over HTTP (paid-runtime requests) cannot work.
+    if buzz_core::kind::is_ephemeral(kind_u32) {
+        return submit_ephemeral_event(state, tenant, event, &pubkey_bytes, pubkey).await;
+    }
+
     let auth = IngestAuth::Http {
         pubkey,
         scopes: buzz_auth::Scope::all_known(), // Pure Nostr: full scopes, channel access via membership
@@ -3606,6 +3669,28 @@ mod tests {
     /// Kind 13534 is rejected in ingest_event before signature verification,
     /// so any properly signed Nostr event of this kind triggers the arm.
     ///
+    /// The bridge's ephemeral branch is keyed on the kind range, so the split
+    /// between "fan out" and "store" has to land exactly where the storage
+    /// layer draws it. A runtime request routed into `ingest_event` is
+    /// refused by storage and answered with a 500 — the paid-invocation bug.
+    #[test]
+    fn paid_runtime_kinds_split_across_the_storage_boundary() {
+        use buzz_core::kind::{
+            is_ephemeral, KIND_AGENT_RUNTIME_DEPOSIT, KIND_AGENT_RUNTIME_REQUEST,
+            KIND_AGENT_RUNTIME_RESERVATION, KIND_AGENT_RUNTIME_RESPONSE,
+            KIND_AGENT_RUNTIME_SETTLEMENT,
+        };
+
+        // Negotiation is pub/sub only: never stored, so never ingested.
+        assert!(is_ephemeral(KIND_AGENT_RUNTIME_REQUEST));
+        assert!(is_ephemeral(KIND_AGENT_RUNTIME_RESPONSE));
+
+        // The ledger is the durable half — these must keep taking ingest.
+        assert!(!is_ephemeral(KIND_AGENT_RUNTIME_DEPOSIT));
+        assert!(!is_ephemeral(KIND_AGENT_RUNTIME_RESERVATION));
+        assert!(!is_ephemeral(KIND_AGENT_RUNTIME_SETTLEMENT));
+    }
+
     /// Discriminating: if the `reject_with_transport` call in bridge.rs's
     /// IngestError::Rejected match arm is removed, this test fails.
     #[test]
