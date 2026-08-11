@@ -574,10 +574,12 @@ fn trace_outcome(
 /// second lock over the same credit. Removed once the ledger replay shows the
 /// event landed, or once its own deadline passes.
 fn pending_mint_path(keys: &nostr::Keys, payer_hex: &str, channel_id: &str) -> PathBuf {
-    runtime_directory(keys).join(format!(
-        "pending-mint-{}.json",
-        hex::encode(format!("{payer_hex}:{channel_id}"))
-    ))
+    // Hash the scope: hex-encoding it produced ~220-character names, which
+    // overflow NAME_MAX on encrypted-home filesystems (~143 bytes) and made
+    // every mint die at the durability write with ENAMETOOLONG.
+    use sha2::{Digest, Sha256};
+    let scope = Sha256::digest(format!("{payer_hex}:{channel_id}").as_bytes());
+    runtime_directory(keys).join(format!("pending-mint-{}.json", hex::encode(&scope[..16])))
 }
 
 async fn settle_expired_scope_reservations(
