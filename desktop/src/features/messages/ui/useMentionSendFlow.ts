@@ -609,8 +609,11 @@ export function useMentionSendFlow({
             onComplete: async (uploaded, signal) => {
               try {
                 await finishSend(uploaded, signal);
-              } catch {
+              } catch (error) {
                 restoreComposerAfterFailure();
+                toast.error(
+                  getErrorMessage(error, "The message could not be sent."),
+                );
               }
             },
             onError: (error) => {
@@ -639,8 +642,13 @@ export function useMentionSendFlow({
         if (!preparedUpload) {
           try {
             await finishSend([]);
-          } catch {
+          } catch (error) {
             restoreComposerAfterFailure();
+            // A paid instruction that fails to publish must say so: the
+            // checkout already closed, so silence here reads as "sent".
+            toast.error(
+              getErrorMessage(error, "The message could not be sent."),
+            );
           }
         }
       } finally {
