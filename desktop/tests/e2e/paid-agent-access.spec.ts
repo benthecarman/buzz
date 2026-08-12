@@ -60,6 +60,15 @@ async function paymentBeginCount(page: Page) {
   );
 }
 
+async function walletStatusRequestCount(page: Page) {
+  return page.evaluate(
+    () =>
+      (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+        (command) => command === "wallet_get_status",
+      ).length,
+  );
+}
+
 async function sentPaymentAttemptIds(page: Page) {
   return page.evaluate(() =>
     (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [])
@@ -104,6 +113,7 @@ test("one zap grants reusable Agent access for five minutes", async ({
   });
   await page.goto("/");
   await page.getByTestId("channel-general").click();
+  const statusRequestsBeforeCheckout = await walletStatusRequestCount(page);
 
   await selectPaidAgent(page, "first");
   await page.getByTestId("send-message").click();
@@ -113,6 +123,9 @@ test("one zap grants reusable Agent access for five minutes", async ({
     .click();
   const checkout = page.getByTestId("agent-runtime-checkout");
   await expect(checkout).toBeVisible();
+  await expect
+    .poll(() => walletStatusRequestCount(page))
+    .toBe(statusRequestsBeforeCheckout + 1);
   await expect(checkout).toContainText("₿ 255");
   await expect(checkout).toContainText("$0.20");
   await expect(checkout).toContainText("5 minutes of access");

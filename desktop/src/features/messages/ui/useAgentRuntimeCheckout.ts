@@ -9,6 +9,7 @@ import {
 import {
   beginAgentRuntimeZap,
   sendAgentRuntimeZap,
+  warmWallet,
 } from "@/features/wallet/api";
 import { walletCommandError } from "@/features/wallet/lib/walletError";
 import type { ChannelType, ManagedAgent } from "@/shared/api/types";
@@ -126,6 +127,7 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
       const nextCheckout = { channelId, rows };
       saveAgentRuntimeCheckout(storageScope, nextCheckout);
       setError(null);
+      void warmWallet().catch(() => undefined);
       setCheckout(nextCheckout);
       return new Promise<string[][] | null>((resolve) => {
         resolveRef.current = resolve;

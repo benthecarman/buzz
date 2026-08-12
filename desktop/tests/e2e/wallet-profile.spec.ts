@@ -112,10 +112,26 @@ async function openBobProfile(page: Page, bolt12Offer?: string | null) {
 
 test("sends bitcoin without relying on kind-0 metadata", async ({ page }) => {
   await openBobProfile(page);
+  const statusRequestsBeforeDialog = await page.evaluate(
+    () =>
+      (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+        (command) => command === "wallet_get_status",
+      ).length,
+  );
 
   await page.getByTestId("user-profile-send-bitcoin").click();
   const dialog = page.getByTestId("send-bitcoin-dialog");
   await expect(dialog).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+            (command) => command === "wallet_get_status",
+          ).length,
+      ),
+    )
+    .toBe(statusRequestsBeforeDialog + 1);
 
   const amount = dialog.getByLabel("Amount");
   await expect(amount).toBeEnabled();

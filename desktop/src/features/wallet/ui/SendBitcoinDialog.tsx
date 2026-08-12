@@ -6,6 +6,7 @@ import {
   getPendingProfileZap,
   getRecipientWalletOffer,
   sendProfileZap,
+  warmWallet,
 } from "../api";
 import { formatBitcoin } from "../lib/formatBitcoin";
 import { parseWholeBitcoinAmount } from "../lib/profileZap";
@@ -64,6 +65,7 @@ export function SendBitcoinDialog({
     setOfferState("loading");
     setOfferError(null);
     setPendingState("loading");
+    void warmWallet().catch(() => undefined);
     getRecipientWalletOffer(recipientPubkey)
       .then(() => {
         if (!cancelled) setOfferState("ready");

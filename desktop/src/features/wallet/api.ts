@@ -49,6 +49,11 @@ export function getWalletStatus(): Promise<WalletStatus> {
   return invoke<WalletStatus>("wallet_get_status");
 }
 
+/** Start the wallet node before an operation that can require a payment. */
+export async function warmWallet(): Promise<void> {
+  await getWalletStatus();
+}
+
 export function createWalletReceiveRequest(): Promise<WalletFundingRequest> {
   return invoke<WalletFundingRequest>("wallet_create_receive_request");
 }
