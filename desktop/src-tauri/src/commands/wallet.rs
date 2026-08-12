@@ -107,6 +107,9 @@ pub(crate) mod enabled {
         // have performed the sync first, in which case poll_updates reports no
         // change even though this listener has not observed the payment yet.
         let page = provider.transactions(None, 100, false).await?;
+        // Capture every value needed by renderer consumers before marking the
+        // payment as seen. A failed snapshot is retried on the next cycle.
+        let status = provider.status().await?;
         let incoming = incoming_payment_tracker()
             .lock()
             .await
@@ -115,7 +118,12 @@ pub(crate) mod enabled {
             return Ok(());
         }
         for transaction in incoming {
-            if let Err(error) = app.emit(INCOMING_PAYMENT_EVENT, &transaction) {
+            let event = WalletIncomingPaymentEvent {
+                transaction,
+                status: status.clone(),
+                transactions: page.transactions.clone(),
+            };
+            if let Err(error) = app.emit(INCOMING_PAYMENT_EVENT, &event) {
                 tracing::warn!(error = %error, "emit incoming wallet payment");
             }
         }
@@ -194,9 +202,9 @@ pub(crate) mod enabled {
         wallet::{
             models::{
                 WalletDestinationAnalysis, WalletEnableResult, WalletError, WalletFundingRequest,
-                WalletOfferPublicationResult, WalletPaymentResult, WalletProfileZapResult,
-                WalletRecipientOffer, WalletSendRequest, WalletStatus, WalletTransaction,
-                WalletTransactionPage, WalletVerifiedZapEvent,
+                WalletIncomingPaymentEvent, WalletOfferPublicationResult, WalletPaymentResult,
+                WalletProfileZapResult, WalletRecipientOffer, WalletSendRequest, WalletStatus,
+                WalletTransaction, WalletTransactionPage, WalletVerifiedZapEvent,
             },
             offer_conformance::OfferPublicationTrace,
             provider::{WalletPaymentMatch, WalletProvider},
@@ -997,20 +1005,6 @@ pub(crate) mod enabled {
             .await
     }
 
-    #[tauri::command]
-    pub async fn wallet_poll_updates(
-        app: AppHandle,
-        state: State<'_, AppState>,
-    ) -> Result<bool, WalletError> {
-        let reconciled_zaps = zap_commands::reconcile_wallet_background_once(&app, &state).await?;
-        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        let provider = wallet_manager()
-            .provider_for(&keys, &app_data_dir(&app)?)
-            .await?;
-        let changed = provider.poll_updates().await?;
-        Ok(changed || reconciled_zaps)
-    }
-
     /// Restore the frontend-owned wallet feature setting after startup.
     /// Provision an enabled wallet for current provider releases before
     /// payment polling starts. This command does not sign up or disable a
@@ -1053,7 +1047,8 @@ pub(crate) mod enabled {
     mod tests {
         use super::{
             is_unsupported_wallet_event_kind, paying_attempt_expired, wallet_relay_api_base_urls,
-            IncomingPaymentTracker, WalletTransaction, PAYING_ATTEMPT_GRACE_MS,
+            IncomingPaymentTracker, WalletIncomingPaymentEvent, WalletStatus, WalletTransaction,
+            PAYING_ATTEMPT_GRACE_MS,
         };
 
         fn transaction(id: &str, direction: &str, status: &str) -> WalletTransaction {
@@ -1149,6 +1144,27 @@ pub(crate) mod enabled {
                 .is_empty());
             assert!(tracker.observe("bob", &[payment]).is_empty());
         }
+
+        #[test]
+        fn incoming_payment_event_contains_the_authoritative_snapshot() {
+            let payment = transaction("new", "inbound", "completed");
+            let event = WalletIncomingPaymentEvent {
+                transaction: payment.clone(),
+                status: WalletStatus {
+                    provider_name: "Lexe".to_string(),
+                    balance: 21,
+                    spendable_balance: 20,
+                    lightning_balance: 21,
+                    onchain_balance: 0,
+                },
+                transactions: vec![payment],
+            };
+
+            let json = serde_json::to_value(event).expect("event serializes");
+            assert_eq!(json["transaction"]["id"], "new");
+            assert_eq!(json["status"]["spendableBalance"], 20);
+            assert_eq!(json["transactions"][0]["id"], "new");
+        }
     }
 }
 
@@ -1199,7 +1215,6 @@ mod disabled {
             sync: Option<bool>,
         ) -> serde_json::Value
     );
-    disabled_async_command!(wallet_poll_updates() -> bool);
     disabled_async_command!(wallet_set_polling_enabled(enabled: bool) -> ());
     #[tauri::command]
     pub fn wallet_parse_zap_events(

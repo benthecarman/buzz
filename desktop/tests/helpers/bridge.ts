@@ -360,12 +360,12 @@ type MockBridgeOptions = {
   websocketConnectErrors?: string[];
   stallWebsocketSends?: boolean;
   userSearchDelayMs?: number;
-  /** Successive `wallet_poll_updates` results; defaults to no changes. */
-  walletPollUpdates?: boolean[];
   /** Current mocked wallet totals, mutable by wallet polling specs. */
   walletBalance?: number;
   walletSpendableBalance?: number;
   walletTransactions?: WalletTransaction[];
+  /** Delay wallet history reads to exercise snapshot ordering races. */
+  walletTransactionDelayMs?: number;
   /** Exact persisted request returned for pending-payment reconciliation. */
   walletPendingSend?: {
     destination: string;

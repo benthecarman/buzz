@@ -55,7 +55,6 @@ test("received zap UI never reads wallet state", () => {
     "getWalletStatus",
     "listWalletTransactions",
     "listPlaceholderMessageZaps",
-    "pollWalletUpdates",
     "usePlaceholderMessageZaps",
   ];
 

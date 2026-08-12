@@ -182,7 +182,7 @@ test("shows the received amount in the incoming payment toast", async ({
   await expect(page.getByTestId("channel-general")).toBeVisible();
 
   await page.evaluate(async () => {
-    await window.__BUZZ_E2E_EMIT_TAURI_EVENT__?.("wallet-incoming-payment", {
+    const transaction = {
       id: "incoming-payment",
       direction: "inbound",
       status: "completed",
@@ -194,6 +194,17 @@ test("shows the received amount in the incoming payment toast", async ({
       offerId: null,
       createdAtMs: Date.now(),
       finalizedAtMs: Date.now(),
+    };
+    await window.__BUZZ_E2E_EMIT_TAURI_EVENT__?.("wallet-incoming-payment", {
+      transaction,
+      status: {
+        providerName: "Lexe",
+        balance: 49,
+        spendableBalance: 49,
+        lightningBalance: 49,
+        onchainBalance: 0,
+      },
+      transactions: [transaction],
     });
   });
 

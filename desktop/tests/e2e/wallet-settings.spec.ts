@@ -26,7 +26,6 @@ test.beforeEach(async ({ page }) => {
     { storageKey: FEATURE_OVERRIDES_STORAGE_KEY },
   );
   await installMockBridge(page, {
-    walletPollUpdates: [],
     walletBalance: 21_000,
     walletSpendableBalance: 20_000,
     walletTransactions: [
@@ -334,20 +333,27 @@ test("transfer out preserves a fresh request after a provider reconciliation err
   expect(result.requests[1]).toEqual(result.requests[0]);
 });
 
-test("wallet polling refreshes the balance when Lexe reports a payment change", async ({
+test("incoming payment event refreshes the wallet balance", async ({
   page,
 }) => {
   await page.goto("/");
+  await page.evaluate(() => {
+    const testWindow = window as Window & {
+      __BUZZ_E2E__?: { mock?: { walletTransactionDelayMs?: number } };
+    };
+    if (testWindow.__BUZZ_E2E__?.mock) {
+      testWindow.__BUZZ_E2E__.mock.walletTransactionDelayMs = 1_000;
+    }
+  });
   await openSettings(page, "wallet");
 
   const balance = page.getByTestId("wallet-spendable-balance");
   await expect(balance).toContainText("20,000");
 
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const testWindow = window as Window & {
       __BUZZ_E2E__?: {
         mock?: {
-          walletPollUpdates?: boolean[];
           walletBalance?: number;
           walletSpendableBalance?: number;
         };
@@ -356,12 +362,43 @@ test("wallet polling refreshes the balance when Lexe reports a payment change", 
     if (!testWindow.__BUZZ_E2E__?.mock) {
       throw new Error("mock bridge config is unavailable");
     }
-    testWindow.__BUZZ_E2E__.mock.walletPollUpdates = [true];
     testWindow.__BUZZ_E2E__.mock.walletBalance = 22_000;
     testWindow.__BUZZ_E2E__.mock.walletSpendableBalance = 22_000;
+    const transaction = {
+      id: "overview-incoming-payment",
+      direction: "inbound",
+      status: "completed",
+      statusMessage: "Payment completed",
+      amount: 2_000,
+      fees: 0,
+      note: null,
+      payerNote: null,
+      offerId: null,
+      createdAtMs: Date.now(),
+      finalizedAtMs: Date.now(),
+    };
+    await window.__BUZZ_E2E_EMIT_TAURI_EVENT__?.("wallet-incoming-payment", {
+      transaction,
+      status: {
+        providerName: "Lexe",
+        balance: 22_000,
+        spendableBalance: 22_000,
+        lightningBalance: 22_000,
+        onchainBalance: 0,
+      },
+      transactions: [transaction],
+    });
   });
 
   await expect(balance).toContainText("22,000", { timeout: 10_000 });
+  await expect(
+    page.getByTestId("wallet-transaction-overview-incoming-payment"),
+  ).toBeVisible();
+  // The delayed initial history response must not overwrite the newer event.
+  await page.waitForTimeout(1_100);
+  await expect(
+    page.getByTestId("wallet-transaction-overview-incoming-payment"),
+  ).toBeVisible();
   const commands = await page.evaluate(
     () =>
       (
@@ -370,7 +407,6 @@ test("wallet polling refreshes the balance when Lexe reports a payment change", 
         }
       ).__BUZZ_E2E_COMMANDS__ ?? [],
   );
-  expect(commands).toContain("wallet_poll_updates");
   expect(
     commands.filter((command) => command === "wallet_get_status").length,
   ).toBeGreaterThanOrEqual(1);
@@ -385,11 +421,10 @@ test("successful funding closes the QR and returns to the wallet overview", asyn
   await page.getByRole("button", { name: "Fund wallet" }).click();
   await expect(page.getByTestId("wallet-receive-qr")).toBeVisible();
 
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const testWindow = window as Window & {
       __BUZZ_E2E__?: {
         mock?: {
-          walletPollUpdates?: boolean[];
           walletBalance?: number;
           walletSpendableBalance?: number;
         };
@@ -398,19 +433,43 @@ test("successful funding closes the QR and returns to the wallet overview", asyn
     if (!testWindow.__BUZZ_E2E__?.mock) {
       throw new Error("mock bridge config is unavailable");
     }
-    testWindow.__BUZZ_E2E__.mock.walletPollUpdates = [true];
     testWindow.__BUZZ_E2E__.mock.walletBalance = 22_000;
     testWindow.__BUZZ_E2E__.mock.walletSpendableBalance = 22_000;
+    const transaction = {
+      id: "new-funding-payment",
+      direction: "inbound",
+      status: "completed",
+      statusMessage: "Payment completed",
+      amount: 1_000,
+      fees: 0,
+      note: null,
+      payerNote: null,
+      offerId: null,
+      createdAtMs: Date.now(),
+      finalizedAtMs: Date.now(),
+    };
+    await window.__BUZZ_E2E_EMIT_TAURI_EVENT__?.("wallet-incoming-payment", {
+      transaction,
+      status: {
+        providerName: "Lexe",
+        balance: 22_000,
+        spendableBalance: 22_000,
+        lightningBalance: 22_000,
+        onchainBalance: 0,
+      },
+      transactions: [transaction],
+    });
   });
 
   await expect(page.getByTestId("wallet-receive-qr")).toHaveCount(0, {
     timeout: 10_000,
   });
   await expect(
-    page
-      .locator("[data-sonner-toast]")
-      .filter({ hasText: "Funds received: ₿ 1,000" }),
+    page.locator("[data-sonner-toast]").filter({ hasText: "Bitcoin received" }),
   ).toBeVisible();
+  await expect(page.getByTestId("wallet-spendable-balance")).toHaveText(
+    "₿ 22,000",
+  );
   await expect(
     page.getByText("Transfer bitcoin from an external Lightning wallet"),
   ).toHaveCount(0);

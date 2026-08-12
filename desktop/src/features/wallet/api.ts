@@ -118,10 +118,6 @@ export function listWalletTransactions(
   });
 }
 
-export function pollWalletUpdates(): Promise<boolean> {
-  return invoke<boolean>("wallet_poll_updates");
-}
-
 export function setWalletPollingEnabled(enabled: boolean): Promise<void> {
   return invoke<void>("wallet_set_polling_enabled", { enabled });
 }

@@ -135,6 +135,18 @@ pub struct WalletTransactionPage {
     pub next_cursor: Option<String>,
 }
 
+/// Authoritative wallet state captured when a new inbound payment is found.
+///
+/// The renderer uses this snapshot directly. It does not start a second
+/// provider sync after the native poller has marked the payment as seen.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletIncomingPaymentEvent {
+    pub transaction: WalletTransaction,
+    pub status: WalletStatus,
+    pub transactions: Vec<WalletTransaction>,
+}
+
 /// Recipient-authored offer and the signed event that authorized it.
 ///
 /// The complete event JSON is retained because the BOLT12 zap intent embeds

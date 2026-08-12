@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -23,25 +24,37 @@ import {
   getPendingWalletSend,
   getWalletStatus,
   listWalletTransactions,
-  pollWalletUpdates,
   refreshWalletOffer,
   revealWalletRecoveryPhrase,
   sendWalletPayment,
 } from "../api";
+import { INCOMING_WALLET_PAYMENT_EVENT } from "../events";
 import { formatBitcoin, formatSatsAsUsd } from "../lib/formatBitcoin";
 import { parseWholeBitcoinAmount } from "../lib/profileZap";
 import { walletCommandError, walletErrorMessage } from "../lib/walletError";
 import type {
   WalletFundingRequest,
+  WalletIncomingPaymentEvent,
   WalletSendRequest,
   WalletStatus,
   WalletTransaction,
 } from "../types";
 import { ZapHistoryCard } from "./ZapHistoryCard";
 
-const WALLET_POLL_INTERVAL_MS = 5_000;
-const WALLET_POLL_MAX_BACKOFF_MS = 60_000;
 type WalletAction = "fund" | "transfer";
+
+function mergeWalletTransactions(
+  incoming: WalletTransaction[],
+  current: WalletTransaction[],
+): WalletTransaction[] {
+  const byId = new Map(
+    current.map((transaction) => [transaction.id, transaction]),
+  );
+  for (const transaction of incoming) byId.set(transaction.id, transaction);
+  return [...byId.values()].sort(
+    (left, right) => right.createdAtMs - left.createdAtMs,
+  );
+}
 
 function WalletLoading() {
   return (
@@ -619,11 +632,19 @@ export function WalletSettingsPanel() {
       fundingStartBalanceRef.current = null;
       setFunding(null);
       setActiveAction(null);
-      toast.success(
-        `Funds received: ${formatBitcoin(nextBalance - startingBalance)}`,
-      );
     },
     [activeAction],
+  );
+
+  const applyWalletSnapshot = useCallback(
+    (nextStatus: WalletStatus, nextTransactions: WalletTransaction[]) => {
+      setStatus(nextStatus);
+      setTransactions((current) =>
+        mergeWalletTransactions(nextTransactions, current),
+      );
+      completeFundingIfReceived(nextStatus.balance);
+    },
+    [completeFundingIfReceived],
   );
 
   const loadHistory = useCallback(async (cursor?: string) => {
@@ -632,7 +653,7 @@ export function WalletSettingsPanel() {
     try {
       const page = await listWalletTransactions(cursor);
       setTransactions((current) =>
-        cursor ? [...current, ...page.transactions] : page.transactions,
+        mergeWalletTransactions(page.transactions, current),
       );
       setNextCursor(page.nextCursor);
     } catch (loadError) {
@@ -665,88 +686,28 @@ export function WalletSettingsPanel() {
 
   useEffect(() => {
     if (!walletReady) return;
-
-    let cancelled = false;
-    let pollRunning = false;
-    let timeoutId: number | null = null;
-    let consecutiveFailures = 0;
-
-    function clearScheduledPoll() {
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-    }
-
-    function schedulePoll(delayMs: number) {
-      if (cancelled || document.visibilityState !== "visible") return;
-      clearScheduledPoll();
-      timeoutId = window.setTimeout(() => {
-        timeoutId = null;
-        void poll();
-      }, delayMs);
-    }
-
-    async function poll() {
-      if (cancelled || pollRunning || document.visibilityState !== "visible") {
-        return;
-      }
-      pollRunning = true;
-      try {
-        const changed = await pollWalletUpdates();
-        consecutiveFailures = 0;
-        if (changed) {
-          const [nextStatus, page] = await Promise.all([
-            getWalletStatus(),
-            listWalletTransactions(undefined, false),
-          ]);
-          if (!cancelled) {
-            setStatus(nextStatus);
-            setTransactions((current) => {
-              const newestIds = new Set(
-                page.transactions.map((transaction) => transaction.id),
-              );
-              return [
-                ...page.transactions,
-                ...current.filter(
-                  (transaction) => !newestIds.has(transaction.id),
-                ),
-              ];
-            });
-            completeFundingIfReceived(nextStatus.balance);
-          }
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<WalletIncomingPaymentEvent>(
+      INCOMING_WALLET_PAYMENT_EVENT,
+      ({ payload }) => {
+        if (!disposed) {
+          applyWalletSnapshot(payload.status, payload.transactions);
         }
-      } catch {
-        consecutiveFailures += 1;
-      } finally {
-        pollRunning = false;
-        const backoffMultiplier = 2 ** Math.min(consecutiveFailures, 4);
-        schedulePoll(
-          Math.min(
-            WALLET_POLL_INTERVAL_MS * backoffMultiplier,
-            WALLET_POLL_MAX_BACKOFF_MS,
-          ),
-        );
-      }
-    }
-
-    function handleVisibilityChange() {
-      if (document.visibilityState === "visible") {
-        schedulePoll(0);
-      } else {
-        clearScheduledPoll();
-      }
-    }
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    schedulePoll(WALLET_POLL_INTERVAL_MS);
-
+      },
+    )
+      .then((nextUnlisten) => {
+        if (disposed) nextUnlisten();
+        else unlisten = nextUnlisten;
+      })
+      .catch((listenError) => {
+        console.warn("[wallet] incoming payment listener failed", listenError);
+      });
     return () => {
-      cancelled = true;
-      clearScheduledPoll();
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      disposed = true;
+      unlisten?.();
     };
-  }, [completeFundingIfReceived, walletReady]);
+  }, [applyWalletSnapshot, walletReady]);
 
   async function refreshStatusAndHistory() {
     setRefreshingBalance(true);

@@ -929,7 +929,6 @@ pub fn run() {
             wallet_get_pending_send,
             wallet_send,
             wallet_list_transactions,
-            wallet_poll_updates,
             wallet_set_polling_enabled,
             wallet_parse_zap_events,
             wallet_get_recipient_offer,

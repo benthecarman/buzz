@@ -417,11 +417,12 @@ type E2eConfig = {
     websocketConnectErrors?: string[];
     stallWebsocketSends?: boolean;
     userSearchDelayMs?: number;
-    /** Successive `wallet_poll_updates` results; defaults to no changes. */
-    walletPollUpdates?: boolean[];
-    /** Current mocked wallet totals, mutable by wallet polling specs. */
+    /** Current mocked wallet totals, mutable by wallet event specs. */
     walletBalance?: number;
     walletSpendableBalance?: number;
+    walletTransactions?: WalletTransaction[];
+    /** Delay wallet history reads to exercise snapshot ordering races. */
+    walletTransactionDelayMs?: number;
     /** Exact persisted request returned for pending-payment reconciliation. */
     walletPendingSend?: {
       destination: string;
@@ -12212,12 +12213,18 @@ export function maybeInstallE2eTauriMocks() {
       case "wallet_get_pending_profile_zap":
         return null;
       case "wallet_list_transactions":
+        if (activeConfig?.mock?.walletTransactionDelayMs) {
+          await new Promise((resolve) =>
+            window.setTimeout(
+              resolve,
+              activeConfig.mock?.walletTransactionDelayMs,
+            ),
+          );
+        }
         return {
-          transactions: [],
+          transactions: activeConfig?.mock?.walletTransactions ?? [],
           nextCursor: null,
         };
-      case "wallet_poll_updates":
-        return activeConfig?.mock?.walletPollUpdates?.shift() ?? false;
       case "wallet_set_polling_enabled":
         return null;
       case "wallet_parse_zap_events":

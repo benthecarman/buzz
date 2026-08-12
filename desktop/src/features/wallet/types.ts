@@ -68,6 +68,12 @@ export interface WalletTransactionPage {
   nextCursor: string | null;
 }
 
+export interface WalletIncomingPaymentEvent {
+  transaction: WalletTransaction;
+  status: WalletStatus;
+  transactions: WalletTransaction[];
+}
+
 export interface WalletRecipientOffer {
   recipientPubkey: string;
   offer: string;
