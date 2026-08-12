@@ -679,7 +679,7 @@ pub(crate) mod enabled {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let app_data_dir = app_data_dir(&app)?;
         let provider = wallet_manager().provider_for(&keys, &app_data_dir).await?;
-        provider.provision().await?;
+        provider.signup().await?;
         let status = provider.status().await?;
         ensure_incoming_payment_baseline(&keys.public_key().to_hex(), &provider).await?;
         let offer = provider.offer(false).await?;
@@ -1011,8 +1011,10 @@ pub(crate) mod enabled {
         Ok(changed || reconciled_zaps)
     }
 
-    /// Restore the frontend-owned wallet feature setting after startup. This
-    /// does not provision or disable a wallet; those remain explicit commands.
+    /// Restore the frontend-owned wallet feature setting after startup.
+    /// Provision an enabled wallet for current provider releases before
+    /// payment polling starts. This command does not sign up or disable a
+    /// wallet.
     #[tauri::command]
     pub async fn wallet_set_polling_enabled(
         app: AppHandle,
@@ -1024,6 +1026,7 @@ pub(crate) mod enabled {
             let provider = wallet_manager()
                 .provider_for(&keys, &app_data_dir(&app)?)
                 .await?;
+            provider.provision().await?;
             // Baseline before activation so a payment received immediately
             // after this command is observed as new by the next cycle.
             let baseline =

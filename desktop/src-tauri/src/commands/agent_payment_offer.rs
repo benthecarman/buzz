@@ -35,9 +35,8 @@ pub(super) async fn ensure_price_is_payable(
 
 /// Publish this agent's offer from the owner's existing wallet.
 ///
-/// Never provisions a wallet that does not exist: pricing an agent must not
-/// silently create a Lightning node, so an owner without one is told to enable
-/// the wallet instead.
+/// The shared offer helper provisions current provider releases before it
+/// creates the agent-scoped offer.
 #[cfg(feature = "bitcoin")]
 async fn publish_agent_payment_offer(
     app: &AppHandle,

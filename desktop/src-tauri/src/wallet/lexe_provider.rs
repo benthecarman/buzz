@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use lexe::{
     config::WalletEnvConfig,
     types::{
-        auth::RootSeed,
+        auth::{CredentialsRef, RootSeed},
         bitcoin::{Amount, Invoice, Offer},
         command::{
             AnalyzeRequest, CreateInvoiceRequest, CreateOfferRequest, PayOfferRequest, PayRequest,
@@ -259,12 +259,19 @@ impl LexeProvider {
 
 #[async_trait]
 impl WalletProvider for LexeProvider {
-    async fn provision(&self) -> Result<(), WalletError> {
+    async fn signup(&self) -> Result<(), WalletError> {
         // Lexe documents signup as idempotent. It also performs initial
-        // provisioning, so this handles both first enable and recovery on a
-        // clean install using the same deterministic root seed.
+        // provisioning, so this also recovers a clean install that uses the
+        // same deterministic root seed.
         self.wallet
             .signup(&self.root_seed, None)
+            .await
+            .map_err(|error| WalletError::provider(format!("sign up Lexe wallet: {error:#}")))
+    }
+
+    async fn provision(&self) -> Result<(), WalletError> {
+        self.wallet
+            .provision(CredentialsRef::from(&self.root_seed))
             .await
             .map_err(|error| WalletError::provider(format!("provision Lexe wallet: {error:#}")))
     }

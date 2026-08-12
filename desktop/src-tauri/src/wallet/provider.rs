@@ -19,6 +19,10 @@ pub(crate) struct WalletPaymentMatch<'a> {
 /// to operations exercised by Buzz rather than anticipated provider features.
 #[async_trait]
 pub trait WalletProvider: Send + Sync {
+    /// Register a new wallet and complete its initial provisioning.
+    async fn signup(&self) -> Result<(), WalletError>;
+
+    /// Provision all current provider releases for an existing wallet.
     async fn provision(&self) -> Result<(), WalletError>;
 
     async fn status(&self) -> Result<WalletStatus, WalletError>;
