@@ -6,7 +6,10 @@ import {
   getAgentRuntimeStatus,
   runtimeZapMessageTag,
 } from "@/features/agents/runtimePayments";
-import { sendAgentRuntimeZap } from "@/features/wallet/api";
+import {
+  beginAgentRuntimeZap,
+  sendAgentRuntimeZap,
+} from "@/features/wallet/api";
 import { walletCommandError } from "@/features/wallet/lib/walletError";
 import type { ChannelType, ManagedAgent } from "@/shared/api/types";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -17,10 +20,9 @@ import {
   saveAgentRuntimeCheckout,
 } from "../lib/agentRuntimeCheckoutStorage";
 import type { RuntimeCheckoutRow } from "./AgentRuntimeCheckoutDialog";
-import { getErrorMessage } from "./useMentionSendFlow.helpers";
 
 type PendingRow = RuntimeCheckoutRow & {
-  zapIdempotencyKey: string;
+  paymentAttemptId: string | null;
   zapEventId: string | null;
   validUntilSeconds: number | null;
 };
@@ -96,6 +98,8 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
           Math.floor(Date.now() / 1_000),
         );
         const zapEventId = activeZap?.zapEventId ?? cachedZap;
+        const paymentAttemptId =
+          previous?.zapEventId === null ? previous.paymentAttemptId : null;
         return {
           pubkey: normalizePubkey(agent.pubkey),
           name: agent.name,
@@ -104,7 +108,7 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
           invocationWindowSeconds: pricing?.invocationWindowSeconds ?? 300,
           pricingEventJson: pricing?.pricingEventJson ?? null,
           needsPayment: zapEventId === null,
-          zapIdempotencyKey: previous?.zapIdempotencyKey ?? crypto.randomUUID(),
+          paymentAttemptId,
           zapEventId,
           validUntilSeconds: activeZap
             ? activeZap.validUntil
@@ -160,7 +164,9 @@ export function useAgentRuntimeCheckout(channelType: ChannelType | null) {
         setCheckout(null);
       })
       .catch((cause) => {
-        setError(getErrorMessage(cause, "Could not buy Agent access."));
+        setError(
+          walletCommandError(cause).message ?? "Could not buy Agent access.",
+        );
       })
       .finally(() => setIsPaying(false));
   }, [checkout, checkoutScope, isPaying]);
@@ -190,13 +196,28 @@ async function completeCheckout(
       throw new Error(`${row.name} does not currently accept payment.`);
     }
     try {
+      if (!row.paymentAttemptId) {
+        const attempt = await beginAgentRuntimeZap({
+          agentPubkey: row.pubkey,
+          channelId: checkout.channelId,
+          pricingEventJson: row.pricingEventJson,
+        });
+        row = { ...row, paymentAttemptId: attempt.intentEventId };
+        rows[index] = row;
+        updateRows([...rows]);
+      }
+      const paymentAttemptId = row.paymentAttemptId;
+      if (!paymentAttemptId) {
+        throw new Error(`Could not prepare payment for ${row.name}.`);
+      }
       const result = await sendAgentRuntimeZap({
-        agentPubkey: row.pubkey,
-        channelId: checkout.channelId,
-        pricingEventJson: row.pricingEventJson,
-        idempotencyKey: row.zapIdempotencyKey,
+        intentEventId: paymentAttemptId,
       });
-      if (!result.proofPublished || !result.proofEventId) {
+      if (
+        !result.proofPublished ||
+        !result.proofEventId ||
+        result.proofCreatedAtSeconds === null
+      ) {
         throw new Error(
           `${row.name} received the payment without a zap proof.`,
         );
@@ -205,14 +226,19 @@ async function completeCheckout(
         ...row,
         zapEventId: result.proofEventId,
         validUntilSeconds:
-          Math.floor(Date.now() / 1_000) + row.invocationWindowSeconds,
+          result.proofCreatedAtSeconds + row.invocationWindowSeconds,
       };
       row = { ...row, needsPayment: false };
       rows[index] = row;
       updateRows([...rows]);
     } catch (cause) {
-      if (walletCommandError(cause).code === "payment_failed") {
-        row = { ...row, zapIdempotencyKey: crypto.randomUUID() };
+      const code = walletCommandError(cause).code;
+      if (
+        code === "payment_failed" ||
+        code === "payment_attempt_missing" ||
+        code === "payment_attempt_superseded"
+      ) {
+        row = { ...row, paymentAttemptId: null };
         rows[index] = row;
         updateRows([...rows]);
       }

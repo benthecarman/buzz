@@ -205,8 +205,8 @@ pub async fn agent_runtime_get_status(
     })
 }
 
-async fn fetch_pricing_terms(
-    state: &State<'_, AppState>,
+pub(crate) async fn fetch_pricing_terms(
+    state: &AppState,
     relay: &str,
     keys: &nostr::Keys,
     agent: &PublicKey,

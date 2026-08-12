@@ -1,5 +1,5 @@
 export const AGENT_RUNTIME_CHECKOUT_STORAGE_PREFIX =
-  "buzz.agent-runtime-checkout.v4";
+  "buzz.agent-runtime-checkout.v5";
 
 export type StoredAgentRuntimeCheckoutRow = {
   pubkey: string;
@@ -7,13 +7,13 @@ export type StoredAgentRuntimeCheckoutRow = {
   ownerPubkey: string | null;
   priceSats: number;
   invocationWindowSeconds: number;
-  zapIdempotencyKey: string;
+  paymentAttemptId: string | null;
   zapEventId: string | null;
   validUntilSeconds: number | null;
 };
 
 export type StoredAgentRuntimeCheckout = {
-  version: 4;
+  version: 5;
   channelId: string;
   updatedAtMs: number;
   rows: StoredAgentRuntimeCheckoutRow[];
@@ -34,8 +34,9 @@ function isRow(value: unknown): value is StoredAgentRuntimeCheckoutRow {
     Number.isSafeInteger(row.priceSats) &&
     Number(row.priceSats) > 0 &&
     row.invocationWindowSeconds === 300 &&
-    typeof row.zapIdempotencyKey === "string" &&
-    row.zapIdempotencyKey.length > 0 &&
+    (row.paymentAttemptId === null ||
+      (typeof row.paymentAttemptId === "string" &&
+        /^[0-9a-f]{64}$/u.test(row.paymentAttemptId))) &&
     (row.zapEventId === null ||
       (typeof row.zapEventId === "string" &&
         /^[0-9a-f]{64}$/u.test(row.zapEventId))) &&
@@ -54,7 +55,7 @@ export function loadAgentRuntimeCheckout(
     if (!encoded) return null;
     const value = JSON.parse(encoded) as Partial<StoredAgentRuntimeCheckout>;
     if (
-      value.version !== 4 ||
+      value.version !== 5 ||
       typeof value.channelId !== "string" ||
       !Number.isSafeInteger(value.updatedAtMs) ||
       !Array.isArray(value.rows) ||
@@ -75,7 +76,7 @@ export function saveAgentRuntimeCheckout(
 ): void {
   storage.setItem(
     storageKey(scopeId),
-    JSON.stringify({ ...checkout, version: 4, updatedAtMs: Date.now() }),
+    JSON.stringify({ ...checkout, version: 5, updatedAtMs: Date.now() }),
   );
 }
 

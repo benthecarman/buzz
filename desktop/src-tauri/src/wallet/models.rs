@@ -181,18 +181,32 @@ pub struct WalletProfileZapRequest {
     pub target_event_kind: Option<u32>,
 }
 
-/// Purchase of one invocation window against the Agent's published terms.
+/// Create one durable invocation-window payment intent.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WalletAgentRuntimeZapRequest {
+pub struct WalletAgentRuntimeZapBeginRequest {
     /// Agent whose published terms this purchase pays against.
     pub agent_pubkey: String,
     /// Non-DM channel in which the zap grants access.
     pub channel_id: String,
     /// Exact signed kind-10101 pricing event that the zap targets.
     pub pricing_event_json: String,
-    /// Client-generated UUID reused for every retry of this exact purchase.
-    pub idempotency_key: String,
+}
+
+/// Identifier returned after native code persists an Agent payment intent.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletAgentRuntimeZapAttempt {
+    /// Payer-authenticated kind-9737 event id used for all later recovery.
+    pub intent_event_id: String,
+}
+
+/// Resume or send one natively prepared Agent payment intent.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletAgentRuntimeZapRequest {
+    /// Payer-authenticated kind-9737 event id returned by begin.
+    pub intent_event_id: String,
 }
 
 /// Restorable UI fields for an incomplete profile payment.
@@ -217,6 +231,7 @@ pub struct WalletProfileZapResult {
     pub payment: WalletPaymentResult,
     pub intent_event_id: String,
     pub proof_event_id: Option<String>,
+    pub proof_created_at_seconds: Option<u64>,
     pub proof_published: bool,
 }
 

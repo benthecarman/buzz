@@ -486,15 +486,14 @@ impl ZapAttempt {
 
     /// Prepare a runtime zap that targets the Agent's pricing event.
     pub fn prepare_agent_runtime(
-        idempotency_key: String,
         recipient: WalletRecipientOffer,
         amount: u64,
         channel_id: String,
         pricing_event_id: String,
         keys: &Keys,
     ) -> Result<Self, WalletError> {
-        Self::prepare_inner(
-            idempotency_key,
+        let mut attempt = Self::prepare_inner(
+            String::new(),
             recipient,
             amount,
             None,
@@ -504,7 +503,9 @@ impl ZapAttempt {
             )),
             Some(channel_id),
             keys,
-        )
+        )?;
+        attempt.idempotency_key = attempt.intent_event_id.clone();
+        Ok(attempt)
     }
 
     fn prepare_inner(
@@ -560,14 +561,12 @@ impl ZapAttempt {
     }
 
     pub fn result(&self) -> Option<WalletProfileZapResult> {
+        let proof = self.proof_event().ok().flatten();
         Some(WalletProfileZapResult {
             payment: self.payment.clone()?,
             intent_event_id: self.intent_event_id.clone(),
-            proof_event_id: self
-                .proof_event()
-                .ok()
-                .flatten()
-                .map(|event| event.id.to_hex()),
+            proof_event_id: proof.as_ref().map(|event| event.id.to_hex()),
+            proof_created_at_seconds: proof.map(|event| event.created_at.as_secs()),
             proof_published: self.proof_published,
         })
     }
@@ -652,6 +651,13 @@ impl ZapAttempt {
 pub struct ZapAttemptStore {
     directory: PathBuf,
     payer_pubkey: String,
+    key_format: AttemptKeyFormat,
+}
+
+#[derive(Clone, Copy)]
+enum AttemptKeyFormat {
+    Uuid,
+    IntentEventId,
 }
 
 impl ZapAttemptStore {
@@ -662,30 +668,207 @@ impl ZapAttemptStore {
                 .join("zap-attempts")
                 .join(payer_pubkey),
             payer_pubkey: payer_pubkey.to_string(),
+            key_format: AttemptKeyFormat::Uuid,
+        }
+    }
+
+    /// Store for paid-Agent attempts named by their signed intent event id.
+    pub fn new_agent_runtime(app_data_dir: &Path, payer_pubkey: &str) -> Self {
+        Self {
+            directory: app_data_dir
+                .join("wallet")
+                .join("agent-runtime-zap-attempts-v1")
+                .join(payer_pubkey),
+            payer_pubkey: payer_pubkey.to_string(),
+            key_format: AttemptKeyFormat::IntentEventId,
         }
     }
 
     fn path(&self, idempotency_key: &str) -> Result<PathBuf, WalletError> {
-        let id = Uuid::parse_str(idempotency_key).map_err(|_| {
-            WalletError::new(
-                "invalid_idempotency_key",
-                "profile payment idempotency key must be a UUID",
-            )
-        })?;
-        Ok(self.directory.join(format!("{id}.json")))
+        let filename = match self.key_format {
+            AttemptKeyFormat::Uuid => Uuid::parse_str(idempotency_key)
+                .map(|id| id.to_string())
+                .map_err(|_| {
+                    WalletError::new(
+                        "invalid_idempotency_key",
+                        "profile payment idempotency key must be a UUID",
+                    )
+                })?,
+            AttemptKeyFormat::IntentEventId => {
+                let event_id = nostr::EventId::from_hex(idempotency_key).map_err(|_| {
+                    WalletError::new(
+                        "invalid_payment_attempt",
+                        "Agent payment attempt id must be 32-byte lowercase hex",
+                    )
+                })?;
+                let canonical = event_id.to_hex();
+                if canonical != idempotency_key {
+                    return Err(WalletError::new(
+                        "invalid_payment_attempt",
+                        "Agent payment attempt id must be 32-byte lowercase hex",
+                    ));
+                }
+                canonical
+            }
+        };
+        Ok(self.directory.join(format!("{filename}.json")))
+    }
+
+    fn stored_attempts(&self) -> Result<Vec<ZapAttempt>, WalletError> {
+        let entries = match std::fs::read_dir(&self.directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(WalletError::unavailable(format!(
+                    "read zap attempt directory: {error}"
+                )))
+            }
+        };
+        let mut attempts = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(key) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            match self.load(key) {
+                Ok(Some(attempt)) => attempts.push(attempt),
+                Ok(None) => {}
+                Err(error) if matches!(self.key_format, AttemptKeyFormat::Uuid) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %error.message,
+                        "skip invalid profile zap attempt"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(attempts)
     }
 
     pub fn load(&self, idempotency_key: &str) -> Result<Option<ZapAttempt>, WalletError> {
         let path = self.path(idempotency_key)?;
         match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|error| WalletError::unavailable(format!("read zap attempt: {error}"))),
+            Ok(bytes) => {
+                let attempt = serde_json::from_slice(&bytes).map_err(|error| {
+                    WalletError::unavailable(format!("read zap attempt: {error}"))
+                })?;
+                self.validate_loaded_attempt(idempotency_key, &attempt)?;
+                Ok(Some(attempt))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(WalletError::unavailable(format!(
                 "open zap attempt: {error}"
             ))),
         }
+    }
+
+    fn validate_loaded_attempt(
+        &self,
+        attempt_key: &str,
+        attempt: &ZapAttempt,
+    ) -> Result<(), WalletError> {
+        if !matches!(self.key_format, AttemptKeyFormat::IntentEventId) {
+            return Ok(());
+        }
+        fn invalid(message: impl Into<String>) -> WalletError {
+            WalletError::new("invalid_payment_attempt", message)
+        }
+        if attempt.idempotency_key != attempt_key || attempt.intent_event_id != attempt_key {
+            return Err(invalid(
+                "Agent payment attempt id does not match its record",
+            ));
+        }
+        let intent = Event::from_json(&attempt.intent_event_json)
+            .map_err(|error| invalid(format!("decode Agent payment intent: {error}")))?;
+        intent
+            .verify()
+            .map_err(|error| invalid(format!("verify Agent payment intent: {error}")))?;
+        if intent.id.to_hex() != attempt_key
+            || intent.kind != Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16)
+            || intent.pubkey.to_hex() != self.payer_pubkey
+            || intent.content != attempt.comment.as_deref().unwrap_or_default()
+            || exact_event_tag(&intent, "p")? != attempt.recipient_pubkey
+            || exact_event_tag(&intent, "amount")? != amount_msats(attempt.amount)?
+            || exact_event_tag(&intent, "offer_event")? != attempt.offer_event_json
+            || exact_event_tag(&intent, "e")? != attempt.target_event_id.as_deref().unwrap_or("")
+            || exact_event_tag(&intent, "h")? != attempt.runtime_channel_id.as_deref().unwrap_or("")
+            || attempt.target_event_kind != Some(buzz_core_pkg::kind::KIND_AGENT_RUNTIME_PRICING)
+            || attempt.relay_url.is_none()
+            || attempt.payer_note != format!("nostr:nipB1:{attempt_key}")
+        {
+            return Err(invalid(
+                "Agent payment attempt does not match its signed intent",
+            ));
+        }
+        exact_event_tag(&intent, "zap_id")?;
+        if optional_event_tag(&intent, "k")?.is_some() {
+            return Err(invalid("Agent payment intent must not contain a k tag"));
+        }
+        let offer_event = Event::from_json(&attempt.offer_event_json)
+            .map_err(|error| invalid(format!("decode Agent offer event: {error}")))?;
+        let recipient = recipient_offer(&offer_event, &attempt.recipient_pubkey)?;
+        if recipient.offer != attempt.offer {
+            return Err(invalid(
+                "Agent payment attempt offer does not match its intent",
+            ));
+        }
+        let payment_status = attempt
+            .payment
+            .as_ref()
+            .map(|payment| payment.status.as_str());
+        let state_is_valid = match attempt.state {
+            ZapAttemptState::Prepared => {
+                payment_status.is_none()
+                    && attempt.proof_event_json.is_none()
+                    && !attempt.proof_published
+            }
+            ZapAttemptState::Paying => {
+                payment_status.is_none_or(|status| status != "completed" && status != "failed")
+                    && attempt.proof_event_json.is_none()
+                    && !attempt.proof_published
+            }
+            ZapAttemptState::PaidWithoutProof => {
+                payment_status == Some("completed")
+                    && (!attempt.proof_published || attempt.proof_event_json.is_some())
+            }
+            ZapAttemptState::Failed => {
+                payment_status != Some("completed")
+                    && attempt.proof_event_json.is_none()
+                    && !attempt.proof_published
+            }
+        };
+        if !state_is_valid {
+            return Err(invalid("Agent payment attempt state is inconsistent"));
+        }
+        if let Some(proof) = attempt.proof_event()? {
+            proof
+                .verify()
+                .map_err(|error| invalid(format!("verify Agent payment proof: {error}")))?;
+            if proof.kind != Kind::Custom(KIND_BOLT12_ZAP as u16)
+                || proof.pubkey.to_hex() != self.payer_pubkey
+                || proof.content != intent.content
+                || exact_event_tag(&proof, "description")? != attempt.intent_event_json
+                || exact_event_tag(&proof, "P")? != self.payer_pubkey
+                || exact_event_tag(&proof, "proof")? != PLACEHOLDER_PAYER_PROOF
+                || exact_event_tag(&proof, "p")? != attempt.recipient_pubkey
+                || exact_event_tag(&proof, "amount")? != amount_msats(attempt.amount)?
+                || exact_event_tag(&proof, "offer_event")? != attempt.offer_event_json
+                || exact_event_tag(&proof, "e")? != attempt.target_event_id.as_deref().unwrap_or("")
+                || exact_event_tag(&proof, "h")?
+                    != attempt.runtime_channel_id.as_deref().unwrap_or("")
+                || optional_event_tag(&proof, "k")?.is_some()
+                || optional_event_tag(&proof, "zap_id")?.is_some()
+            {
+                return Err(invalid(
+                    "Agent payment proof does not match its signed intent",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Bind a legacy attempt to the relay selected by an explicit user retry.
@@ -724,6 +907,15 @@ impl ZapAttemptStore {
                 "new profile payment is not in the prepared state",
             ));
         }
+        if matches!(self.key_format, AttemptKeyFormat::IntentEventId)
+            && self.path(&attempt.idempotency_key)?.exists()
+        {
+            return Err(WalletError::new(
+                "payment_attempt_exists",
+                "Agent payment intent already exists",
+            ));
+        }
+        self.validate_loaded_attempt(&attempt.idempotency_key, attempt)?;
         self.save(attempt)?;
         conformance::record(
             &self.payer_pubkey,
@@ -938,20 +1130,10 @@ impl ZapAttemptStore {
         &self,
         relay_url: &str,
     ) -> Result<Vec<ZapAttempt>, WalletError> {
-        let entries = match std::fs::read_dir(&self.directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(WalletError::unavailable(format!(
-                    "read zap attempt directory: {error}"
-                )))
-            }
-        };
         let relay_url = relay_url.trim_end_matches('/');
-        let mut attempts = entries
-            .flatten()
-            .filter_map(|entry| std::fs::read(entry.path()).ok())
-            .filter_map(|bytes| serde_json::from_slice::<ZapAttempt>(&bytes).ok())
+        let mut attempts = self
+            .stored_attempts()?
+            .into_iter()
             .filter(|attempt| {
                 attempt.state == ZapAttemptState::PaidWithoutProof
                     && !attempt.proof_published
@@ -979,20 +1161,10 @@ impl ZapAttemptStore {
         &self,
         relay_url: &str,
     ) -> Result<Vec<ZapAttempt>, WalletError> {
-        let entries = match std::fs::read_dir(&self.directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(WalletError::unavailable(format!(
-                    "read zap attempt directory: {error}"
-                )))
-            }
-        };
         let relay_url = relay_url.trim_end_matches('/');
-        let mut attempts = entries
-            .flatten()
-            .filter_map(|entry| std::fs::read(entry.path()).ok())
-            .filter_map(|bytes| serde_json::from_slice::<ZapAttempt>(&bytes).ok())
+        let mut attempts = self
+            .stored_attempts()?
+            .into_iter()
             .filter(|attempt| {
                 attempt.state == ZapAttemptState::Paying
                     && attempt
@@ -1003,6 +1175,52 @@ impl ZapAttemptStore {
             .collect::<Vec<_>>();
         attempts.sort_by_key(|attempt| attempt.updated_at_ms);
         Ok(attempts)
+    }
+
+    /// Find the one payment attempt that still owns an Agent access scope.
+    pub fn reusable_agent_runtime_attempt(
+        &self,
+        recipient_pubkey: &str,
+        channel_id: &str,
+        relay_url: &str,
+    ) -> Result<Option<ZapAttempt>, WalletError> {
+        if !matches!(self.key_format, AttemptKeyFormat::IntentEventId) {
+            return Ok(None);
+        }
+        let relay_url = relay_url.trim_end_matches('/');
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let mut attempts = self
+            .stored_attempts()?
+            .into_iter()
+            .filter(|attempt| {
+                attempt.recipient_pubkey == recipient_pubkey
+                    && attempt.runtime_channel_id.as_deref() == Some(channel_id)
+                    && attempt
+                        .relay_url
+                        .as_deref()
+                        .is_some_and(|relay| relay.trim_end_matches('/') == relay_url)
+            })
+            .filter_map(|attempt| {
+                let owns_scope = match attempt.state {
+                    ZapAttemptState::Prepared | ZapAttemptState::Paying => true,
+                    ZapAttemptState::Failed => false,
+                    ZapAttemptState::PaidWithoutProof if !attempt.proof_published => true,
+                    ZapAttemptState::PaidWithoutProof => {
+                        attempt.proof_event().ok().flatten().is_some_and(|proof| {
+                            proof.created_at.as_secs().saturating_add(
+                                buzz_core_pkg::agent_runtime_payment::INVOCATION_WINDOW_SECONDS,
+                            ) >= now
+                        })
+                    }
+                };
+                owns_scope.then_some(attempt)
+            })
+            .collect::<Vec<_>>();
+        attempts.sort_by_key(|attempt| attempt.updated_at_ms);
+        Ok(attempts.pop())
     }
 
     /// Remove terminal checkpoints after the documented 90-day retention
@@ -1170,7 +1388,6 @@ mod tests {
         let pricing_event_id = "cd".repeat(32);
         let channel_id = Uuid::new_v4().to_string();
         let attempt = ZapAttempt::prepare_agent_runtime(
-            Uuid::new_v4().to_string(),
             recipient(&recipient_keys),
             255,
             channel_id.clone(),
@@ -1193,6 +1410,148 @@ mod tests {
                 Some("k" | "agent_runtime_purchase")
             )
         }));
+    }
+
+    fn prepared_runtime_attempt(
+        payer: &Keys,
+        recipient_keys: &Keys,
+        channel_id: &str,
+    ) -> ZapAttempt {
+        let mut attempt = ZapAttempt::prepare_agent_runtime(
+            recipient(recipient_keys),
+            255,
+            channel_id.to_string(),
+            "cd".repeat(32),
+            payer,
+        )
+        .unwrap();
+        attempt.relay_url = Some("https://relay.example".to_string());
+        attempt
+    }
+
+    #[test]
+    fn runtime_store_uses_the_signed_intent_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let mut first = prepared_runtime_attempt(&payer, &recipient_keys, "channel-id");
+        let second = prepared_runtime_attempt(&payer, &recipient_keys, "channel-id");
+        let intent = Event::from_json(&first.intent_event_json).unwrap();
+        assert_eq!(first.idempotency_key, intent.id.to_hex());
+        assert_eq!(first.intent_event_id, intent.id.to_hex());
+        assert_ne!(first.intent_event_id, second.intent_event_id);
+
+        let store = ZapAttemptStore::new_agent_runtime(temp.path(), &payer.public_key().to_hex());
+        store.save_prepared(&mut first).unwrap();
+        assert_eq!(
+            store.load(&first.intent_event_id).unwrap(),
+            Some(first.clone())
+        );
+    }
+
+    #[test]
+    fn runtime_store_rejects_terms_changed_after_signing() {
+        let temp = tempfile::tempdir().unwrap();
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let mut attempt = prepared_runtime_attempt(&payer, &recipient_keys, "channel-id");
+        let store = ZapAttemptStore::new_agent_runtime(temp.path(), &payer.public_key().to_hex());
+        store.save_prepared(&mut attempt).unwrap();
+
+        let path = store.path(&attempt.intent_event_id).unwrap();
+        attempt.amount += 1;
+        std::fs::write(path, serde_json::to_vec(&attempt).unwrap()).unwrap();
+        assert_eq!(
+            store.load(&attempt.intent_event_id).unwrap_err().code,
+            "invalid_payment_attempt"
+        );
+
+        attempt.amount -= 1;
+        attempt.state = ZapAttemptState::PaidWithoutProof;
+        std::fs::write(
+            store.path(&attempt.intent_event_id).unwrap(),
+            serde_json::to_vec(&attempt).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.load(&attempt.intent_event_id).unwrap_err().code,
+            "invalid_payment_attempt"
+        );
+    }
+
+    #[test]
+    fn runtime_scope_reuses_active_proof_and_releases_expired_proof() {
+        let temp = tempfile::tempdir().unwrap();
+        let payer = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let mut attempt = prepared_runtime_attempt(&payer, &recipient_keys, "channel-id");
+        let store = ZapAttemptStore::new_agent_runtime(temp.path(), &payer.public_key().to_hex());
+        store.save_prepared(&mut attempt).unwrap();
+        assert_eq!(
+            store
+                .reusable_agent_runtime_attempt(
+                    &attempt.recipient_pubkey,
+                    "channel-id",
+                    "https://relay.example",
+                )
+                .unwrap()
+                .map(|stored| stored.intent_event_id),
+            Some(attempt.intent_event_id.clone())
+        );
+
+        store.begin_dispatch(&mut attempt).unwrap();
+        store
+            .record_payment(
+                &mut attempt,
+                WalletPaymentResult {
+                    payment_id: "payment".to_string(),
+                    status: "completed".to_string(),
+                    status_message: String::new(),
+                    amount: Some(255),
+                    fees: 0,
+                    created_at_ms: 100,
+                    finalized_at_ms: Some(200),
+                },
+            )
+            .unwrap();
+        let current_proof = store
+            .prepare_placeholder_proof(&mut attempt, &payer, Some("channel-id"))
+            .unwrap();
+        store.mark_proof_published(&mut attempt).unwrap();
+        assert!(store
+            .reusable_agent_runtime_attempt(
+                &attempt.recipient_pubkey,
+                "channel-id",
+                "https://relay.example",
+            )
+            .unwrap()
+            .is_some());
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let expired_proof = EventBuilder::new(current_proof.kind, current_proof.content)
+            .tags(current_proof.tags.iter().cloned())
+            .custom_created_at(nostr::Timestamp::from(now.saturating_sub(
+                buzz_core_pkg::agent_runtime_payment::INVOCATION_WINDOW_SECONDS + 1,
+            )))
+            .sign_with_keys(&payer)
+            .unwrap();
+        attempt.proof_event_json = Some(expired_proof.as_json());
+        store.save(&mut attempt).unwrap();
+        assert!(store
+            .reusable_agent_runtime_attempt(
+                &attempt.recipient_pubkey,
+                "channel-id",
+                "https://relay.example",
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            attempt.result().unwrap().proof_created_at_seconds,
+            Some(expired_proof.created_at.as_secs())
+        );
     }
 
     #[test]

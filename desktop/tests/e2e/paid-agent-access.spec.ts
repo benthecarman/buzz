@@ -51,6 +51,30 @@ async function paymentRequestCount(page: Page) {
   );
 }
 
+async function paymentBeginCount(page: Page) {
+  return page.evaluate(
+    () =>
+      (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+        (command) => command === "wallet_begin_agent_runtime_zap",
+      ).length,
+  );
+}
+
+async function sentPaymentAttemptIds(page: Page) {
+  return page.evaluate(() =>
+    (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [])
+      .filter((entry) => entry.command === "wallet_send_agent_runtime_zap")
+      .map(
+        (entry) =>
+          (
+            entry.payload as {
+              request?: { intentEventId?: string };
+            }
+          ).request?.intentEventId ?? "",
+      ),
+  );
+}
+
 test("one zap grants reusable Agent access for five minutes", async ({
   page,
 }) => {
@@ -124,4 +148,85 @@ test("one zap grants reusable Agent access for five minutes", async ({
   await selectPaidAgent(page, "third");
   await page.getByTestId("send-message").click();
   await expect(checkout).toBeVisible();
+  await checkout.getByRole("button", { name: /^Pay ₿ 255/ }).click();
+  await expect.poll(() => paymentRequestCount(page)).toBe(2);
+  expect(await paymentBeginCount(page)).toBe(2);
+  const attempts = await sentPaymentAttemptIds(page);
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).not.toBe(attempts[0]);
+});
+
+test("paid Agent checkout shows structured wallet errors", async ({ page }) => {
+  await installMockBridge(page, {
+    relayAgents: [
+      {
+        pubkey: AGENT_PUBKEY,
+        name: "quinn",
+        ownerPubkey: OWNER_PUBKEY,
+        priceSats: 255,
+        respondTo: "anyone",
+        channelNames: ["general"],
+      },
+    ],
+    walletAgentRuntimeZapErrors: [
+      {
+        code: "offer_unavailable",
+        message: "Agent has no active BOLT12 offer",
+      },
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+
+  await selectPaidAgent(page, "error");
+  await page.getByTestId("send-message").click();
+  await page
+    .getByRole("alertdialog", { name: "Mention people outside this channel?" })
+    .getByRole("button", { name: "Invite" })
+    .click();
+
+  const checkout = page.getByTestId("agent-runtime-checkout");
+  await expect(checkout).toBeVisible();
+  await checkout.getByRole("button", { name: /^Pay ₿ 255/ }).click();
+  await expect(checkout).toContainText("Agent has no active BOLT12 offer");
+});
+
+test("unknown paid Agent result reuses its native intent", async ({ page }) => {
+  await installMockBridge(page, {
+    relayAgents: [
+      {
+        pubkey: AGENT_PUBKEY,
+        name: "quinn",
+        ownerPubkey: OWNER_PUBKEY,
+        priceSats: 255,
+        respondTo: "anyone",
+        channelNames: ["general"],
+      },
+    ],
+    walletAgentRuntimeZapErrors: [
+      {
+        code: "payment_status_unknown",
+        message: "The payment result is still unknown",
+      },
+      null,
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await selectPaidAgent(page, "retry");
+  await page.getByTestId("send-message").click();
+  await page
+    .getByRole("alertdialog", { name: "Mention people outside this channel?" })
+    .getByRole("button", { name: "Invite" })
+    .click();
+
+  const checkout = page.getByTestId("agent-runtime-checkout");
+  const pay = checkout.getByRole("button", { name: /^Pay ₿ 255/ });
+  await pay.click();
+  await expect(checkout).toContainText("The payment result is still unknown");
+  await pay.click();
+  await expect(checkout).toHaveCount(0);
+  expect(await paymentRequestCount(page)).toBe(2);
+  expect(await paymentBeginCount(page)).toBe(1);
+  expect(new Set(await sentPaymentAttemptIds(page)).size).toBe(1);
 });

@@ -390,11 +390,15 @@ type MockBridgeOptions = {
   /** Delay a message/profile zap result so optimistic UI can be asserted. */
   walletProfileZapDelayMs?: number;
   walletAgentRuntimeZapRequests?: Array<{
+    intentEventId: string;
+  }>;
+  walletAgentRuntimeZapBeginRequests?: Array<{
     agentPubkey: string;
     channelId: string;
     pricingEventJson: string;
-    idempotencyKey: string;
   }>;
+  /** Successive paid-Agent zap errors; null entries let that call continue. */
+  walletAgentRuntimeZapErrors?: ({ code: string; message: string } | null)[];
   /**
    * Value returned by the `observer_archive_default_enabled` mock command.
    * `true` = internal-policy build (toggle locked ON); `false`/omitted = OSS

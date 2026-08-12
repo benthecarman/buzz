@@ -12,8 +12,8 @@ pub(crate) mod enabled {
         sync::{atomic::Ordering, Arc, OnceLock},
     };
     pub use zap_commands::{
-        wallet_get_pending_profile_zap, wallet_get_recipient_offer, wallet_send_agent_runtime_zap,
-        wallet_send_profile_zap,
+        wallet_begin_agent_runtime_zap, wallet_get_pending_profile_zap, wallet_get_recipient_offer,
+        wallet_send_agent_runtime_zap, wallet_send_profile_zap,
     };
 
     const INCOMING_PAYMENT_EVENT: &str = "wallet-incoming-payment";
@@ -1220,6 +1220,9 @@ mod disabled {
     );
     disabled_async_command!(
         wallet_send_profile_zap(request: serde_json::Value) -> serde_json::Value
+    );
+    disabled_async_command!(
+        wallet_begin_agent_runtime_zap(request: serde_json::Value) -> serde_json::Value
     );
     disabled_async_command!(
         wallet_send_agent_runtime_zap(request: serde_json::Value) -> serde_json::Value

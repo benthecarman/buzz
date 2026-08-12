@@ -36,7 +36,7 @@ const row = {
   ownerPubkey: "c".repeat(64),
   priceSats: 255,
   invocationWindowSeconds: 300,
-  zapIdempotencyKey: "zap-idempotency-key",
+  paymentAttemptId: "c".repeat(64),
   zapEventId: "b".repeat(64),
   validUntilSeconds: 1_800,
 };
@@ -49,7 +49,7 @@ test("checkout payment state survives a renderer restart", () => {
     storage,
   );
   const restored = loadAgentRuntimeCheckout("community-a:channel-a", storage);
-  assert.equal(restored?.rows[0]?.zapIdempotencyKey, "zap-idempotency-key");
+  assert.equal(restored?.rows[0]?.paymentAttemptId, "c".repeat(64));
   assert.equal(restored?.rows[0]?.zapEventId, "b".repeat(64));
 });
 
@@ -81,8 +81,8 @@ test("a settled zap remains reusable until its access window ends", () => {
 test("malformed checkout data fails closed", () => {
   const storage = new MemoryStorage();
   storage.setItem(
-    "buzz.agent-runtime-checkout.v4:community-a:channel-a",
-    JSON.stringify({ version: 4, channelId: "channel-a", rows: [{}] }),
+    "buzz.agent-runtime-checkout.v5:community-a:channel-a",
+    JSON.stringify({ version: 5, channelId: "channel-a", rows: [{}] }),
   );
   assert.equal(
     loadAgentRuntimeCheckout("community-a:channel-a", storage),
