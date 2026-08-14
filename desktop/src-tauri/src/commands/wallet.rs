@@ -218,10 +218,8 @@ pub(crate) mod enabled {
     };
 
     /// How long a `Paying` attempt is reconciled against the provider before
-    /// it is declared failed. Generous on purpose: Lightning HTLC expiry
-    /// resolves in-flight payments within hours, so a payment the provider
-    /// still cannot see a full day after dispatch never left the wallet.
-    const PAYING_ATTEMPT_GRACE_MS: u64 = 24 * 60 * 60 * 1_000;
+    /// it is declared failed and the user can start a new attempt.
+    const PAYING_ATTEMPT_GRACE_MS: u64 = 5 * 60 * 1_000;
 
     fn now_ms() -> u64 {
         std::time::SystemTime::now()
@@ -968,7 +966,7 @@ pub(crate) mod enabled {
                         store.fail_reconciliation(&mut attempt)?;
                         return Err(WalletError::new(
                             "payment_failed",
-                            "No matching payment was found at the provider within 24 hours of the \
+                            "No matching payment was found at the provider within 5 minutes of the \
                          send; the attempt was marked failed and Buzz did not send again",
                         ));
                     }
@@ -1103,6 +1101,7 @@ pub(crate) mod enabled {
 
         #[test]
         fn paying_attempt_expires_only_after_the_grace_period() {
+            assert_eq!(PAYING_ATTEMPT_GRACE_MS, 5 * 60 * 1_000);
             let now = super::now_ms();
             assert!(!paying_attempt_expired(now));
             assert!(!paying_attempt_expired(

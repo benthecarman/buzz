@@ -546,7 +546,7 @@ async fn resume_zap_attempt(
                     store.fail_reconciliation(attempt)?;
                     return Err(WalletError::new(
                         "payment_failed",
-                        "No matching payment was found at the provider within 24 hours of the send; the attempt was marked failed and Buzz did not send again",
+                        "No matching payment was found at the provider within 5 minutes of the send; the attempt was marked failed and Buzz did not send again",
                     ));
                 }
                 None => {
