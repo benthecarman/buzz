@@ -285,7 +285,7 @@ impl WalletProvider for LexeProvider {
         Ok(WalletStatus {
             provider_name: "Lexe".to_string(),
             balance: info.balance.sats_u64(),
-            spendable_balance: info.lightning_sendable_balance.sats_u64(),
+            spendable_balance: info.lightning_max_sendable_balance.sats_u64(),
             lightning_balance: info.lightning_balance.sats_u64(),
             onchain_balance: info.onchain_balance.sats_u64(),
         })

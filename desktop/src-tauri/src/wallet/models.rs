@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 /// Provider-neutral snapshot displayed at the top of wallet settings.
 ///
 /// All amounts are whole satoshis. `balance` is the provider's total wallet
-/// balance, while `spendable_balance` is the amount currently sendable over
-/// Lightning after channel reserves and other provider constraints.
+/// balance, while `spendable_balance` is the maximum amount currently
+/// sendable over Lightning after provider constraints.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletStatus {
