@@ -482,6 +482,21 @@ just desktop-dev   # web-only dev server (faster iteration)
 just dev           # full Tauri app with native shell
 ```
 
+### Local production `.deb` builds
+
+When the user asks to build a production `.deb` locally, run:
+
+```bash
+just desktop-deb
+```
+
+This is the canonical local Linux packaging path. It builds the real release
+sidecars, enables incremental compilation for local release artifacts, includes
+the production `mesh-llm` feature, and bundles only the `.deb`. Do not add an
+explicit `--target` when the requested target is the native host triple: Cargo
+stores that build separately from the implicit-host release cache and pays a
+second near-cold compile. The official release and CI profiles remain unchanged.
+
 ### Text sizing & zoom (use rem, never px)
 
 The desktop app implements Cmd +/- zoom by scaling the root `<html>`
