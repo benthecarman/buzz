@@ -15,8 +15,6 @@ import { PersonaDropdownField } from "./PersonaDropdownField";
 import type { EnvVarsValue } from "./EnvVarsEditor";
 import { PersonaAdvancedFields } from "./PersonaAdvancedFields";
 import { PersonaModelField } from "./PersonaModelField";
-import { useDefinitionLocalModeGate } from "./useDefinitionLocalModeGate";
-import { usePersonaRuntimePricingEdit } from "./usePersonaRuntimePricingEdit";
 import { runtimeAvailabilityWarning } from "./runtimeAvailabilityWarning";
 import { PersonaProviderApiKeyField } from "./PersonaProviderApiKeyField";
 import {
@@ -38,6 +36,7 @@ import {
   BLOCK_BUILD_HIDDEN_PROVIDER_IDS,
   buildPersonaRuntimeDropdownOptions,
   CUSTOM_PROVIDER_DROPDOWN_VALUE,
+  computeLocalModeGate,
   formatRuntimeOptionLabel,
   getDefaultPersonaRuntime,
   getPersonaModelOptions,
@@ -188,14 +187,6 @@ export function AgentDefinitionDialog({
     [globalConfig.preferred_runtime, runtimes],
   );
   const isCreateMode = Boolean(initialValues && !("id" in initialValues));
-  // Paid runtime is instance state — see the hook.
-  const runtimePricing = usePersonaRuntimePricingEdit({
-    disabled: isPending,
-    initialValues,
-    open,
-    respondTo: behaviorDraft.respondTo ?? "owner-only",
-    respondToAllowlist: behaviorDraft.respondToAllowlist,
-  });
   const shouldReduceMotion = useReducedMotion();
   const initialModelProviderEditableWithoutRuntime = Boolean(
     initialValues &&
@@ -381,8 +372,6 @@ export function AgentDefinitionDialog({
     };
 
     if ("id" in initialValues) {
-      // Pricing first: the definition save closes the dialog.
-      if (!(await runtimePricing.apply())) return;
       await onSubmit(
         {
           id: initialValues.id,
@@ -437,17 +426,32 @@ export function AgentDefinitionDialog({
     setModel(nextPair.model);
   }
   const { data: bakedEnvKeys } = useBakedBuildEnvKeysQuery({ enabled: open });
-  const localModeGate = useDefinitionLocalModeGate({
-    bakedEnvKeys,
-    envVars,
-    globalEnvVars: globalConfig.env_vars,
-    globalModel: inheritedModelDefault.value,
-    globalProvider: inheritedProviderDefault.value,
-    model,
-    provider: trimmedProvider,
-    runtimeFileConfig,
-    runtimeId: runtime,
-  });
+  const localModeGate = React.useMemo(
+    () =>
+      computeLocalModeGate({
+        bakedEnvKeys,
+        envVars,
+        globalEnvVars: globalConfig.env_vars,
+        globalProvider: inheritedProviderDefault.value,
+        globalModel: inheritedModelDefault.value,
+        isProviderMode: false,
+        model,
+        provider: trimmedProvider,
+        runtimeId: runtime,
+        runtimeFileConfig,
+      }),
+    [
+      bakedEnvKeys,
+      envVars,
+      globalConfig.env_vars,
+      inheritedModelDefault.value,
+      inheritedProviderDefault.value,
+      model,
+      trimmedProvider,
+      runtime,
+      runtimeFileConfig,
+    ],
+  );
   // requiredEnvKeys: the gate already handles baked-, global-, and file-
   // satisfied keys so no further filtering is needed.
   const { requiredEnvKeys } = localModeGate;
@@ -498,8 +502,6 @@ export function AgentDefinitionDialog({
     // Crash-loop guard, create AND edit: an empty allowlist would crash
     // every instance minted from this definition at startup.
     personaBehaviorDraftValid(behaviorDraft) &&
-    // A rate the backend would reject must not reach the instance writes.
-    runtimePricing.valid &&
     // D1: localModeSatisfied covers both missingNormalizedFields AND
     // missingEnvKeys — credential env keys now block submit, not just display.
     localModeSatisfied &&
@@ -978,9 +980,7 @@ export function AgentDefinitionDialog({
                 transition={advancedFieldsTransition}
               >
                 <PersonaAdvancedFields
-                  afterRespondTo={
-                    isCreateMode ? createRunSection : runtimePricing.field
-                  }
+                  afterRespondTo={isCreateMode ? createRunSection : undefined}
                   behaviorDraft={behaviorDraft}
                   disabled={isPending}
                   envVars={envVars}

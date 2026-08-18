@@ -3,9 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { loadCommunities } from "@/features/communities/communityStorage";
 import type {
   WalletDestinationAnalysis,
-  WalletAgentRuntimeZapAttempt,
-  WalletAgentRuntimeZapBeginRequest,
-  WalletAgentRuntimeZapRequest,
   WalletEnableResult,
   WalletFundingRequest,
   WalletOfferPublicationResult,
@@ -170,21 +167,4 @@ export function sendProfileZap(
   return invoke<WalletProfileZapResult>("wallet_send_profile_zap", {
     request,
   });
-}
-
-export function sendAgentRuntimeZap(
-  request: WalletAgentRuntimeZapRequest,
-): Promise<WalletProfileZapResult> {
-  return invoke<WalletProfileZapResult>("wallet_send_agent_runtime_zap", {
-    request,
-  });
-}
-
-export function beginAgentRuntimeZap(
-  request: WalletAgentRuntimeZapBeginRequest,
-): Promise<WalletAgentRuntimeZapAttempt> {
-  return invoke<WalletAgentRuntimeZapAttempt>(
-    "wallet_begin_agent_runtime_zap",
-    { request },
-  );
 }

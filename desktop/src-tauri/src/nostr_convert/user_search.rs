@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::models::{SearchUsersResponse, UserSearchResultInfo};
 
-use super::profile_valid_oa_owner_pubkey;
+use super::{profile_valid_hosted_agent_manager_pubkey, profile_valid_oa_owner_pubkey};
 
 /// Convert a single kind:0 event to a [`UserSearchResultInfo`].
 pub fn user_search_result_from_event(ev: &Event) -> UserSearchResultInfo {
@@ -22,6 +22,7 @@ pub fn user_search_result_from_event(ev: &Event) -> UserSearchResultInfo {
         nip05_handle: v.get("nip05").and_then(Value::as_str).map(str::to_string),
         is_agent: owner_pubkey.is_some(),
         owner_pubkey,
+        manager_pubkey: profile_valid_hosted_agent_manager_pubkey(ev),
     }
 }
 

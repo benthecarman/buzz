@@ -59,13 +59,15 @@ payer signature. During the temporary compatibility period, the exact
 `placeholder` marker is valid for the same UI surfaces and totals.
 
 Zap consumption is relay-driven. Message badges, history, notifications, and
-paid Agent access use validated kind `9736` events and their embedded signed
-data. Paid Agent access targets the exact kind `10101` pricing event. The zap
-opens a fixed invocation window; it does not create a credit balance or a
-runtime ledger. The zap flow contacts the wallet provider only to send a
-payment or reconcile a payment whose result is unknown. Proof publication and
-replay use the saved payment attempt and the relay. They do not need another
-wallet lookup.
+hosted-agent purchases use kind `9736` events and their embedded signed data.
+A hosted-agent purchase targets a normal channel plan message. The intent and
+proof include the plan `e` tag, host `p` tag, and source channel `h` tag.
+
+The first hosted-agent version accepts only the literal `placeholder` proof.
+The host does not query its wallet to confirm settlement. This is a temporary,
+explicit trust boundary. The host must verify the Nostr signatures, target,
+amount, and tags before it starts a runtime. A later version must verify
+settlement in the receiving wallet.
 
 ## Units
 

@@ -1,6 +1,7 @@
 import {
   filterAdmittedMentionPubkeys,
   getAgentMentionAdmission,
+  getControlledHostedAgentPubkeys,
   getMentionableAgentPubkeys,
   type AgentEligibilityScope,
 } from "@/features/agents/lib/agentAutocompleteEligibility";
@@ -23,6 +24,7 @@ type DirectoryResult<T> = {
 export async function revalidateAgentMentionPubkeys({
   pubkeys,
   agentPubkeys,
+  channelAgentPubkeys,
   currentPubkey,
   eligibilityScope,
   sharedChannelIds,
@@ -34,6 +36,7 @@ export async function revalidateAgentMentionPubkeys({
 }: {
   pubkeys: readonly string[];
   agentPubkeys: ReadonlySet<string>;
+  channelAgentPubkeys: ReadonlySet<string>;
   currentPubkey: string | null;
   eligibilityScope: AgentEligibilityScope;
   sharedChannelIds: ReadonlySet<string>;
@@ -50,10 +53,15 @@ export async function revalidateAgentMentionPubkeys({
     return [...pubkeys];
   }
 
-  const [managedResult, relayResult, ownerProfiles] = await Promise.all([
+  const needsAgentProfiles =
+    ownerOnly ||
+    [...requestedAgentPubkeys].some((pubkey) =>
+      channelAgentPubkeys.has(pubkey),
+    );
+  const [managedResult, relayResult, agentProfiles] = await Promise.all([
     refetchManagedAgents(),
     refetchRelayAgents(),
-    ownerOnly
+    needsAgentProfiles
       ? refetchOwnerProfiles([...requestedAgentPubkeys]).catch(() => null)
       : Promise.resolve(null),
   ]);
@@ -71,25 +79,40 @@ export async function revalidateAgentMentionPubkeys({
   const managedPubkeys = new Set(
     managedResult.data.map((agent) => normalizePubkey(agent.pubkey)),
   );
+  const controlledHostedAgentPubkeys = getControlledHostedAgentPubkeys({
+    currentPubkey,
+    members: [...channelAgentPubkeys].map((pubkey) => ({
+      pubkey,
+      isAgent: true,
+    })),
+    getManagerPubkey: (pubkey) =>
+      agentProfiles?.profiles[pubkey]?.managerPubkey,
+  });
   const mentionablePubkeys = getMentionableAgentPubkeys({
     currentPubkey,
     eligibilityScope,
     managedAgentPubkeys: managedPubkeys,
+    controlledHostedAgentPubkeys,
     relayAgents: relayDirectoryReady ? relayResult.data : [],
     sharedChannelIds,
   });
   const admittedPubkeys = new Set(
     [...agentPubkeys].filter((pubkey) => {
       const isManagedAgent = managedPubkeys.has(normalizePubkey(pubkey));
+      const isControlledHostedAgent = controlledHostedAgentPubkeys.has(
+        normalizePubkey(pubkey),
+      );
       const directoryReady =
         isManagedAgent ||
-        (relayDirectoryReady && (!ownerOnly || ownerProfiles !== null));
+        isControlledHostedAgent ||
+        (relayDirectoryReady && (!ownerOnly || agentProfiles !== null));
       return (
         getAgentMentionAdmission({
           isAgent: true,
           isManagedAgent,
+          isControlledHostedAgent,
           pubkey,
-          ownerPubkey: ownerProfiles?.profiles[pubkey]?.ownerPubkey,
+          ownerPubkey: agentProfiles?.profiles[pubkey]?.ownerPubkey,
           currentPubkey,
           mentionableAgentPubkeys: mentionablePubkeys,
           directoryReady,
@@ -103,6 +126,7 @@ export async function revalidateAgentMentionPubkeys({
 
 export function useAgentMentionRevalidation({
   agentPubkeys,
+  channelAgentPubkeys,
   getSelectedAgentPubkeys,
   currentPubkey,
   eligibilityScope,
@@ -113,6 +137,7 @@ export function useAgentMentionRevalidation({
   refetchRelayAgents,
 }: {
   agentPubkeys: ReadonlySet<string>;
+  channelAgentPubkeys: ReadonlySet<string>;
   getSelectedAgentPubkeys: () => ReadonlySet<string>;
   currentPubkey: string | null;
   eligibilityScope: AgentEligibilityScope;
@@ -135,6 +160,7 @@ export function useAgentMentionRevalidation({
       revalidateAgentMentionPubkeys({
         pubkeys,
         agentPubkeys: new Set([...agentPubkeys, ...getSelectedAgentPubkeys()]),
+        channelAgentPubkeys,
         currentPubkey,
         eligibilityScope,
         sharedChannelIds,
@@ -146,6 +172,7 @@ export function useAgentMentionRevalidation({
       }),
     [
       agentPubkeys,
+      channelAgentPubkeys,
       currentPubkey,
       eligibilityScope,
       getSelectedAgentPubkeys,

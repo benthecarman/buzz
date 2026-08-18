@@ -37,7 +37,7 @@
 //! agents can send instructions." (`RespondToField.tsx`). The dropdown label
 //! stays "Only me", which is the audience the user picks.
 
-use super::{validate_respond_to_allowlist, validate_runtime_price, ManagedAgentRecord, RespondTo};
+use super::{validate_respond_to_allowlist, ManagedAgentRecord, RespondTo};
 
 pub(crate) type RespondToEnv = (Vec<(&'static str, String)>, Vec<&'static str>);
 
@@ -67,7 +67,6 @@ pub(crate) fn projected_access_with_policy(
         (record.respond_to, record.respond_to_allowlist.clone())
     }
 }
-
 /// Build the inbound-author access environment for a launched agent. The
 /// explicit policy input keeps owner-only access enforcement testable without
 /// weakening the production caller's compile-time decision.
@@ -98,16 +97,6 @@ pub(crate) fn build_respond_to_env_with_policy(
         set.push(("BUZZ_ACP_RESPOND_TO_ALLOWLIST", normalized.join(",")));
     } else {
         remove.push("BUZZ_ACP_RESPOND_TO_ALLOWLIST");
-    }
-    let effective_price = if enforced_owner_only {
-        None
-    } else {
-        validate_runtime_price(respond_to, &normalized, record.price_per_minute_sats)?
-    };
-    if let Some(price) = effective_price {
-        set.push(("BUZZ_ACP_PRICE_PER_MINUTE_SATS", price.to_string()));
-    } else {
-        remove.push("BUZZ_ACP_PRICE_PER_MINUTE_SATS");
     }
 
     if record.auth_tag.is_none() {

@@ -15,6 +15,7 @@ type RawProfile = {
   about: string | null;
   nip05_handle: string | null;
   owner_pubkey: string | null;
+  manager_pubkey?: string | null;
   has_profile_event?: boolean;
 };
 
@@ -43,6 +44,7 @@ function fromRawProfile(profile: RawProfile): Profile {
     about: profile.about,
     nip05Handle: profile.nip05_handle,
     ownerPubkey: profile.owner_pubkey,
+    managerPubkey: profile.manager_pubkey ?? null,
     hasProfileEvent: profile.has_profile_event ?? false,
   };
 }
@@ -56,6 +58,7 @@ function fromRawUserProfileSummary(
     avatarUrl: profile.avatar_url,
     nip05Handle: profile.nip05_handle,
     ownerPubkey: profile.owner_pubkey,
+    managerPubkey: profile.manager_pubkey ?? null,
     isAgent: profile.is_agent ?? false,
   };
 }
@@ -67,6 +70,7 @@ function fromRawUserSearchResult(user: RawUserSearchResult): UserSearchResult {
     avatarUrl: user.avatar_url,
     nip05Handle: user.nip05_handle,
     ownerPubkey: user.owner_pubkey,
+    managerPubkey: user.manager_pubkey ?? null,
     isAgent: user.is_agent ?? false,
   };
 }

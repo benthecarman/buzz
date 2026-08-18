@@ -20,7 +20,6 @@ pub(super) fn expected_owner_only() -> bool {
         }
     }
 }
-
 pub(super) fn expected_mode(oss_mode: &'static str) -> &'static str {
     if expected_owner_only() {
         "owner-only"
@@ -76,7 +75,6 @@ pub(super) fn fixture(
         last_error_code: None,
         respond_to,
         respond_to_allowlist: allowlist,
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,

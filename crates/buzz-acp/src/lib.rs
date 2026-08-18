@@ -5171,6 +5171,23 @@ fn build_mcp_servers(config: &Config) -> Vec<McpServer> {
                     });
                 }
             }
+            // Hosted runtimes keep the workspace and its token outside the
+            // model container. Forward only the three values required by the
+            // fixed MCP proxy that bridges to that workspace.
+            for name in [
+                "BUZZ_WORKSPACE_ENDPOINT",
+                "BUZZ_WORKSPACE_TOKEN",
+                "BUZZ_HOSTED_CHANNEL_ID",
+            ] {
+                if let Ok(value) = std::env::var(name) {
+                    if !value.is_empty() {
+                        env.push(EnvVar {
+                            name: name.into(),
+                            value,
+                        });
+                    }
+                }
+            }
             env
         },
     }]
@@ -7257,6 +7274,39 @@ mod build_mcp_servers_tests {
                 .any(|e| e.name == "BUZZ_ACP_DISPLAY_NAME"),
             "empty display name should not be forwarded"
         );
+    }
+
+    #[test]
+    fn hosted_workspace_values_reach_the_mcp_server() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let values = [
+            ("BUZZ_WORKSPACE_ENDPOINT", "http://workspace:7447"),
+            (
+                "BUZZ_WORKSPACE_TOKEN",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            ("BUZZ_HOSTED_CHANNEL_ID", "test-channel"),
+        ];
+        for (name, value) in values {
+            std::env::set_var(name, value);
+        }
+        let servers = build_mcp_servers(&test_config());
+        for (name, _) in values {
+            std::env::remove_var(name);
+        }
+
+        let server = &servers[0];
+        for (name, value) in values {
+            assert_eq!(
+                server
+                    .env
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .map(|entry| entry.value.as_str()),
+                Some(value),
+                "missing hosted MCP value {name}"
+            );
+        }
     }
 
     #[test]

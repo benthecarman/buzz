@@ -194,7 +194,6 @@ pub fn parse_chunk_payload(json_bytes: &[u8]) -> Result<ChunkPayload, String> {
         None => Err("Snapshot payload has no format discriminator.".to_string()),
     }
 }
-
 // ── Encrypt ───────────────────────────────────────────────────────────────────
 
 /// Encrypt a snapshot manifest into a locked envelope under the NIP-44 v2
@@ -403,7 +402,6 @@ mod tests {
             last_error_code: None,
             respond_to: crate::managed_agents::types::RespondTo::OwnerOnly,
             respond_to_allowlist: vec![],
-            price_per_minute_sats: None,
             display_name: None,
             slug: None,
             runtime: None,

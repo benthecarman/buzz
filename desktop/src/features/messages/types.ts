@@ -39,6 +39,10 @@ export type TimelineMessage = {
   ownerPubkey?: string | null;
   /** Viewer-relative owner label (for example, "you" or "baxen"). */
   ownerLabel?: string | null;
+  /** Host-verified buyer who manages a hosted agent. */
+  managerPubkey?: string | null;
+  /** Viewer-relative hosted-agent manager label. */
+  managerLabel?: string | null;
   avatarUrl?: string | null;
   role?: string;
   /** For bot messages, the display name of the persona this bot was created from. */

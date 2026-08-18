@@ -56,7 +56,6 @@ export default defineConfig({
         "**/agent-readiness-screenshots.spec.ts",
         "**/agent-error-state-screenshots.spec.ts",
         "**/edit-agent.spec.ts",
-        "**/agent-definition-runtime-pricing.spec.ts",
         "**/doctor-cta-screenshots.spec.ts",
         "**/pubkey-display-screenshots.spec.ts",
         "**/file-attachment.spec.ts",
@@ -150,7 +149,6 @@ export default defineConfig({
         "**/needs-restart-screenshots.spec.ts",
         "**/wallet-profile.spec.ts",
         "**/wallet-settings.spec.ts",
-        "**/paid-agent-access.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],

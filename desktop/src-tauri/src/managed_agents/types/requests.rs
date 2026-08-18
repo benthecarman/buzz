@@ -186,20 +186,8 @@ pub struct CreateManagedAgentRequest {
     /// before being written to the record.
     #[serde(default)]
     pub respond_to_allowlist: Vec<String>,
-    /// Optional flat price for a five-minute Agent invocation window.
-    #[serde(default)]
-    pub price_per_minute_sats: Option<u64>,
     #[serde(default)]
     pub relay_mesh: Option<RelayMeshConfig>,
-    /// Whether the desktop Bitcoin wallet feature is enabled. When true, the
-    /// newly minted agent receives a distinct offer from the user's wallet.
-    #[serde(default)]
-    pub wallet_enabled: bool,
-    /// Every configured community relay. Agent wallet announcements mirror
-    /// the owner's wallet broadcast instead of being limited to the agent's
-    /// runtime relay override.
-    #[serde(default)]
-    pub wallet_relay_urls: Vec<String>,
 }
 
 /// Patch request for updating a managed agent's mutable fields.
@@ -265,9 +253,6 @@ pub struct UpdateManagedAgentRequest {
     /// normalized server-side).
     #[serde(default)]
     pub respond_to_allowlist: Option<Vec<String>>,
-    /// Absent = don't touch; null = disable; integer = enable/update.
-    #[serde(default, deserialize_with = "crate::util::double_option")]
-    pub price_per_minute_sats: Option<Option<u64>>,
 }
 
 #[cfg(test)]

@@ -48,66 +48,6 @@ import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay
 import { truncatePubkey } from "@/shared/lib/pubkey";
 
 const HEX_RE = /^[0-9a-f]+$/i;
-const AGENT_INVOCATION_WINDOW_SECONDS = 300;
-
-function getExactTagValue(tags: string[][], name: string): string | null {
-  const matches = tags.filter(
-    (tag) => tag.length === 2 && tag[0] === name && tag[1],
-  );
-  return matches.length === 1 ? matches[0][1] : null;
-}
-
-function getRuntimePurchasePayload(
-  event: RelayEvent,
-  channel: Channel | null,
-  verifiedZapEvents?: ReadonlyMap<string, WalletVerifiedZapEvent>,
-) {
-  if (event.kind !== KIND_BOLT12_ZAP || !channel) return null;
-  const zap = verifiedZapEvents?.get(event.id);
-  const recipient = getExactTagValue(event.tags, "p")?.toLowerCase();
-  const target = getExactTagValue(event.tags, "e")?.toLowerCase();
-  const channelId = getExactTagValue(event.tags, "h");
-  if (
-    !zap ||
-    event.tags.some((tag) => tag[0] === "k") ||
-    !recipient ||
-    !target ||
-    channelId !== channel.id ||
-    zap.channelId !== channel.id ||
-    recipient !== zap.recipientPubkey.toLowerCase() ||
-    target !== zap.targetEventId?.toLowerCase() ||
-    !Number.isFinite(zap.amount) ||
-    zap.amount <= 0
-  ) {
-    return null;
-  }
-
-  return {
-    type: "agent_runtime_purchased",
-    actor: event.pubkey.toLowerCase(),
-    target: recipient,
-    invocation_window_seconds: AGENT_INVOCATION_WINDOW_SECONDS,
-    amount_sats: zap.amount,
-    zap: event.id,
-  };
-}
-
-function getLegacyRuntimePurchaseZapId(event: RelayEvent): string | null {
-  if (event.kind !== KIND_SYSTEM_MESSAGE) return null;
-  try {
-    const payload = JSON.parse(event.content) as {
-      type?: unknown;
-      zap?: unknown;
-    };
-    return payload.type === "agent_runtime_purchased" &&
-      typeof payload.zap === "string"
-      ? payload.zap
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 export function isTimelineContentEvent(event: RelayEvent) {
   return (
     event.kind === KIND_STREAM_MESSAGE ||
@@ -314,21 +254,9 @@ export function formatTimelineMessages(
   }
 
   const zapsByEventId = new Map<string, Map<string, TimelineZap>>();
-  const runtimePurchaseZaps = new Map<
-    string,
-    { event: RelayEvent; payload: ReturnType<typeof getRuntimePurchasePayload> }
-  >();
   for (const event of events) {
     if (event.kind !== KIND_BOLT12_ZAP || deletedEventIds.has(event.id)) {
       continue;
-    }
-    const runtimePayload = getRuntimePurchasePayload(
-      event,
-      channel,
-      verifiedZapEvents,
-    );
-    if (runtimePayload) {
-      runtimePurchaseZaps.set(event.id, { event, payload: runtimePayload });
     }
     const zap = verifiedZapEvents?.get(event.id);
     if (!zap?.targetEventId || deletedEventIds.has(zap.targetEventId)) {
@@ -393,13 +321,9 @@ export function formatTimelineMessages(
     }
   }
 
-  const visibleEvents = events.filter((event) => {
-    if (!isTimelineContentEvent(event) || deletedEventIds.has(event.id)) {
-      return false;
-    }
-    const legacyZapId = getLegacyRuntimePurchaseZapId(event);
-    return !legacyZapId || !runtimePurchaseZaps.has(legacyZapId);
-  });
+  const visibleEvents = events.filter(
+    (event) => isTimelineContentEvent(event) && !deletedEventIds.has(event.id),
+  );
   const eventsById = new Map(visibleEvents.map((event) => [event.id, event]));
   const reactionPresence = new Map<
     string,
@@ -575,6 +499,9 @@ export function formatTimelineMessages(
     const authorProfile = profiles?.[authorPubkey.toLowerCase()];
     const isAgent = role === "bot" || authorProfile?.isAgent === true;
     const ownerPubkey = isAgent ? (authorProfile?.ownerPubkey ?? null) : null;
+    const managerPubkey = isAgent
+      ? (authorProfile?.managerPubkey ?? null)
+      : null;
     return {
       id: event.id,
       renderKey: event.localKey ?? event.id,
@@ -586,6 +513,10 @@ export function formatTimelineMessages(
       ownerPubkey,
       ownerLabel: isAgent
         ? formatOwnerLabel(ownerPubkey, currentPubkey, ownerProfiles)
+        : null,
+      managerPubkey,
+      managerLabel: isAgent
+        ? formatOwnerLabel(managerPubkey, currentPubkey, ownerProfiles)
         : null,
       avatarUrl: getAuthorAvatarUrl({
         authorPubkey,
@@ -646,40 +577,6 @@ export function formatTimelineMessages(
       })(),
     };
   });
-
-  for (const { event, payload } of runtimePurchaseZaps.values()) {
-    const payerPubkey = event.pubkey.toLowerCase();
-    timelineMessages.push({
-      id: event.id,
-      renderKey: event.localKey ?? event.id,
-      createdAt: event.created_at,
-      pubkey: payerPubkey,
-      signerPubkey: payerPubkey,
-      author: resolveUserLabel({
-        pubkey: payerPubkey,
-        currentPubkey,
-        profiles,
-        preferResolvedSelfLabel: true,
-      }),
-      isAgent: false,
-      ownerPubkey: null,
-      ownerLabel: null,
-      avatarUrl: getAuthorAvatarUrl({
-        authorPubkey: payerPubkey,
-        currentPubkey,
-        currentUserAvatarUrl,
-        profiles,
-      }),
-      time: formatTime(event.created_at),
-      body: JSON.stringify(payload),
-      parentId: null,
-      rootId: null,
-      depth: 0,
-      accent: currentPubkeyLower === payerPubkey,
-      kind: event.kind,
-      tags: event.tags,
-    });
-  }
 
   return timelineMessages.sort(
     (first, second) =>

@@ -13,6 +13,7 @@ function options(refetchOwnerProfiles) {
   return {
     pubkeys: [HUMAN, AGENT],
     agentPubkeys: new Set([AGENT]),
+    channelAgentPubkeys: new Set(),
     currentPubkey: CURRENT,
     eligibilityScope: { type: "channel", channelId: "general" },
     sharedChannelIds: new Set(["general"]),
@@ -76,6 +77,48 @@ test("relay-only agents still fail closed when relay discovery fails", async () 
       profiles: { [AGENT]: { ownerPubkey: CURRENT } },
       missing: [],
     })),
+    refetchRelayAgents: async () => ({
+      data: undefined,
+      error: new Error("relay directory unavailable"),
+    }),
+  });
+
+  assert.deepEqual(result, [HUMAN]);
+});
+
+test("a controlled hosted channel agent survives send-time revalidation", async () => {
+  const result = await revalidateAgentMentionPubkeys({
+    ...options(async () => ({
+      profiles: {
+        [AGENT]: {
+          ownerPubkey: OTHER_OWNER,
+          managerPubkey: CURRENT,
+        },
+      },
+      missing: [],
+    })),
+    channelAgentPubkeys: new Set([AGENT]),
+    refetchRelayAgents: async () => ({
+      data: undefined,
+      error: new Error("relay directory unavailable"),
+    }),
+  });
+
+  assert.deepEqual(result, [HUMAN, AGENT]);
+});
+
+test("a hosted channel agent controlled by another user fails closed", async () => {
+  const result = await revalidateAgentMentionPubkeys({
+    ...options(async () => ({
+      profiles: {
+        [AGENT]: {
+          ownerPubkey: OTHER_OWNER,
+          managerPubkey: OTHER_OWNER,
+        },
+      },
+      missing: [],
+    })),
+    channelAgentPubkeys: new Set([AGENT]),
     refetchRelayAgents: async () => ({
       data: undefined,
       error: new Error("relay directory unavailable"),

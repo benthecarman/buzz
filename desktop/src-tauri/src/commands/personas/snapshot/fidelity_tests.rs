@@ -53,7 +53,6 @@ fn make_definition(slug: &str) -> ManagedAgentRecord {
         last_error_code: None,
         respond_to: RespondTo::default(),
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         runtime: None,
         name_pool: vec![],
         is_builtin: false,
@@ -210,7 +209,6 @@ fn import_png_placeholder_keeps_manifest_avatar_fallback() {
     assert!(decoded.profile.avatar_data_url.is_none());
     assert_eq!(decoded.profile.avatar_url, snapshot.profile.avatar_url);
 }
-
 /// An unlocked trading card imports the agent's REAL avatar, never the card.
 ///
 /// Mint-shaped input: the PNG body is the generated card artwork, while the

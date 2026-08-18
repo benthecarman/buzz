@@ -73,6 +73,8 @@ export type InboxReply = {
   isAgent?: boolean;
   ownerLabel?: string | null;
   ownerPubkey?: string | null;
+  managerLabel?: string | null;
+  managerPubkey?: string | null;
   avatarUrl: string | null;
   content: string;
   createdAt: number;

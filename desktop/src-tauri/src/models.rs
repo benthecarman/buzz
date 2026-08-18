@@ -34,6 +34,10 @@ pub struct ProfileInfo {
     pub about: Option<String>,
     pub nip05_handle: Option<String>,
     pub owner_pubkey: Option<String>,
+    /// Host-verified buyer who manages this hosted agent. This is not a
+    /// NIP-OA owner and must not grant owner-only permissions.
+    #[serde(default)]
+    pub manager_pubkey: Option<String>,
     /// `true` when a real kind:0 event was found on the relay; `false` for the
     /// synthesized fallback returned when no metadata event exists.  The
     /// onboarding gate uses this to distinguish "new user with no profile" from
@@ -53,6 +57,8 @@ pub struct UserProfileSummaryInfo {
     pub nip05_handle: Option<String>,
     pub owner_pubkey: Option<String>,
     #[serde(default)]
+    pub manager_pubkey: Option<String>,
+    #[serde(default)]
     pub is_agent: bool,
 }
 
@@ -69,6 +75,8 @@ pub struct UserSearchResultInfo {
     pub avatar_url: Option<String>,
     pub nip05_handle: Option<String>,
     pub owner_pubkey: Option<String>,
+    #[serde(default)]
+    pub manager_pubkey: Option<String>,
     #[serde(default)]
     pub is_agent: bool,
 }
@@ -170,6 +178,9 @@ pub struct ChannelMemberInfo {
     #[serde(default)]
     pub joined_at: Option<String>,
     pub display_name: Option<String>,
+    /// Host-verified buyer who manages a hosted agent.
+    #[serde(default)]
+    pub manager_pubkey: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

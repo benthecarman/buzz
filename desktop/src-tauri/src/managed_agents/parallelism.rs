@@ -33,7 +33,6 @@ pub fn harness_max_parallelism(command: &str) -> Option<u32> {
         _ => None,
     }
 }
-
 /// Return the effective parallelism for the given harness command and
 /// requested value: `min(value, harness_max_parallelism(command))`.
 ///
@@ -104,7 +103,6 @@ mod tests {
             last_error_code: None,
             respond_to: Default::default(),
             respond_to_allowlist: vec![],
-            price_per_minute_sats: None,
             display_name: None,
             slug: None,
             runtime: runtime.map(str::to_string),

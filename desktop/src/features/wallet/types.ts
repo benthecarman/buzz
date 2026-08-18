@@ -99,6 +99,10 @@ export interface WalletProfileZapRequest {
   idempotencyKey: string;
   targetEventId?: string | null;
   targetEventKind?: number | null;
+  /** Source channel for a hosted-agent plan zap. */
+  channelId?: string | null;
+  /** Existing lease ID for a hosted-agent renewal. */
+  leaseId?: string | null;
 }
 
 export type WalletProfileZapDraft = WalletProfileZapRequest;
@@ -109,25 +113,6 @@ export interface WalletProfileZapResult {
   proofEventId: string | null;
   proofCreatedAtSeconds: number | null;
   proofPublished: boolean;
-}
-
-export interface WalletAgentRuntimeZapBeginRequest {
-  /** Agent whose published terms this purchase pays against. */
-  agentPubkey: string;
-  /** Non-DM channel in which the invocation window applies. */
-  channelId: string;
-  /** Exact signed kind-10101 pricing event that the zap targets. */
-  pricingEventJson: string;
-}
-
-export interface WalletAgentRuntimeZapAttempt {
-  /** Payer-authenticated kind-9737 event id used for recovery. */
-  intentEventId: string;
-}
-
-export interface WalletAgentRuntimeZapRequest {
-  /** Payer-authenticated kind-9737 event id returned by begin. */
-  intentEventId: string;
 }
 
 export interface WalletNwcRequest {

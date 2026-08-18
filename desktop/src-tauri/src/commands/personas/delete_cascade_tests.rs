@@ -56,7 +56,6 @@ fn make_agent(
         last_error_code: None,
         respond_to: RespondTo::OwnerOnly,
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,
@@ -112,7 +111,6 @@ fn cascade_includes_linked_agents_and_excludes_others() {
         "persona-less agent excluded"
     );
 }
-
 /// Deleting a persona with no linked agents returns an empty list (no cascade).
 #[test]
 fn cascade_empty_when_no_linked_agents() {

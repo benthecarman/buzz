@@ -87,6 +87,23 @@ pub(crate) fn profile_has_valid_oa_owner(event: &Event) -> bool {
     profile_valid_oa_owner_pubkey(event).is_some()
 }
 
+/// Return the buyer from one valid host-signed hosted-agent controller tag.
+///
+/// This value is only for display. The NIP-OA owner remains the authorization
+/// source for owner-only operations.
+pub(crate) fn profile_valid_hosted_agent_manager_pubkey(event: &Event) -> Option<String> {
+    let host = profile_valid_oa_owner_pubkey(event)?;
+    let host = nostr::PublicKey::from_hex(&host).ok()?;
+    let mut controller_tags = tags_named(event, buzz_core_pkg::hosted_agent::CONTROLLER_TAG);
+    let controller_tag = controller_tags.next()?;
+    if controller_tags.next().is_some() {
+        return None;
+    }
+    buzz_core_pkg::hosted_agent::verify_controller_tag(controller_tag, &event.pubkey, &host)
+        .ok()
+        .map(|controller| controller.to_hex())
+}
+
 // ── kind:39000 / 39002 (NIP-29) ─────────────────────────────────────────────
 
 /// Convert a NIP-29 kind:39000 channel metadata event to [`ChannelInfo`].
@@ -269,6 +286,7 @@ pub fn channel_members_from_event(event: &Event) -> Result<ChannelMembersRespons
             role,
             joined_at: None,
             display_name: None,
+            manager_pubkey: None,
         });
     }
 
@@ -303,6 +321,7 @@ pub fn profile_info_from_event(event: &Event) -> Result<ProfileInfo, String> {
         about,
         nip05_handle,
         owner_pubkey: profile_valid_oa_owner_pubkey(event),
+        manager_pubkey: profile_valid_hosted_agent_manager_pubkey(event),
         has_profile_event: true,
     })
 }
@@ -343,6 +362,7 @@ pub fn users_batch_from_events(
             nip05_handle: v.get("nip05").and_then(Value::as_str).map(str::to_string),
             is_agent: owner_pubkey.is_some(),
             owner_pubkey,
+            manager_pubkey: profile_valid_hosted_agent_manager_pubkey(ev),
         };
         profiles.insert(pk.clone(), summary);
     }

@@ -748,12 +748,6 @@ pub async fn create_managed_agent(
             input.parallelism,
             linked_persona.as_ref(),
         )?;
-        let price_per_minute_sats = crate::managed_agents::validate_runtime_price(
-            minted.respond_to,
-            &minted.respond_to_allowlist,
-            input.price_per_minute_sats,
-        )?;
-
         let record = crate::managed_agents::ManagedAgentRecord {
             pubkey: pubkey.clone(),
             name: name.clone(),
@@ -817,7 +811,6 @@ pub async fn create_managed_agent(
             last_error_code: None,
             respond_to: minted.respond_to,
             respond_to_allowlist: minted.respond_to_allowlist.clone(),
-            price_per_minute_sats,
             display_name: None,
             slug: None,
             runtime: None,
@@ -927,7 +920,6 @@ pub async fn create_managed_agent(
     profile_sync_error =
         super::agent_models::flush_managed_agent_policy(&app, &state, profile_sync_error).await;
 
-    super::agents_wallet::provision_agent_offer(&app, &state, &agent_keys, &pubkey, &input).await;
     // ── Phase 5: provider deploy (async, outside lock) ───────────────────────
     let spawn_error = if input.spawn_after_create && input.backend != BackendKind::Local {
         if let BackendKind::Provider { ref id, ref config } = input.backend {

@@ -120,7 +120,6 @@ pub(crate) struct SpawnConfigSnapshot {
     /// must not badge. Normalized (trim/lowercase/dedup) as the env receives
     /// it, so edits that don't survive normalization must not badge either.
     pub respond_to_allowlist: Option<Vec<String>>,
-    pub price_per_minute_sats: Option<u64>,
     pub idle_timeout_seconds: Option<u64>,
     pub max_turn_duration_seconds: Option<u64>,
     pub parallelism: u32,
@@ -166,7 +165,6 @@ impl SpawnConfigSnapshot {
                         .unwrap_or_else(|_| record.respond_to_allowlist.clone())
                 },
             ),
-            price_per_minute_sats: record.price_per_minute_sats,
             idle_timeout_seconds: record.idle_timeout_seconds,
             max_turn_duration_seconds: record.max_turn_duration_seconds,
             // Hash the effective parallelism so over-cap edits that don't change

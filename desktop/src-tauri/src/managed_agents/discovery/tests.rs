@@ -38,7 +38,6 @@ fn resolves_known_avatar_for_command_paths_and_aliases() {
         Some(CLAUDE_CODE_AVATAR_URL.to_string())
     );
 }
-
 #[test]
 fn returns_none_for_unknown_commands() {
     assert!(managed_agent_avatar_url("custom-agent").is_none());
@@ -270,7 +269,6 @@ fn record_with(
         last_error_code: None,
         respond_to: Default::default(),
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: runtime.map(str::to_string),
@@ -290,7 +288,8 @@ fn record_with(
 
 #[test]
 fn record_agent_command_own_runtime_wins_over_persona() {
-    // A materialized runtime never consults the persona list.
+    // A record with its own materialized runtime never consults the
+    // persona list — the unified-model resolution.
     let personas = vec![persona_with_runtime("p1", Some("goose"))];
     let record = record_with(Some("claude"), Some("p1"), None);
     assert_eq!(record_agent_command(&record, &personas), "claude-agent-acp");
@@ -1183,35 +1182,6 @@ fn test_command_basenames_dotted_name_no_extra_candidates() {
 }
 
 // ── Phase B: cli_install_commands_for_os ────────────────────────────────────
-
-#[test]
-fn release_command_search_prefers_packaged_sidecars() {
-    let dirs = super::ordered_command_search_dirs(
-        std::path::Path::new("/build/buzz"),
-        Some(std::path::Path::new("/home/user/buzz")),
-        Some(std::path::Path::new("/usr/bin")),
-        false,
-    );
-    assert_eq!(dirs.first(), Some(&std::path::PathBuf::from("/usr/bin")));
-    assert_eq!(
-        dirs.get(1),
-        Some(&std::path::PathBuf::from("/build/buzz/target/release"))
-    );
-}
-
-#[test]
-fn debug_command_search_prefers_fresh_debug_sidecars() {
-    let dirs = super::ordered_command_search_dirs(
-        std::path::Path::new("/build/buzz"),
-        None,
-        Some(std::path::Path::new("/build/buzz/target/debug")),
-        true,
-    );
-    assert_eq!(
-        dirs.first(),
-        Some(&std::path::PathBuf::from("/build/buzz/target/debug"))
-    );
-}
 
 /// Claude and Codex have non-empty default cli_install_commands (install.sh).
 #[test]

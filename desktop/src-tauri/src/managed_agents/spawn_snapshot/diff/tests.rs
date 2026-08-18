@@ -25,13 +25,11 @@ fn base() -> SpawnConfigSnapshot {
         auth_tag: Some("tag-abcdefgh".into()),
         respond_to: "owner-only".into(),
         respond_to_allowlist: Some(vec!["a".repeat(64)]),
-        price_per_minute_sats: Some(20),
         idle_timeout_seconds: Some(600),
         max_turn_duration_seconds: Some(7200),
         parallelism: 1,
     }
 }
-
 fn fields(entries: &[RestartDiffEntry]) -> Vec<&str> {
     entries.iter().map(|entry| entry.field.as_str()).collect()
 }
@@ -66,7 +64,6 @@ fn mutations() -> Vec<Mutation> {
         ("auth_tag", |s| s.auth_tag = None),
         ("respond_to", |s| s.respond_to = "anyone".into()),
         ("respond_to_allowlist", |s| s.respond_to_allowlist = None),
-        ("price_per_minute_sats", |s| s.price_per_minute_sats = None),
         ("idle_timeout_seconds", |s| s.idle_timeout_seconds = None),
         ("max_turn_duration_seconds", |s| {
             s.max_turn_duration_seconds = None

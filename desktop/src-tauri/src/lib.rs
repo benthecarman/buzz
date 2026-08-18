@@ -934,9 +934,6 @@ pub fn run() {
             wallet_get_recipient_offer,
             wallet_get_pending_profile_zap,
             wallet_send_profile_zap,
-            wallet_begin_agent_runtime_zap,
-            wallet_send_agent_runtime_zap,
-            agent_runtime_get_status,
             wallet_reveal_recovery_phrase,
             #[cfg(target_os = "macos")]
             tray_menu::clear_tray_agent_activity,

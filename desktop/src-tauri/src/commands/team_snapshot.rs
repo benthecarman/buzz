@@ -600,7 +600,6 @@ pub async fn confirm_team_snapshot_import(
                     .unwrap_or_default()
             },
             respond_to_allowlist: definition.respond_to_allowlist.clone(),
-            price_per_minute_sats: None,
             is_builtin: false,
             is_active: true,
             shared: false,

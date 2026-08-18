@@ -88,6 +88,20 @@ describe("mergeMemberAgentFlagsIntoProfiles", () => {
     assert.equal(merged[AGENT]?.avatarUrl, null);
     assert.equal(merged[AGENT]?.nip05Handle, null);
     assert.equal(merged[AGENT]?.ownerPubkey, null);
+    assert.equal(merged[AGENT]?.managerPubkey, null);
+  });
+
+  it("copies a hosted agent manager from channel membership", () => {
+    const merged = mergeMemberAgentFlagsIntoProfiles({}, [
+      {
+        pubkey: AGENT,
+        role: "bot",
+        isAgent: true,
+        managerPubkey: AGENT_2,
+      },
+    ]);
+
+    assert.equal(merged[AGENT]?.managerPubkey, AGENT_2);
   });
 
   it("flags an isAgent-only member (non-bot role) as an agent", () => {
@@ -151,6 +165,7 @@ describe("mergeMemberAgentFlagsIntoProfiles", () => {
       avatarUrl: "https://example.com/a.png",
       nip05Handle: "deploy@example.com",
       ownerPubkey: AGENT_2,
+      managerPubkey: null,
       isAgent: true,
     });
     assert.equal(profiles[AGENT].isAgent, undefined);

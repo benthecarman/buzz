@@ -203,7 +203,6 @@ fn managed_agent(name: &str) -> ManagedAgentRecord {
         last_error_code: None,
         respond_to: crate::managed_agents::RespondTo::OwnerOnly,
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,
@@ -351,7 +350,6 @@ fn welcome_team_is_seeded_and_idempotent() {
         expected
     );
 }
-
 #[test]
 fn welcome_team_seed_does_not_overwrite_customization() {
     let (mut records, _) = merge_teams(Vec::new(), "2026-07-01T00:00:00Z");

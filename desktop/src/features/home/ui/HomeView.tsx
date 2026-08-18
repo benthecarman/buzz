@@ -346,7 +346,7 @@ export function HomeView({
     () => [
       ...new Set(
         Object.values(feedProfiles ?? {})
-          .map((profile) => profile.ownerPubkey)
+          .flatMap((profile) => [profile.ownerPubkey, profile.managerPubkey])
           .filter((pubkey): pubkey is string => Boolean(pubkey)),
       ),
     ],

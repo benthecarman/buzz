@@ -320,22 +320,28 @@ fn random_zap_id() -> Result<String, WalletError> {
     Ok(hex::encode(bytes))
 }
 
+/// Event and channel fields bound into one zap intent.
+pub struct ZapTarget {
+    pub event_id: Option<String>,
+    pub event_kind: Option<u32>,
+    pub channel_id: Option<String>,
+    pub lease_id: Option<String>,
+}
+
 fn signed_intent(
     keys: &Keys,
     recipient: &WalletRecipientOffer,
     amount: u64,
     comment: &str,
-    target_event_id: Option<&str>,
-    target_event_kind: Option<u32>,
-    runtime_channel_id: Option<&str>,
+    target: &ZapTarget,
 ) -> Result<Event, WalletError> {
-    if target_event_id.is_some() != target_event_kind.is_some() {
+    if target.event_id.is_some() != target.event_kind.is_some() {
         return Err(WalletError::new(
             "invalid_zap",
             "event zaps require both a target event id and kind",
         ));
     }
-    if let Some(event_id) = target_event_id {
+    if let Some(event_id) = target.event_id.as_deref() {
         if event_id.len() != 64
             || !event_id
                 .chars()
@@ -355,15 +361,21 @@ fn signed_intent(
         tag(["offer_event", recipient.offer_event_json.as_str()])?,
         tag(["zap_id", random_zap_id()?.as_str()])?,
     ];
-    if let (Some(event_id), Some(event_kind)) = (target_event_id, target_event_kind) {
+    if let (Some(event_id), Some(event_kind)) = (target.event_id.as_deref(), target.event_kind) {
         tags.push(tag(["e", event_id])?);
-        if runtime_channel_id.is_none() {
+        if target.channel_id.is_none() {
             let event_kind = event_kind.to_string();
             tags.push(tag(["k", event_kind.as_str()])?);
         }
     }
-    if let Some(channel_id) = runtime_channel_id {
+    if let Some(channel_id) = target.channel_id.as_deref() {
         tags.push(tag(["h", channel_id])?);
+    }
+    if let Some(lease_id) = target.lease_id.as_deref() {
+        let lease_id = Uuid::parse_str(lease_id)
+            .map_err(|_| WalletError::new("invalid_zap", "lease id must be a UUID"))?
+            .to_string();
+        tags.push(tag(["lease", lease_id.as_str()])?);
     }
     let intent = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), comment)
         .tags(tags)
@@ -406,7 +418,6 @@ impl ZapAttemptState {
         matches!(self, Self::PaidWithoutProof | Self::Failed)
     }
 }
-
 /// Persisted data needed to resume one profile payment safely.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ZapAttempt {
@@ -431,9 +442,12 @@ pub struct ZapAttempt {
     /// Exact payer-signed, unbroadcast kind `9737` intent.
     pub intent_event_json: String,
     pub intent_event_id: String,
-    /// Channel that a runtime zap grants access to.
+    /// Channel copied into a channel-scoped zap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_channel_id: Option<String>,
+    pub channel_id: Option<String>,
+    /// Existing hosted-agent lease selected by this signed intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
     /// Intent reference sent in the BOLT12 payer note for reconciliation.
     pub payer_note: String,
     /// Relay where the recipient offer was resolved and the proof belongs.
@@ -459,62 +473,7 @@ impl ZapAttempt {
         recipient: WalletRecipientOffer,
         amount: u64,
         comment: Option<String>,
-        target_event_id: Option<String>,
-        target_event_kind: Option<u32>,
-        keys: &Keys,
-    ) -> Result<Self, WalletError> {
-        let target = match (target_event_id, target_event_kind) {
-            (Some(id), Some(kind)) => Some((id, kind)),
-            (None, None) => None,
-            _ => {
-                return Err(WalletError::new(
-                    "zap_target_invalid",
-                    "message zap target id and kind must be provided together",
-                ))
-            }
-        };
-        Self::prepare_inner(
-            idempotency_key,
-            recipient,
-            amount,
-            comment,
-            target,
-            None,
-            keys,
-        )
-    }
-
-    /// Prepare a runtime zap that targets the Agent's pricing event.
-    pub fn prepare_agent_runtime(
-        recipient: WalletRecipientOffer,
-        amount: u64,
-        channel_id: String,
-        pricing_event_id: String,
-        keys: &Keys,
-    ) -> Result<Self, WalletError> {
-        let mut attempt = Self::prepare_inner(
-            String::new(),
-            recipient,
-            amount,
-            None,
-            Some((
-                pricing_event_id,
-                buzz_core_pkg::kind::KIND_AGENT_RUNTIME_PRICING,
-            )),
-            Some(channel_id),
-            keys,
-        )?;
-        attempt.idempotency_key = attempt.intent_event_id.clone();
-        Ok(attempt)
-    }
-
-    fn prepare_inner(
-        idempotency_key: String,
-        recipient: WalletRecipientOffer,
-        amount: u64,
-        comment: Option<String>,
-        target: Option<(String, u32)>,
-        runtime_channel_id: Option<String>,
+        target: ZapTarget,
         keys: &Keys,
     ) -> Result<Self, WalletError> {
         let comment = comment
@@ -525,26 +484,22 @@ impl ZapAttempt {
             &recipient,
             amount,
             comment.as_deref().unwrap_or_default(),
-            target.as_ref().map(|(id, _)| id.as_str()),
-            target.as_ref().map(|(_, kind)| *kind),
-            runtime_channel_id.as_deref(),
+            &target,
         )?;
         let intent_event_id = intent.id.to_hex();
-        let (target_event_id, target_event_kind) = target
-            .map(|(id, kind)| (Some(id), Some(kind)))
-            .unwrap_or((None, None));
         Ok(Self {
             version: 5,
             idempotency_key,
             recipient_pubkey: recipient.recipient_pubkey,
             amount,
             comment,
-            target_event_id,
-            target_event_kind,
+            target_event_id: target.event_id,
+            target_event_kind: target.event_kind,
             offer: recipient.offer,
             offer_event_json: recipient.offer_event_json,
             intent_event_json: intent.as_json(),
-            runtime_channel_id,
+            channel_id: target.channel_id,
+            lease_id: target.lease_id,
             payer_note: format!("nostr:nipB1:{intent_event_id}"),
             intent_event_id,
             relay_url: None,
@@ -630,6 +585,8 @@ impl ZapAttempt {
             idempotency_key: self.idempotency_key.clone(),
             target_event_id: self.target_event_id.clone(),
             target_event_kind: self.target_event_kind,
+            channel_id: self.channel_id.clone(),
+            lease_id: self.lease_id.clone(),
         }
     }
 
@@ -646,18 +603,10 @@ impl ZapAttempt {
         }
     }
 }
-
 /// Atomic, identity-scoped persistence for profile-payment checkpoints.
 pub struct ZapAttemptStore {
     directory: PathBuf,
     payer_pubkey: String,
-    key_format: AttemptKeyFormat,
-}
-
-#[derive(Clone, Copy)]
-enum AttemptKeyFormat {
-    Uuid,
-    IntentEventId,
 }
 
 impl ZapAttemptStore {
@@ -668,49 +617,18 @@ impl ZapAttemptStore {
                 .join("zap-attempts")
                 .join(payer_pubkey),
             payer_pubkey: payer_pubkey.to_string(),
-            key_format: AttemptKeyFormat::Uuid,
-        }
-    }
-
-    /// Store for paid-Agent attempts named by their signed intent event id.
-    pub fn new_agent_runtime(app_data_dir: &Path, payer_pubkey: &str) -> Self {
-        Self {
-            directory: app_data_dir
-                .join("wallet")
-                .join("agent-runtime-zap-attempts-v1")
-                .join(payer_pubkey),
-            payer_pubkey: payer_pubkey.to_string(),
-            key_format: AttemptKeyFormat::IntentEventId,
         }
     }
 
     fn path(&self, idempotency_key: &str) -> Result<PathBuf, WalletError> {
-        let filename = match self.key_format {
-            AttemptKeyFormat::Uuid => Uuid::parse_str(idempotency_key)
-                .map(|id| id.to_string())
-                .map_err(|_| {
-                    WalletError::new(
-                        "invalid_idempotency_key",
-                        "profile payment idempotency key must be a UUID",
-                    )
-                })?,
-            AttemptKeyFormat::IntentEventId => {
-                let event_id = nostr::EventId::from_hex(idempotency_key).map_err(|_| {
-                    WalletError::new(
-                        "invalid_payment_attempt",
-                        "Agent payment attempt id must be 32-byte lowercase hex",
-                    )
-                })?;
-                let canonical = event_id.to_hex();
-                if canonical != idempotency_key {
-                    return Err(WalletError::new(
-                        "invalid_payment_attempt",
-                        "Agent payment attempt id must be 32-byte lowercase hex",
-                    ));
-                }
-                canonical
-            }
-        };
+        let filename = Uuid::parse_str(idempotency_key)
+            .map(|id| id.to_string())
+            .map_err(|_| {
+                WalletError::new(
+                    "invalid_idempotency_key",
+                    "profile payment idempotency key must be a UUID",
+                )
+            })?;
         Ok(self.directory.join(format!("{filename}.json")))
     }
 
@@ -736,14 +654,13 @@ impl ZapAttemptStore {
             match self.load(key) {
                 Ok(Some(attempt)) => attempts.push(attempt),
                 Ok(None) => {}
-                Err(error) if matches!(self.key_format, AttemptKeyFormat::Uuid) => {
+                Err(error) => {
                     tracing::warn!(
                         path = %path.display(),
                         error = %error.message,
                         "skip invalid profile zap attempt"
                     );
                 }
-                Err(error) => return Err(error),
             }
         }
         Ok(attempts)
@@ -768,105 +685,23 @@ impl ZapAttemptStore {
 
     fn validate_loaded_attempt(
         &self,
-        attempt_key: &str,
+        _attempt_key: &str,
         attempt: &ZapAttempt,
     ) -> Result<(), WalletError> {
-        if !matches!(self.key_format, AttemptKeyFormat::IntentEventId) {
-            return Ok(());
-        }
-        fn invalid(message: impl Into<String>) -> WalletError {
-            WalletError::new("invalid_payment_attempt", message)
-        }
-        if attempt.idempotency_key != attempt_key || attempt.intent_event_id != attempt_key {
-            return Err(invalid(
-                "Agent payment attempt id does not match its record",
-            ));
-        }
         let intent = Event::from_json(&attempt.intent_event_json)
-            .map_err(|error| invalid(format!("decode Agent payment intent: {error}")))?;
+            .map_err(|error| WalletError::new("invalid_payment_attempt", error.to_string()))?;
         intent
             .verify()
-            .map_err(|error| invalid(format!("verify Agent payment intent: {error}")))?;
-        if intent.id.to_hex() != attempt_key
-            || intent.kind != Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16)
+            .map_err(|error| WalletError::new("invalid_payment_attempt", error.to_string()))?;
+        if intent.id.to_hex() != attempt.intent_event_id
             || intent.pubkey.to_hex() != self.payer_pubkey
-            || intent.content != attempt.comment.as_deref().unwrap_or_default()
             || exact_event_tag(&intent, "p")? != attempt.recipient_pubkey
             || exact_event_tag(&intent, "amount")? != amount_msats(attempt.amount)?
-            || exact_event_tag(&intent, "offer_event")? != attempt.offer_event_json
-            || exact_event_tag(&intent, "e")? != attempt.target_event_id.as_deref().unwrap_or("")
-            || exact_event_tag(&intent, "h")? != attempt.runtime_channel_id.as_deref().unwrap_or("")
-            || attempt.target_event_kind != Some(buzz_core_pkg::kind::KIND_AGENT_RUNTIME_PRICING)
-            || attempt.relay_url.is_none()
-            || attempt.payer_note != format!("nostr:nipB1:{attempt_key}")
         {
-            return Err(invalid(
-                "Agent payment attempt does not match its signed intent",
+            return Err(WalletError::new(
+                "invalid_payment_attempt",
+                "payment attempt does not match its signed intent",
             ));
-        }
-        exact_event_tag(&intent, "zap_id")?;
-        if optional_event_tag(&intent, "k")?.is_some() {
-            return Err(invalid("Agent payment intent must not contain a k tag"));
-        }
-        let offer_event = Event::from_json(&attempt.offer_event_json)
-            .map_err(|error| invalid(format!("decode Agent offer event: {error}")))?;
-        let recipient = recipient_offer(&offer_event, &attempt.recipient_pubkey)?;
-        if recipient.offer != attempt.offer {
-            return Err(invalid(
-                "Agent payment attempt offer does not match its intent",
-            ));
-        }
-        let payment_status = attempt
-            .payment
-            .as_ref()
-            .map(|payment| payment.status.as_str());
-        let state_is_valid = match attempt.state {
-            ZapAttemptState::Prepared => {
-                payment_status.is_none()
-                    && attempt.proof_event_json.is_none()
-                    && !attempt.proof_published
-            }
-            ZapAttemptState::Paying => {
-                payment_status.is_none_or(|status| status != "completed" && status != "failed")
-                    && attempt.proof_event_json.is_none()
-                    && !attempt.proof_published
-            }
-            ZapAttemptState::PaidWithoutProof => {
-                payment_status == Some("completed")
-                    && (!attempt.proof_published || attempt.proof_event_json.is_some())
-            }
-            ZapAttemptState::Failed => {
-                payment_status != Some("completed")
-                    && attempt.proof_event_json.is_none()
-                    && !attempt.proof_published
-            }
-        };
-        if !state_is_valid {
-            return Err(invalid("Agent payment attempt state is inconsistent"));
-        }
-        if let Some(proof) = attempt.proof_event()? {
-            proof
-                .verify()
-                .map_err(|error| invalid(format!("verify Agent payment proof: {error}")))?;
-            if proof.kind != Kind::Custom(KIND_BOLT12_ZAP as u16)
-                || proof.pubkey.to_hex() != self.payer_pubkey
-                || proof.content != intent.content
-                || exact_event_tag(&proof, "description")? != attempt.intent_event_json
-                || exact_event_tag(&proof, "P")? != self.payer_pubkey
-                || exact_event_tag(&proof, "proof")? != PLACEHOLDER_PAYER_PROOF
-                || exact_event_tag(&proof, "p")? != attempt.recipient_pubkey
-                || exact_event_tag(&proof, "amount")? != amount_msats(attempt.amount)?
-                || exact_event_tag(&proof, "offer_event")? != attempt.offer_event_json
-                || exact_event_tag(&proof, "e")? != attempt.target_event_id.as_deref().unwrap_or("")
-                || exact_event_tag(&proof, "h")?
-                    != attempt.runtime_channel_id.as_deref().unwrap_or("")
-                || optional_event_tag(&proof, "k")?.is_some()
-                || optional_event_tag(&proof, "zap_id")?.is_some()
-            {
-                return Err(invalid(
-                    "Agent payment proof does not match its signed intent",
-                ));
-            }
         }
         Ok(())
     }
@@ -905,14 +740,6 @@ impl ZapAttemptStore {
         if attempt.state != ZapAttemptState::Prepared || attempt.payment.is_some() {
             return Err(WalletError::unavailable(
                 "new profile payment is not in the prepared state",
-            ));
-        }
-        if matches!(self.key_format, AttemptKeyFormat::IntentEventId)
-            && self.path(&attempt.idempotency_key)?.exists()
-        {
-            return Err(WalletError::new(
-                "payment_attempt_exists",
-                "Agent payment intent already exists",
             ));
         }
         self.validate_loaded_attempt(&attempt.idempotency_key, attempt)?;
@@ -1177,52 +1004,6 @@ impl ZapAttemptStore {
         Ok(attempts)
     }
 
-    /// Find the one payment attempt that still owns an Agent access scope.
-    pub fn reusable_agent_runtime_attempt(
-        &self,
-        recipient_pubkey: &str,
-        channel_id: &str,
-        relay_url: &str,
-    ) -> Result<Option<ZapAttempt>, WalletError> {
-        if !matches!(self.key_format, AttemptKeyFormat::IntentEventId) {
-            return Ok(None);
-        }
-        let relay_url = relay_url.trim_end_matches('/');
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or_default();
-        let mut attempts = self
-            .stored_attempts()?
-            .into_iter()
-            .filter(|attempt| {
-                attempt.recipient_pubkey == recipient_pubkey
-                    && attempt.runtime_channel_id.as_deref() == Some(channel_id)
-                    && attempt
-                        .relay_url
-                        .as_deref()
-                        .is_some_and(|relay| relay.trim_end_matches('/') == relay_url)
-            })
-            .filter_map(|attempt| {
-                let owns_scope = match attempt.state {
-                    ZapAttemptState::Prepared | ZapAttemptState::Paying => true,
-                    ZapAttemptState::Failed => false,
-                    ZapAttemptState::PaidWithoutProof if !attempt.proof_published => true,
-                    ZapAttemptState::PaidWithoutProof => {
-                        attempt.proof_event().ok().flatten().is_some_and(|proof| {
-                            proof.created_at.as_secs().saturating_add(
-                                buzz_core_pkg::agent_runtime_payment::INVOCATION_WINDOW_SECONDS,
-                            ) >= now
-                        })
-                    }
-                };
-                owns_scope.then_some(attempt)
-            })
-            .collect::<Vec<_>>();
-        attempts.sort_by_key(|attempt| attempt.updated_at_ms);
-        Ok(attempts.pop())
-    }
-
     /// Remove terminal checkpoints after the documented 90-day retention
     /// period. Incomplete attempts are retained until reconciled.
     pub fn prune(&self) -> Result<(), WalletError> {
@@ -1253,10 +1034,6 @@ impl ZapAttemptStore {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "zap/runtime_tests.rs"]
-mod runtime_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1322,8 +1099,12 @@ mod tests {
             recipient(&recipient_keys),
             21,
             Some("great work".to_string()),
-            None,
-            None,
+            ZapTarget {
+                event_id: None,
+                event_kind: None,
+                channel_id: None,
+                lease_id: None,
+            },
             &payer,
         )
         .unwrap();
@@ -1365,8 +1146,12 @@ mod tests {
             recipient(&recipient_keys),
             21,
             None,
-            Some(target_event_id.clone()),
-            Some(40_002),
+            ZapTarget {
+                event_id: Some(target_event_id.clone()),
+                event_kind: Some(40_002),
+                channel_id: None,
+                lease_id: None,
+            },
             &payer,
         )
         .unwrap();
@@ -1382,16 +1167,22 @@ mod tests {
     }
 
     #[test]
-    fn runtime_intent_targets_pricing_without_a_kind_tag() {
+    fn hosted_agent_intent_binds_plan_channel_and_lease() {
         let payer = Keys::generate();
         let recipient_keys = Keys::generate();
-        let pricing_event_id = "cd".repeat(32);
-        let channel_id = Uuid::new_v4().to_string();
-        let attempt = ZapAttempt::prepare_agent_runtime(
+        let target_event_id = "ab".repeat(32);
+        let lease_id = Uuid::new_v4().to_string();
+        let attempt = ZapAttempt::prepare(
+            Uuid::new_v4().to_string(),
             recipient(&recipient_keys),
-            255,
-            channel_id.clone(),
-            pricing_event_id.clone(),
+            500,
+            None,
+            ZapTarget {
+                event_id: Some(target_event_id.clone()),
+                event_kind: Some(40_002),
+                channel_id: Some("channel-id".to_string()),
+                lease_id: Some(lease_id.clone()),
+            },
             &payer,
         )
         .unwrap();
@@ -1399,159 +1190,19 @@ mod tests {
         assert!(intent
             .tags
             .iter()
-            .any(|tag| tag.as_slice() == ["e", pricing_event_id.as_str()]));
+            .any(|tag| tag.as_slice() == ["e", target_event_id.as_str()]));
         assert!(intent
             .tags
             .iter()
-            .any(|tag| tag.as_slice() == ["h", channel_id.as_str()]));
-        assert!(!intent.tags.iter().any(|tag| {
-            matches!(
-                tag.as_slice().first().map(String::as_str),
-                Some("k" | "agent_runtime_purchase")
-            )
-        }));
-    }
-
-    fn prepared_runtime_attempt(
-        payer: &Keys,
-        recipient_keys: &Keys,
-        channel_id: &str,
-    ) -> ZapAttempt {
-        let mut attempt = ZapAttempt::prepare_agent_runtime(
-            recipient(recipient_keys),
-            255,
-            channel_id.to_string(),
-            "cd".repeat(32),
-            payer,
-        )
-        .unwrap();
-        attempt.relay_url = Some("https://relay.example".to_string());
-        attempt
-    }
-
-    #[test]
-    fn runtime_store_uses_the_signed_intent_id() {
-        let temp = tempfile::tempdir().unwrap();
-        let payer = Keys::generate();
-        let recipient_keys = Keys::generate();
-        let mut first = prepared_runtime_attempt(&payer, &recipient_keys, "channel-id");
-        let second = prepared_runtime_attempt(&payer, &recipient_keys, "channel-id");
-        let intent = Event::from_json(&first.intent_event_json).unwrap();
-        assert_eq!(first.idempotency_key, intent.id.to_hex());
-        assert_eq!(first.intent_event_id, intent.id.to_hex());
-        assert_ne!(first.intent_event_id, second.intent_event_id);
-
-        let store = ZapAttemptStore::new_agent_runtime(temp.path(), &payer.public_key().to_hex());
-        store.save_prepared(&mut first).unwrap();
-        assert_eq!(
-            store.load(&first.intent_event_id).unwrap(),
-            Some(first.clone())
-        );
-    }
-
-    #[test]
-    fn runtime_store_rejects_terms_changed_after_signing() {
-        let temp = tempfile::tempdir().unwrap();
-        let payer = Keys::generate();
-        let recipient_keys = Keys::generate();
-        let mut attempt = prepared_runtime_attempt(&payer, &recipient_keys, "channel-id");
-        let store = ZapAttemptStore::new_agent_runtime(temp.path(), &payer.public_key().to_hex());
-        store.save_prepared(&mut attempt).unwrap();
-
-        let path = store.path(&attempt.intent_event_id).unwrap();
-        attempt.amount += 1;
-        std::fs::write(path, serde_json::to_vec(&attempt).unwrap()).unwrap();
-        assert_eq!(
-            store.load(&attempt.intent_event_id).unwrap_err().code,
-            "invalid_payment_attempt"
-        );
-
-        attempt.amount -= 1;
-        attempt.state = ZapAttemptState::PaidWithoutProof;
-        std::fs::write(
-            store.path(&attempt.intent_event_id).unwrap(),
-            serde_json::to_vec(&attempt).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            store.load(&attempt.intent_event_id).unwrap_err().code,
-            "invalid_payment_attempt"
-        );
-    }
-
-    #[test]
-    fn runtime_scope_reuses_active_proof_and_releases_expired_proof() {
-        let temp = tempfile::tempdir().unwrap();
-        let payer = Keys::generate();
-        let recipient_keys = Keys::generate();
-        let mut attempt = prepared_runtime_attempt(&payer, &recipient_keys, "channel-id");
-        let store = ZapAttemptStore::new_agent_runtime(temp.path(), &payer.public_key().to_hex());
-        store.save_prepared(&mut attempt).unwrap();
-        assert_eq!(
-            store
-                .reusable_agent_runtime_attempt(
-                    &attempt.recipient_pubkey,
-                    "channel-id",
-                    "https://relay.example",
-                )
-                .unwrap()
-                .map(|stored| stored.intent_event_id),
-            Some(attempt.intent_event_id.clone())
-        );
-
-        store.begin_dispatch(&mut attempt).unwrap();
-        store
-            .record_payment(
-                &mut attempt,
-                WalletPaymentResult {
-                    payment_id: "payment".to_string(),
-                    status: "completed".to_string(),
-                    status_message: String::new(),
-                    amount: Some(255),
-                    fees: 0,
-                    created_at_ms: 100,
-                    finalized_at_ms: Some(200),
-                },
-            )
-            .unwrap();
-        let current_proof = store
-            .prepare_placeholder_proof(&mut attempt, &payer, Some("channel-id"))
-            .unwrap();
-        store.mark_proof_published(&mut attempt).unwrap();
-        assert!(store
-            .reusable_agent_runtime_attempt(
-                &attempt.recipient_pubkey,
-                "channel-id",
-                "https://relay.example",
-            )
-            .unwrap()
-            .is_some());
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let expired_proof = EventBuilder::new(current_proof.kind, current_proof.content)
-            .tags(current_proof.tags.iter().cloned())
-            .custom_created_at(nostr::Timestamp::from(now.saturating_sub(
-                buzz_core_pkg::agent_runtime_payment::INVOCATION_WINDOW_SECONDS + 1,
-            )))
-            .sign_with_keys(&payer)
-            .unwrap();
-        attempt.proof_event_json = Some(expired_proof.as_json());
-        store.save(&mut attempt).unwrap();
-        assert!(store
-            .reusable_agent_runtime_attempt(
-                &attempt.recipient_pubkey,
-                "channel-id",
-                "https://relay.example",
-            )
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            attempt.result().unwrap().proof_created_at_seconds,
-            Some(expired_proof.created_at.as_secs())
-        );
+            .any(|tag| tag.as_slice() == ["h", "channel-id"]));
+        assert!(intent
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["lease", lease_id.as_str()]));
+        assert!(!intent
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice().first().map(String::as_str) == Some("k")));
     }
 
     #[test]
@@ -1630,8 +1281,12 @@ mod tests {
             recipient(&recipient_keys),
             21,
             None,
-            None,
-            None,
+            ZapTarget {
+                event_id: None,
+                event_kind: None,
+                channel_id: None,
+                lease_id: None,
+            },
             &payer,
         )
         .unwrap();
@@ -1662,8 +1317,12 @@ mod tests {
             recipient(&recipient_keys),
             21,
             Some("great work".to_string()),
-            Some(target_event_id.clone()),
-            Some(40_002),
+            ZapTarget {
+                event_id: Some(target_event_id.clone()),
+                event_kind: Some(40_002),
+                channel_id: None,
+                lease_id: None,
+            },
             &payer,
         )
         .unwrap();
@@ -1758,8 +1417,12 @@ mod tests {
             recipient(&recipient_keys),
             21,
             None,
-            None,
-            None,
+            ZapTarget {
+                event_id: None,
+                event_kind: None,
+                channel_id: None,
+                lease_id: None,
+            },
             &payer,
         )
         .unwrap();

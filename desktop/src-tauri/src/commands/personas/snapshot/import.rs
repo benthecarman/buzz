@@ -307,7 +307,6 @@ pub(crate) fn decode_snapshot_from_bytes(
         ChunkPayload::Locked(_) => Err(LOCKED_CARD_REFUSAL.to_string()),
     }
 }
-
 /// Decode a snapshot for import, unlocking locked cards when — and only
 /// when — this machine holds one of the envelope's two exact key endpoints
 /// (the owner identity or the named local agent record).
@@ -643,7 +642,6 @@ pub async fn confirm_agent_snapshot_import(
             // are always consistent at mint time.
             respond_to: minted.respond_to,
             respond_to_allowlist: minted.respond_to_allowlist.clone(),
-            price_per_minute_sats: None,
             is_builtin: false,
             is_active: true,
             shared: false,

@@ -14,6 +14,10 @@ const CLOSE_QUOTE = "”";
 
 export type ChannelTextField = "topic" | "purpose";
 
+export function describeConversationEvent(type: string): string | null {
+  return type === "dm_created" ? "started this conversation" : null;
+}
+
 /**
  * The reader is the recipient of an add, while every other member is the
  * subject of one. Keep that distinction in the caption: "You were added by"

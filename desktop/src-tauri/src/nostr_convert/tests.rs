@@ -33,6 +33,35 @@ fn oa_profile_event(content: &str) -> (Event, String) {
     (event, owner_keys.public_key().to_hex())
 }
 
+/// Build a kind:0 profile with valid owner and hosted-manager proofs.
+fn hosted_profile_event(content: &str) -> (Event, String, String) {
+    let agent_keys = Keys::generate();
+    let host_keys = Keys::generate();
+    let buyer_keys = Keys::generate();
+    let agent_pubkey = agent_keys.public_key();
+    let auth_json = buzz_sdk_pkg::nip_oa::compute_auth_tag(&host_keys, &agent_pubkey, "")
+        .expect("compute auth tag");
+    let auth_values: Vec<String> = serde_json::from_str(&auth_json).expect("parse auth tag json");
+    let auth_tag = Tag::parse(auth_values).expect("parse auth tag");
+    let manager_tag = buzz_core_pkg::hosted_agent::build_controller_tag(
+        &host_keys,
+        &agent_pubkey,
+        &buyer_keys.public_key().to_hex(),
+        &"a".repeat(64),
+        "75937583-0732-457e-88fd-ce3174cc3087",
+    )
+    .expect("build controller tag");
+    let event = EventBuilder::new(Kind::Metadata, content)
+        .tags([auth_tag, manager_tag])
+        .sign_with_keys(&agent_keys)
+        .expect("sign");
+    (
+        event,
+        host_keys.public_key().to_hex(),
+        buyer_keys.public_key().to_hex(),
+    )
+}
+
 fn managed_agent_event(
     owner_keys: &Keys,
     agent_pubkey: &str,
@@ -224,6 +253,19 @@ fn profile_info_extracts_valid_nip_oa_owner() {
 }
 
 #[test]
+fn profile_info_keeps_owner_and_verified_hosted_manager_separate() {
+    let (event, host_pubkey, buyer_pubkey) =
+        hosted_profile_event(r#"{"display_name":"Hosted Agent"}"#);
+    let profile = profile_info_from_event(&event).unwrap();
+
+    assert_eq!(profile.owner_pubkey.as_deref(), Some(host_pubkey.as_str()));
+    assert_eq!(
+        profile.manager_pubkey.as_deref(),
+        Some(buyer_pubkey.as_str())
+    );
+}
+
+#[test]
 fn profile_info_falls_back_to_name() {
     let e = ev(0, r#"{"name":"bob"}"#, vec![]);
     let p = profile_info_from_event(&e).unwrap();
@@ -272,6 +314,19 @@ fn users_batch_marks_valid_nip_oa_profiles_as_agents() {
     assert_eq!(
         resp.profiles[&pubkey].owner_pubkey.as_deref(),
         Some(owner_pubkey.as_str())
+    );
+}
+
+#[test]
+fn users_batch_returns_verified_hosted_manager() {
+    let (agent, _, buyer_pubkey) = hosted_profile_event(r#"{"name":"hosted-agent"}"#);
+    let pubkey = agent.pubkey.to_hex();
+    let response =
+        users_batch_from_events(std::slice::from_ref(&agent), std::slice::from_ref(&pubkey));
+
+    assert_eq!(
+        response.profiles[&pubkey].manager_pubkey.as_deref(),
+        Some(buyer_pubkey.as_str())
     );
 }
 

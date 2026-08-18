@@ -5,8 +5,6 @@
 //! Provides [`StoredEvent`], filter matching, kind constants, and event
 //! verification. All other Buzz crates depend on this one.
 
-/// Buzz Agent Runtime Payments — public pricing for invocation access.
-pub mod agent_runtime_payment;
 /// NIP-AM: Agent Turn Metric — payload type and encrypt/decrypt helpers.
 pub mod agent_turn_metric;
 /// Channel and membership enums shared across crates.
@@ -22,6 +20,8 @@ pub mod event;
 pub mod filter;
 /// Git permission types — ref patterns, protection rules, policy evaluation.
 pub mod git_perms;
+/// Zap contracts for new, isolated hosted agents.
+pub mod hosted_agent;
 /// Shared invite-link contract constants.
 pub mod invite;
 /// Buzz kind number registry — custom event type constants.

@@ -57,7 +57,6 @@ fn record() -> ManagedAgentRecord {
         last_error_code: None,
         respond_to: Default::default(),
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,
@@ -108,7 +107,6 @@ fn snapshot_is_deterministic() {
         snapshot(&rec, &[], &[], "wss://ws.example", &Default::default())
     );
 }
-
 #[test]
 fn materializing_runtime_keeps_snapshot_stable() {
     // Migration cutover invariant (Phase 1A): materializing the linked

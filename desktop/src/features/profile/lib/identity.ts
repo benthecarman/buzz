@@ -41,6 +41,7 @@ export function profileLookupsEqual(
       prev.avatarUrl !== next.avatarUrl ||
       prev.nip05Handle !== next.nip05Handle ||
       prev.ownerPubkey !== next.ownerPubkey ||
+      prev.managerPubkey !== next.managerPubkey ||
       prev.isAgent !== next.isAgent
     ) {
       return false;
@@ -84,6 +85,9 @@ export function mergeCurrentProfileIntoLookup(
       isAgent: profiles?.[normalizePubkey(currentProfile.pubkey)]?.isAgent,
       ownerPubkey:
         profiles?.[normalizePubkey(currentProfile.pubkey)]?.ownerPubkey ?? null,
+      managerPubkey:
+        profiles?.[normalizePubkey(currentProfile.pubkey)]?.managerPubkey ??
+        null,
     },
   };
 }

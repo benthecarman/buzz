@@ -2190,15 +2190,16 @@ pub async fn run_prompt_task(
     //
     let prompt_result = match control_rx {
         None => {
-            agent
-                .acp
-                .session_prompt_blocks_with_idle_timeout(
+            // Heartbeat / non-cancellable path.
+            tokio::select! {
+                biased;
+                result = agent.acp.session_prompt_blocks_with_idle_timeout(
                     &session_id,
                     &prompt_blocks,
                     ctx.idle_timeout,
                     ctx.max_turn_duration,
-                )
-                .await
+                ) => result,
+            }
         }
         Some(rx) => {
             tokio::select! {

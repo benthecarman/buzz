@@ -432,6 +432,7 @@ fn empty_profile_info(pubkey: &str) -> ProfileInfo {
         about: None,
         nip05_handle: None,
         owner_pubkey: None,
+        manager_pubkey: None,
         has_profile_event: false,
     }
 }

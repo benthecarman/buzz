@@ -12,10 +12,10 @@ use uuid::Uuid;
 use buzz_auth::Scope;
 use buzz_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
-    is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_RUNTIME_PRICING,
-    KIND_AGENT_TURN_METRIC, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOLT12_OFFER,
-    KIND_BOLT12_ZAP, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST,
-    KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET,
+    is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC,
+    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOLT12_OFFER, KIND_BOLT12_ZAP,
+    KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION,
+    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET,
     KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE,
     KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
     KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
@@ -50,21 +50,6 @@ use crate::conformance::{
     self as conf, channel_label, claimed_community_from_event, emit, msg_id_label,
     state_for_request, EmitGuard, TraceAction, Verdict,
 };
-
-fn validate_agent_runtime_pricing(event: &Event) -> Result<(), IngestError> {
-    if !event.tags.is_empty() {
-        return Err(IngestError::Rejected(
-            "invalid: agent runtime pricing must not contain tags".into(),
-        ));
-    }
-    let pricing: buzz_core::agent_runtime_payment::RuntimePricing =
-        serde_json::from_str(&event.content).map_err(|error| {
-            IngestError::Rejected(format!("invalid: malformed agent runtime pricing: {error}"))
-        })?;
-    pricing
-        .validate()
-        .map_err(|error| IngestError::Rejected(format!("invalid: {error}")))
-}
 
 fn validate_custom_emoji_tags(event: &Event) -> Result<(), IngestError> {
     for tag in event.tags.iter() {
@@ -363,7 +348,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_PROFILE => Ok(Scope::UsersWrite),
         KIND_TEXT_NOTE | KIND_LONG_FORM => Ok(Scope::MessagesWrite),
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
-        | KIND_BOLT12_OFFER | KIND_AGENT_RUNTIME_PRICING | KIND_NWC_INFO | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM
+        | KIND_BOLT12_OFFER | KIND_NWC_INFO | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM
         | KIND_MANAGED_AGENT | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG
         | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
@@ -497,49 +482,6 @@ pub(crate) enum ReactionChannelResult {
     DbError(String),
 }
 
-fn exact_tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
-    let mut matches = event
-        .tags
-        .iter()
-        .filter(|tag| tag.as_slice().first().map(String::as_str) == Some(name));
-    let value = matches.next()?.as_slice().get(1)?.as_str();
-    matches.next().is_none().then_some(value)
-}
-
-/// Runtime zaps target a global pricing event but belong to the signed channel.
-fn runtime_zap_channel(zap: &Event, pricing_event: &Event) -> Option<Uuid> {
-    if event_kind_u32(zap) != KIND_BOLT12_ZAP
-        || event_kind_u32(pricing_event) != KIND_AGENT_RUNTIME_PRICING
-        || zap
-            .tags
-            .iter()
-            .any(|tag| tag.as_slice().first().map(String::as_str) == Some("k"))
-    {
-        return None;
-    }
-
-    let recipient = exact_tag_value(zap, "p")?;
-    let target = exact_tag_value(zap, "e")?;
-    let channel = exact_tag_value(zap, "h")?;
-    let amount_msats = exact_tag_value(zap, "amount")?.parse::<u64>().ok()?;
-    if recipient != pricing_event.pubkey.to_hex()
-        || target != pricing_event.id.to_hex()
-        || amount_msats == 0
-        || !amount_msats.is_multiple_of(1_000)
-    {
-        return None;
-    }
-
-    let pricing: buzz_core::agent_runtime_payment::RuntimePricing =
-        serde_json::from_str(&pricing_event.content).ok()?;
-    pricing.validate().ok()?;
-    if !pricing.enabled || pricing.price_sats?.checked_mul(1_000)? != amount_msats {
-        return None;
-    }
-
-    Uuid::parse_str(channel).ok()
-}
-
 /// Derive channel_id from the target event for NIP-25 reactions.
 pub(crate) async fn derive_reaction_channel(
     community_id: CommunityId,
@@ -569,13 +511,10 @@ pub(crate) async fn derive_reaction_channel(
     };
 
     match db.get_event_by_id(community_id, &id_bytes).await {
-        Ok(Some(target)) => target
-            .channel_id
-            .or_else(|| runtime_zap_channel(event, &target.event))
-            .map_or(
-                ReactionChannelResult::NoChannel,
-                ReactionChannelResult::Channel,
-            ),
+        Ok(Some(target)) => target.channel_id.map_or(
+            ReactionChannelResult::NoChannel,
+            ReactionChannelResult::Channel,
+        ),
         Ok(None) => ReactionChannelResult::NotFound,
         Err(e) => ReactionChannelResult::DbError(e.to_string()),
     }
@@ -627,7 +566,6 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_EVENT_REMINDER
             // Agent profile (10100): user-owned replaceable, keyed by pubkey.
             | KIND_AGENT_PROFILE
-            | KIND_AGENT_RUNTIME_PRICING
             // NIP-AP: persona definitions (30175): owner-authored, keyed by (pubkey, kind, d_tag).
             | KIND_PERSONA
             // NIP-AP: team (30176) + managed-agent (30177) definitions and the
@@ -2626,10 +2564,6 @@ async fn ingest_event_inner(
         }
     }
 
-    if kind_u32 == KIND_AGENT_RUNTIME_PRICING {
-        validate_agent_runtime_pricing(&event)?;
-    }
-
     if kind_u32 == KIND_EVENT_REMINDER {
         validate_event_reminder(&event)
             .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
@@ -3148,97 +3082,7 @@ mod tests {
         KIND_MANAGED_AGENT, KIND_PERSONA, KIND_PRESENCE_UPDATE, KIND_STREAM_MESSAGE,
         KIND_STREAM_MESSAGE_DIFF, KIND_TEAM, KIND_USER_STATUS,
     };
-    use nostr::{EventBuilder, Kind, Tag};
-
-    fn runtime_zap_fixture() -> (Event, Event, Uuid) {
-        let agent = nostr::Keys::generate();
-        let payer = nostr::Keys::generate();
-        let channel_id = Uuid::new_v4();
-        let pricing = EventBuilder::new(
-            Kind::Custom(KIND_AGENT_RUNTIME_PRICING as u16),
-            serde_json::to_string(
-                &buzz_core::agent_runtime_payment::RuntimePricing::enabled(50)
-                    .expect("valid pricing"),
-            )
-            .expect("serialize pricing"),
-        )
-        .sign_with_keys(&agent)
-        .expect("sign pricing");
-        let zap = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), "")
-            .tags([
-                Tag::parse(["p", &agent.public_key().to_hex()]).expect("p tag"),
-                Tag::parse(["e", &pricing.id.to_hex()]).expect("e tag"),
-                Tag::parse(["h", &channel_id.to_string()]).expect("h tag"),
-                Tag::parse(["amount", "50000"]).expect("amount tag"),
-            ])
-            .sign_with_keys(&payer)
-            .expect("sign zap");
-        (zap, pricing, channel_id)
-    }
-
-    #[test]
-    fn runtime_zap_uses_its_signed_channel() {
-        let (zap, pricing, channel_id) = runtime_zap_fixture();
-        assert_eq!(runtime_zap_channel(&zap, &pricing), Some(channel_id));
-    }
-
-    #[test]
-    fn ordinary_zap_does_not_use_runtime_channel() {
-        let (zap, pricing, _) = runtime_zap_fixture();
-        let ordinary = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), "")
-            .tags(
-                zap.tags
-                    .iter()
-                    .cloned()
-                    .chain([Tag::parse(["k", "10101"]).expect("k tag")]),
-            )
-            .sign_with_keys(&nostr::Keys::generate())
-            .expect("sign zap");
-        assert_eq!(runtime_zap_channel(&ordinary, &pricing), None);
-    }
-
-    #[test]
-    fn runtime_pricing_is_separate_canonical_replaceable_content() {
-        let keys = nostr::Keys::generate();
-        let event = EventBuilder::new(
-            Kind::Custom(KIND_AGENT_RUNTIME_PRICING as u16),
-            serde_json::to_string(
-                &buzz_core::agent_runtime_payment::RuntimePricing::enabled(20)
-                    .expect("valid pricing"),
-            )
-            .expect("serialize pricing"),
-        )
-        .sign_with_keys(&keys)
-        .expect("sign pricing");
-        assert!(validate_agent_runtime_pricing(&event).is_ok());
-
-        let offer = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
-            .tags([nostr::Tag::parse(["price_per_minute", "20"]).expect("tag")])
-            .sign_with_keys(&keys)
-            .expect("sign offer");
-        assert_ne!(event.kind, offer.kind, "kind 10058 must remain independent");
-    }
-
-    #[test]
-    fn runtime_pricing_rejects_zero_and_tags() {
-        let keys = nostr::Keys::generate();
-        let zero = EventBuilder::new(
-            Kind::Custom(KIND_AGENT_RUNTIME_PRICING as u16),
-            r#"{"version":2,"enabled":true,"price_sats":0,"invocation_window_seconds":300}"#,
-        )
-        .sign_with_keys(&keys)
-        .expect("sign pricing");
-        assert!(validate_agent_runtime_pricing(&zero).is_err());
-
-        let tagged = EventBuilder::new(
-            Kind::Custom(KIND_AGENT_RUNTIME_PRICING as u16),
-            r#"{"version":2,"enabled":false}"#,
-        )
-        .tags([nostr::Tag::parse(["p", &"a".repeat(64)]).expect("tag")])
-        .sign_with_keys(&keys)
-        .expect("sign pricing");
-        assert!(validate_agent_runtime_pricing(&tagged).is_err());
-    }
+    use nostr::{EventBuilder, Kind};
 
     #[test]
     fn reaction_validation_accepts_wrapped_max_shortcode() {
@@ -3957,21 +3801,6 @@ mod tests {
     fn unknown_kind_rejected() {
         let dummy = make_dummy_event();
         assert!(required_scope_for_kind(99999, &dummy).is_err());
-    }
-
-    #[test]
-    fn retired_agent_runtime_ledger_writes_are_rejected() {
-        let dummy = make_dummy_event();
-        for kind in [
-            buzz_core::kind::KIND_AGENT_RUNTIME_DEPOSIT,
-            buzz_core::kind::KIND_AGENT_RUNTIME_RESERVATION,
-            buzz_core::kind::KIND_AGENT_RUNTIME_SETTLEMENT,
-        ] {
-            assert!(
-                required_scope_for_kind(kind, &dummy).is_err(),
-                "retired kind {kind} must not accept new writes"
-            );
-        }
     }
 
     #[test]

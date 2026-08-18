@@ -33,7 +33,6 @@ fn validate_rejects_reserved_key() {
         "expected reserved-key error, got: {err}"
     );
 }
-
 #[test]
 fn validate_rejects_derived_provider_model_key_goose_provider() {
     let config = config_with_env(&[("GOOSE_PROVIDER", "anthropic")]);
@@ -338,7 +337,6 @@ fn bare_record() -> ManagedAgentRecord {
         last_error_code: None,
         respond_to: RespondTo::OwnerOnly,
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,

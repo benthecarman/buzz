@@ -46,16 +46,51 @@ export type AgentEligibilityScope =
   | { type: "channel"; channelId: string }
   | { type: "managed-only" };
 
+export function getControlledHostedAgentPubkeys({
+  currentPubkey,
+  members,
+  getManagerPubkey,
+}: {
+  currentPubkey?: string | null;
+  members: readonly {
+    pubkey: string;
+    isAgent?: boolean;
+    role?: string | null;
+  }[];
+  getManagerPubkey: (pubkey: string) => string | null | undefined;
+}) {
+  if (!currentPubkey) {
+    return new Set<string>();
+  }
+
+  const normalizedCurrentPubkey = normalizePubkey(currentPubkey);
+  return new Set(
+    members.flatMap((member) => {
+      if (member.isAgent !== true && member.role !== "bot") {
+        return [];
+      }
+      const pubkey = normalizePubkey(member.pubkey);
+      const managerPubkey = getManagerPubkey(pubkey);
+      return managerPubkey &&
+        normalizePubkey(managerPubkey) === normalizedCurrentPubkey
+        ? [pubkey]
+        : [];
+    }),
+  );
+}
+
 export function getMentionableAgentPubkeys({
   currentPubkey,
   eligibilityScope,
   managedAgentPubkeys,
+  controlledHostedAgentPubkeys = [],
   relayAgents,
   sharedChannelIds,
 }: {
   currentPubkey?: string | null;
   eligibilityScope: AgentEligibilityScope;
   managedAgentPubkeys: Iterable<string>;
+  controlledHostedAgentPubkeys?: Iterable<string>;
   relayAgents: readonly RelayAgent[] | undefined;
   sharedChannelIds: ReadonlySet<string>;
 }) {
@@ -79,6 +114,12 @@ export function getMentionableAgentPubkeys({
     }
   }
 
+  if (eligibilityScope.type === "channel") {
+    for (const pubkey of controlledHostedAgentPubkeys) {
+      pubkeys.add(normalizePubkey(pubkey));
+    }
+  }
+
   return pubkeys;
 }
 
@@ -97,6 +138,7 @@ export type AgentMentionAdmission = "allow" | "deny" | "unknown";
 export function getAgentMentionAdmission({
   isAgent,
   isManagedAgent,
+  isControlledHostedAgent = false,
   pubkey,
   ownerPubkey,
   currentPubkey,
@@ -106,6 +148,7 @@ export function getAgentMentionAdmission({
 }: {
   isAgent: boolean;
   isManagedAgent: boolean;
+  isControlledHostedAgent?: boolean;
   pubkey: string;
   ownerPubkey?: string | null;
   currentPubkey?: string | null;
@@ -118,7 +161,7 @@ export function getAgentMentionAdmission({
 
   const normalized = normalizePubkey(pubkey);
   if (!mentionableAgentPubkeys.has(normalized)) return "deny";
-  if (!ownerOnly || isManagedAgent) return "allow";
+  if (!ownerOnly || isManagedAgent || isControlledHostedAgent) return "allow";
   if (!ownerPubkey || !currentPubkey) return "unknown";
 
   return normalizePubkey(ownerPubkey) === normalizePubkey(currentPubkey)
@@ -129,6 +172,7 @@ export function getAgentMentionAdmission({
 export function shouldHideAgentFromMentions({
   isAgent,
   isManagedAgent = false,
+  isControlledHostedAgent = false,
   pubkey,
   ownerPubkey,
   currentPubkey,
@@ -138,6 +182,7 @@ export function shouldHideAgentFromMentions({
 }: {
   isAgent: boolean;
   isManagedAgent?: boolean;
+  isControlledHostedAgent?: boolean;
   pubkey: string;
   ownerPubkey?: string | null;
   currentPubkey?: string | null;
@@ -149,6 +194,7 @@ export function shouldHideAgentFromMentions({
     getAgentMentionAdmission({
       isAgent,
       isManagedAgent,
+      isControlledHostedAgent,
       pubkey,
       ownerPubkey,
       currentPubkey,

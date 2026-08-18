@@ -45,7 +45,6 @@ pub(super) fn sample_record() -> ManagedAgentRecord {
         last_error_code: None,
         respond_to: RespondTo::OwnerOnly,
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,
@@ -62,7 +61,6 @@ pub(super) fn sample_record() -> ManagedAgentRecord {
         relay_mesh: None,
     }
 }
-
 // ── preview_prospective_persona_snapshot (Finding 4: relay-mesh preflight
 // ordering) ───────────────────────────────────────────────────────────────
 

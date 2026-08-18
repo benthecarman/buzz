@@ -48,7 +48,6 @@ fn bare_agent_record(
         last_error_code: None,
         respond_to: RespondTo::OwnerOnly,
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,
@@ -157,7 +156,6 @@ fn deploy_resolver_uses_definition_over_stale_record() {
         "deploy must use definition provider, not stale record snapshot"
     );
 }
-
 /// When a linked definition has blank model/provider (inherit), the deploy
 /// resolver must fall through to global — stale record bytes are inert.
 #[test]

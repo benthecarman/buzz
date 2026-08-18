@@ -12,8 +12,7 @@ pub(crate) mod enabled {
         sync::{atomic::Ordering, Arc, OnceLock},
     };
     pub use zap_commands::{
-        wallet_begin_agent_runtime_zap, wallet_get_pending_profile_zap, wallet_get_recipient_offer,
-        wallet_send_agent_runtime_zap, wallet_send_profile_zap,
+        wallet_get_pending_profile_zap, wallet_get_recipient_offer, wallet_send_profile_zap,
     };
 
     const INCOMING_PAYMENT_EVENT: &str = "wallet-incoming-payment";
@@ -391,155 +390,6 @@ pub(crate) mod enabled {
         publish_wallet_event(state, keys, Some(offer_issuer), relay_api_base_urls, &event).await
     }
 
-    /// Reuse or create an agent-scoped offer in the user's wallet, then
-    /// broadcast an announcement signed by the agent identity.
-    async fn publish_managed_agent_offer(
-        state: &AppState,
-        agent_keys: &nostr::Keys,
-        user_keys: &nostr::Keys,
-        user_provider: &Arc<dyn WalletProvider>,
-        relay_api_base_urls: &[String],
-    ) -> Result<Vec<String>, WalletError> {
-        let agent_pubkey = agent_keys.public_key().to_hex();
-        let offer = user_provider.scoped_offer(agent_pubkey, false).await?;
-        publish_offer(state, agent_keys, user_keys, relay_api_base_urls, &offer).await
-    }
-
-    /// Give every existing managed agent a distinct offer from the user's
-    /// wallet. This is best-effort per agent: enabling the user's wallet must
-    /// not fail after it has already published because one agent key or relay
-    /// is temporarily unavailable.
-    async fn provision_managed_agent_offers(
-        app: &AppHandle,
-        state: &AppState,
-        user_keys: &nostr::Keys,
-        user_provider: &Arc<dyn WalletProvider>,
-        relay_api_base_urls: &[String],
-    ) -> Vec<String> {
-        let records = {
-            let Ok(_guard) = state.managed_agents_store_lock.lock() else {
-                return vec!["managed agents: agent store lock is unavailable".to_string()];
-            };
-            match crate::managed_agents::load_managed_agents(app) {
-                Ok(records) => records,
-                Err(error) => return vec![format!("managed agents: {error}")],
-            }
-        };
-
-        let results = join_all(records.into_iter().map(|record| async move {
-            let pubkey = record.pubkey;
-            let keys = nostr::Keys::parse(record.private_key_nsec.trim()).map_err(|error| {
-                WalletError::unavailable(format!("load agent {pubkey} signing key: {error}"))
-            })?;
-            if keys.public_key().to_hex() != pubkey {
-                return Err(WalletError::unavailable(format!(
-                    "agent {pubkey} signing key does not match its public key"
-                )));
-            }
-            publish_managed_agent_offer(state, &keys, user_keys, user_provider, relay_api_base_urls)
-                .await
-                .map(|warnings| (pubkey, warnings))
-        }))
-        .await;
-
-        results
-            .into_iter()
-            .flat_map(|result| match result {
-                Ok((pubkey, warnings)) => warnings
-                    .into_iter()
-                    .map(move |warning| format!("agent {pubkey}: {warning}"))
-                    .collect::<Vec<_>>(),
-                Err(error) => vec![error.message],
-            })
-            .collect()
-    }
-
-    /// Withdraw every managed agent's replaceable offer when the owner turns
-    /// the wallet feature off. A failed agent withdrawal is reported alongside
-    /// the existing relay publication warnings and does not prevent the other
-    /// identities from being withdrawn.
-    async fn withdraw_managed_agent_offers(
-        app: &AppHandle,
-        state: &AppState,
-        relay_api_base_urls: &[String],
-    ) -> Vec<String> {
-        let records = {
-            let Ok(_guard) = state.managed_agents_store_lock.lock() else {
-                return vec!["managed agents: agent store lock is unavailable".to_string()];
-            };
-            match crate::managed_agents::load_managed_agents(app) {
-                Ok(records) => records,
-                Err(error) => return vec![format!("managed agents: {error}")],
-            }
-        };
-
-        join_all(records.into_iter().map(|record| async move {
-            let pubkey = record.pubkey;
-            let result = async {
-                let keys = nostr::Keys::parse(record.private_key_nsec.trim()).map_err(|error| {
-                    WalletError::unavailable(format!("load signing key: {error}"))
-                })?;
-                if keys.public_key().to_hex() != pubkey {
-                    return Err(WalletError::unavailable(
-                        "signing key does not match its public key",
-                    ));
-                }
-                let event = build_offer_withdrawal()
-                    .sign_with_keys(&keys)
-                    .map_err(|error| {
-                        WalletError::new(
-                            "relay_publish_failed",
-                            format!("sign BOLT12 offer withdrawal: {error}"),
-                        )
-                    })?;
-                publish_wallet_event(state, &keys, None, relay_api_base_urls, &event).await
-            }
-            .await;
-            (pubkey, result)
-        }))
-        .await
-        .into_iter()
-        .flat_map(|(pubkey, result)| match result {
-            Ok(warnings) => warnings
-                .into_iter()
-                .map(move |warning| format!("agent {pubkey}: {warning}"))
-                .collect::<Vec<_>>(),
-            Err(error) => vec![format!("agent {pubkey}: {}", error.message)],
-        })
-        .collect()
-    }
-
-    /// Create an offer from the user's wallet and publish it for a newly
-    /// created managed agent. The caller supplies the agent signing keys.
-    pub(crate) async fn provision_new_managed_agent_offer(
-        app: &AppHandle,
-        state: &AppState,
-        keys: &nostr::Keys,
-        relay_urls: Vec<String>,
-    ) -> Result<Vec<String>, String> {
-        let relay_api_base_urls =
-            wallet_relay_api_base_urls(&relay_api_base_url_with_override(state), Some(relay_urls));
-        let app_data_dir = app_data_dir(app).map_err(|error| error.message)?;
-        let user_keys = state.signing_keys()?;
-        let user_provider = wallet_manager()
-            .provider_for(&user_keys, &app_data_dir)
-            .await
-            .map_err(|error| error.message)?;
-        user_provider
-            .provision()
-            .await
-            .map_err(|error| error.message)?;
-        publish_managed_agent_offer(
-            state,
-            keys,
-            &user_keys,
-            &user_provider,
-            &relay_api_base_urls,
-        )
-        .await
-        .map_err(|error| error.message)
-    }
-
     async fn resolve_recipient_offer(
         state: &AppState,
         keys: &nostr::Keys,
@@ -697,10 +547,6 @@ pub(crate) mod enabled {
             super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, true)
                 .await?,
         );
-        publication_warnings.extend(
-            provision_managed_agent_offers(&app, &state, &keys, &provider, &relay_api_base_urls)
-                .await,
-        );
         state.wallet_polling_enabled.store(true, Ordering::Release);
         Ok(WalletEnableResult {
             status,
@@ -710,11 +556,10 @@ pub(crate) mod enabled {
 
     #[tauri::command]
     pub async fn wallet_disable(
-        app: AppHandle,
+        _app: AppHandle,
         state: State<'_, AppState>,
         relay_urls: Option<Vec<String>>,
     ) -> Result<WalletOfferPublicationResult, WalletError> {
-        let unpriced_agents = clear_agent_runtime_pricing(&app, &state)?;
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let event = build_offer_withdrawal()
             .sign_with_keys(&keys)
@@ -732,58 +577,12 @@ pub(crate) mod enabled {
             super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, false)
                 .await?,
         );
-        publication_warnings
-            .extend(withdraw_managed_agent_offers(&app, &state, &relay_api_base_urls).await);
-        if !unpriced_agents.is_empty() {
-            publication_warnings.push(format!(
-                "Paid runtime pricing was cleared for {}. Restart {} to stop charging.",
-                unpriced_agents.join(", "),
-                if unpriced_agents.len() == 1 {
-                    "it"
-                } else {
-                    "them"
-                }
-            ));
-        }
         state.wallet_polling_enabled.store(false, Ordering::Release);
         incoming_payment_tracker().lock().await.clear();
         Ok(WalletOfferPublicationResult {
             offer: None,
             publication_warnings,
         })
-    }
-
-    /// Clear every agent's per-minute rate, returning the names that carried
-    /// one.
-    ///
-    /// Disabling the wallet withdraws the offers those rates are collected
-    /// against, so a surviving rate would leave an agent advertising a price
-    /// nobody can pay — and the harness refuses to start such an agent. This
-    /// used to be a refusal instead, which stranded an owner whose agent had
-    /// already lost its offer: they could neither disable the wallet nor
-    /// republish through it.
-    fn clear_agent_runtime_pricing(
-        app: &AppHandle,
-        state: &AppState,
-    ) -> Result<Vec<String>, WalletError> {
-        let _guard = state
-            .managed_agents_store_lock
-            .lock()
-            .map_err(|error| WalletError::unavailable(error.to_string()))?;
-        let mut records =
-            crate::managed_agents::load_managed_agents(app).map_err(WalletError::unavailable)?;
-        let mut cleared = Vec::new();
-        for record in records.iter_mut() {
-            if record.price_per_minute_sats.take().is_some() {
-                cleared.push(record.name.clone());
-            }
-        }
-        if cleared.is_empty() {
-            return Ok(cleared);
-        }
-        crate::managed_agents::save_managed_agents(app, &records)
-            .map_err(WalletError::unavailable)?;
-        Ok(cleared)
     }
 
     #[tauri::command]
@@ -813,12 +612,11 @@ pub(crate) mod enabled {
     }
 
     #[tauri::command]
-    /// Republish the wallet's announcements: the owner's offer, NWC info, and
-    /// every managed agent's offer.
+    /// Republish the wallet owner's offer and NWC information.
     ///
     /// `rotate` mints a fresh owner offer, invalidating the published one, so
     /// it is opt-in — the ordinary repair path must not silently change an
-    /// offer the owner has already shared. Agent offers are always reused.
+    /// offer the owner has already shared.
     pub async fn wallet_refresh_offer(
         app: AppHandle,
         state: State<'_, AppState>,
@@ -837,13 +635,6 @@ pub(crate) mod enabled {
         publication_warnings.extend(
             super::super::wallet_nwc::publish_nwc_info(&state, &keys, &relay_api_base_urls, true)
                 .await?,
-        );
-        // Agent offers ride along: enabling the wallet was previously the only
-        // thing that published them, and disabling is refused while any agent
-        // is priced.
-        publication_warnings.extend(
-            provision_managed_agent_offers(&app, &state, &keys, &provider, &relay_api_base_urls)
-                .await,
         );
         Ok(WalletOfferPublicationResult {
             offer: Some(offer),
@@ -1235,13 +1026,6 @@ mod disabled {
     disabled_async_command!(
         wallet_send_profile_zap(request: serde_json::Value) -> serde_json::Value
     );
-    disabled_async_command!(
-        wallet_begin_agent_runtime_zap(request: serde_json::Value) -> serde_json::Value
-    );
-    disabled_async_command!(
-        wallet_send_agent_runtime_zap(request: serde_json::Value) -> serde_json::Value
-    );
-
     #[tauri::command]
     pub fn wallet_reveal_recovery_phrase() -> Result<String, WalletDisabledError> {
         Err(disabled())

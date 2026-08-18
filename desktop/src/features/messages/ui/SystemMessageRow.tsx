@@ -27,6 +27,7 @@ import { UserAvatar } from "@/shared/ui/UserAvatar";
 import {
   addedByActionPrefix,
   describeChannelTextFieldChange,
+  describeConversationEvent,
   toInlineName,
 } from "../lib/systemEventCopy";
 import { MessageAgentOwner } from "./MessageAgentOwner";
@@ -57,8 +58,6 @@ type SystemMessagePayload = {
   public_reason?: string;
   reason_code?: string;
   action_id?: string;
-  invocation_window_seconds?: number;
-  amount_sats?: number;
 };
 
 type SystemMessageDescription = {
@@ -574,27 +573,6 @@ function describeSystemEvent(
         title: actorName,
         action: <>removed {targetName} from the channel</>,
       };
-    case "agent_runtime_purchased": {
-      if (
-        !payload.actor ||
-        !payload.target ||
-        !Number.isSafeInteger(payload.amount_sats) ||
-        !Number.isSafeInteger(payload.invocation_window_seconds) ||
-        Number(payload.amount_sats) <= 0 ||
-        Number(payload.invocation_window_seconds) <= 0
-      ) {
-        return null;
-      }
-      const minutes = Number(payload.invocation_window_seconds) / 60;
-      return {
-        title: actorName,
-        action: (
-          <>
-            paid ₿{payload.amount_sats} for {minutes} minutes of {targetName}
-          </>
-        ),
-      };
-    }
     case "topic_changed":
       return {
         title: actorName,
@@ -610,6 +588,14 @@ function describeSystemEvent(
         title: actorName,
         action: "created this channel",
       };
+    case "dm_created": {
+      const action = describeConversationEvent(payload.type);
+      if (!payload.actor || !action) return null;
+      return {
+        title: actorName,
+        action,
+      };
+    }
     case "channel_archived":
       return {
         title: actorName,
@@ -766,10 +752,13 @@ export const SystemMessageRow = React.memo(function SystemMessageRow({
         agentPubkeys?.has(normalizePubkey(displayedIdentityPubkey))),
   );
   const displayedOwnerPubkey =
+    displayedIdentityProfile?.managerPubkey ??
+    displayedTimelineIdentity?.managerPubkey ??
     displayedIdentityProfile?.ownerPubkey ??
     displayedTimelineIdentity?.ownerPubkey ??
     null;
   const displayedOwnerLabel =
+    displayedTimelineIdentity?.managerLabel ??
     displayedTimelineIdentity?.ownerLabel ??
     formatOwnerLabel(displayedOwnerPubkey, currentPubkey, ownerProfiles);
 
@@ -783,7 +772,6 @@ export const SystemMessageRow = React.memo(function SystemMessageRow({
       <MessageReactions
         messageId={reactionMessage.id}
         reactions={reactions}
-        zaps={reactionMessage.zaps}
         canToggle={canToggleReactions}
         pending={reactionPending}
         className="mt-0.5 pt-0.5"

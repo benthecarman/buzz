@@ -105,7 +105,6 @@ pub fn agent_event_content(record: &ManagedAgentRecord) -> ManagedAgentEventCont
         respond_to_allowlist: record.respond_to_allowlist.clone(),
     }
 }
-
 /// Build a kind:30177 event from a `ManagedAgentRecord`.
 ///
 /// Returns an unsigned `EventBuilder` — the caller signs and submits. The
@@ -207,7 +206,6 @@ mod tests {
             last_error_code: None,
             respond_to: RespondTo::Allowlist,
             respond_to_allowlist: vec!["79be667e".to_string()],
-            price_per_minute_sats: None,
             // Unified-model fields carry real values so the exclusion test
             // proves they are absent from the wire, not vacuously empty.
             display_name: Some("Display Name Secretish".to_string()),

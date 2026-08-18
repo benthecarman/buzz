@@ -154,9 +154,10 @@ export function UserProfilePopover({
   );
   const profile = profileQuery.data;
   const ownerPubkey = profile?.ownerPubkey ?? null;
+  const displayManagerPubkey = profile?.managerPubkey ?? ownerPubkey;
   const ownerProfileQuery = useUsersBatchQuery(
-    ownerPubkey ? [ownerPubkey] : [],
-    { enabled: open && Boolean(ownerPubkey) },
+    displayManagerPubkey ? [displayManagerPubkey] : [],
+    { enabled: open && Boolean(displayManagerPubkey) },
   );
   const normalizedPubkey = normalizePubkey(pubkey);
   const isAgentByOaOwner = Boolean(
@@ -187,7 +188,7 @@ export function UserProfilePopover({
   const currentPubkey = identityQuery.data?.pubkey;
   const ownerLabel = isBotProfile
     ? formatOwnerLabel(
-        ownerPubkey,
+        displayManagerPubkey,
         currentPubkey,
         ownerProfileQuery.data?.profiles,
       )

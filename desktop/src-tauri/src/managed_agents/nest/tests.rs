@@ -215,7 +215,6 @@ fn ensure_nest_skips_permissions_on_symlinked_child() {
         "symlinked child's target should not be chmod'd"
     );
 }
-
 #[cfg(unix)]
 #[test]
 fn ensure_nest_migrates_old_skill_dir() {
@@ -488,7 +487,6 @@ fn make_agent(name: &str, persona_id: Option<&str>) -> ManagedAgentRecord {
         last_error_code: None,
         respond_to: RespondTo::default(),
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         env_vars: std::collections::BTreeMap::new(),
         display_name: None,
         slug: None,

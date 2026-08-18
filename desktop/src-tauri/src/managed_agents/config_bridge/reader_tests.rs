@@ -102,7 +102,6 @@ fn test_record() -> ManagedAgentRecord {
         last_error_code: None,
         respond_to: crate::managed_agents::types::RespondTo::OwnerOnly,
         respond_to_allowlist: vec![],
-        price_per_minute_sats: None,
         display_name: None,
         slug: None,
         runtime: None,

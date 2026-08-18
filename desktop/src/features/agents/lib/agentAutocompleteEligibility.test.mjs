@@ -6,6 +6,7 @@ import {
   filterAdmittedMentionPubkeys,
   filterCachedAgentSuggestions,
   getAgentMentionAdmission,
+  getControlledHostedAgentPubkeys,
   getMentionableAgentPubkeys,
   getSharedChannelIds,
   isAgentIdentityInAllowedList,
@@ -200,6 +201,50 @@ test("getMentionableAgentPubkeys: scopes channel composers and fails closed with
       eligibilityScope: { type: "managed-only" },
     }),
     new Set([PUB_A]),
+  );
+});
+
+test("getControlledHostedAgentPubkeys: requires bot membership and the current manager", () => {
+  const result = getControlledHostedAgentPubkeys({
+    currentPubkey: CURRENT_PUBKEY,
+    members: [
+      { pubkey: PUB_A.toUpperCase(), role: "bot" },
+      { pubkey: PUB_B, role: "bot" },
+      { pubkey: PUB_C, role: "member" },
+    ],
+    getManagerPubkey: (pubkey) =>
+      pubkey === PUB_A
+        ? CURRENT_PUBKEY.toUpperCase()
+        : pubkey === PUB_B
+          ? OTHER_OWNER_PUBKEY
+          : CURRENT_PUBKEY,
+  });
+
+  assert.deepEqual(result, new Set([PUB_A]));
+});
+
+test("getMentionableAgentPubkeys: admits a controlled hosted agent only in its channel composer", () => {
+  const base = {
+    currentPubkey: CURRENT_PUBKEY,
+    managedAgentPubkeys: [],
+    controlledHostedAgentPubkeys: [PUB_A],
+    relayAgents: [],
+    sharedChannelIds: new Set(["general"]),
+  };
+
+  assert.deepEqual(
+    getMentionableAgentPubkeys({
+      ...base,
+      eligibilityScope: { type: "channel", channelId: "general" },
+    }),
+    new Set([PUB_A]),
+  );
+  assert.deepEqual(
+    getMentionableAgentPubkeys({
+      ...base,
+      eligibilityScope: { type: "community" },
+    }),
+    new Set(),
   );
 });
 
@@ -439,6 +484,23 @@ test("getAgentMentionAdmission: owner-only requires current verified ownership",
   assert.equal(
     getAgentMentionAdmission({ ...common, ownerPubkey: null }),
     "unknown",
+  );
+});
+
+test("getAgentMentionAdmission: owner-only admits a controlled hosted agent", () => {
+  assert.equal(
+    getAgentMentionAdmission({
+      isAgent: true,
+      isManagedAgent: false,
+      isControlledHostedAgent: true,
+      pubkey: PUB_A,
+      currentPubkey: CURRENT_PUBKEY,
+      ownerPubkey: OTHER_OWNER_PUBKEY,
+      mentionableAgentPubkeys: new Set([PUB_A]),
+      directoryReady: true,
+      ownerOnly: true,
+    }),
+    "allow",
   );
 });
 

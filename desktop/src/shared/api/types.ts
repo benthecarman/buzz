@@ -40,6 +40,7 @@ export type ChannelMember = {
   isAgent: boolean;
   joinedAt: string;
   displayName: string | null;
+  managerPubkey?: string | null;
 };
 
 export type CreateChannelInput = {
@@ -112,6 +113,9 @@ export type Profile = {
   about: string | null;
   nip05Handle: string | null;
   ownerPubkey: string | null;
+  /** Host-verified buyer who manages a hosted agent. This does not grant
+   * NIP-OA owner permissions. */
+  managerPubkey?: string | null;
   /** True when a real kind:0 metadata event exists on the relay for this pubkey.
    * False for the synthesized fallback returned when no event is present.
    * Used by the onboarding gate to distinguish new users from returning users
@@ -128,6 +132,7 @@ export type UserProfileSummary = {
   avatarUrl: string | null;
   nip05Handle: string | null;
   ownerPubkey: string | null;
+  managerPubkey?: string | null;
   isAgent?: boolean;
 };
 
@@ -142,6 +147,7 @@ export type UserSearchResult = {
   avatarUrl: string | null;
   nip05Handle: string | null;
   ownerPubkey: string | null;
+  managerPubkey?: string | null;
   isAgent: boolean;
 };
 

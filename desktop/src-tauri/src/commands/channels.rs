@@ -536,6 +536,7 @@ pub async fn get_channel_members(
                     (
                         profile.display_name,
                         nostr_convert::profile_has_valid_oa_owner(ev),
+                        profile.manager_pubkey,
                     ),
                 );
             }
@@ -546,11 +547,14 @@ pub async fn get_channel_members(
             if member.role == "bot" {
                 member.is_agent = true;
             }
-            if let Some((display_name, is_agent)) = profile_map.get(&member.pubkey) {
+            if let Some((display_name, is_agent, manager_pubkey)) =
+                profile_map.get(&member.pubkey)
+            {
                 if member.display_name.is_none() {
                     member.display_name = display_name.clone();
                 }
                 member.is_agent = member.is_agent || *is_agent;
+                member.manager_pubkey = manager_pubkey.clone();
             }
         }
     }

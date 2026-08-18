@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { KIND_BOLT12_ZAP, KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
+import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
 import {
   buildTimelineDayGroups,
   buildTimelineItems,
@@ -88,7 +88,6 @@ test("buildTimelineItems: 3-day channel with unread mid-day-2 places dividers by
     "message", // d3a
   ]);
 });
-
 test("buildTimelineItems: unread divider suppressed when first unread is the first entry", () => {
   const entries = [
     entry({ id: "a", createdAt: dayAt(2026, 6, 14) }),
@@ -110,18 +109,6 @@ test("buildTimelineItems: system messages flatten to a 'system' item", () => {
   ];
   const { items } = buildTimelineItems(entries, null);
   assert.deepEqual(kinds(items), ["day-divider", "message", "system"]);
-});
-
-test("buildTimelineItems: runtime payment zaps use a system row", () => {
-  const entries = [
-    entry({
-      id: "zap",
-      kind: KIND_BOLT12_ZAP,
-      body: JSON.stringify({ type: "agent_runtime_purchased" }),
-    }),
-  ];
-  const { items } = buildTimelineItems(entries, null);
-  assert.deepEqual(kinds(items), ["day-divider", "system"]);
 });
 
 test("buildTimelineItems: contiguous member additions by one actor group", () => {

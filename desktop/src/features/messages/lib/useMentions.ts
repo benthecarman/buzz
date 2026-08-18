@@ -19,6 +19,7 @@ import {
   filterCachedAgentSuggestions,
   getAdmittedAgentPubkeys,
   getAgentIdentityPubkeys,
+  getControlledHostedAgentPubkeys,
   getMentionableAgentPubkeys,
   getSharedChannelIds,
   isAgentMentionChannelType,
@@ -183,6 +184,15 @@ export function useMentions(
   const mentionChannelId = isAgentMentionChannelType(options?.channelType)
     ? channelId
     : null;
+  const controlledHostedAgentPubkeys = React.useMemo(
+    () =>
+      getControlledHostedAgentPubkeys({
+        currentPubkey,
+        members: members ?? [],
+        getManagerPubkey: (pubkey) => profiles?.[pubkey]?.managerPubkey,
+      }),
+    [currentPubkey, members, profiles],
+  );
   const mentionableAgentPubkeys = React.useMemo(
     () =>
       getMentionableAgentPubkeys({
@@ -191,10 +201,12 @@ export function useMentions(
           ? { type: "channel", channelId: mentionChannelId }
           : { type: "managed-only" },
         managedAgentPubkeys,
+        controlledHostedAgentPubkeys,
         relayAgents: relayAgentsQuery.data,
         sharedChannelIds,
       }),
     [
+      controlledHostedAgentPubkeys,
       currentPubkey,
       managedAgentPubkeys,
       mentionChannelId,
@@ -246,6 +258,13 @@ export function useMentions(
       }),
     [managedAgentPubkeys, members, profiles, relayAgentsQuery.data],
   );
+  const channelAgentPubkeys = React.useMemo(
+    () =>
+      new Set(
+        [...agentIdentityPubkeys].filter((pubkey) => memberPubkeys.has(pubkey)),
+      ),
+    [agentIdentityPubkeys, memberPubkeys],
+  );
   const mentionCandidates = React.useMemo<MentionCandidate[]>(() => {
     const candidatesByPubkey = new Map<string, MentionCandidate>();
     const addCandidate = (candidate: MentionCandidate & { pubkey: string }) => {
@@ -257,6 +276,7 @@ export function useMentions(
         shouldHideAgentFromMentions({
           isAgent: candidate.isAgent === true,
           isManagedAgent: candidate.isManagedAgent === true,
+          isControlledHostedAgent: controlledHostedAgentPubkeys.has(pubkey),
           pubkey,
           ownerPubkey: candidate.ownerPubkey,
           currentPubkey,
@@ -264,7 +284,8 @@ export function useMentions(
           directoryReady:
             candidate.isManagedAgent === true
               ? managedAgentDirectoryReady
-              : relayAgentDirectoryReady,
+              : controlledHostedAgentPubkeys.has(pubkey) ||
+                relayAgentDirectoryReady,
           ownerOnly: agentAccessOwnerOnlyQuery.data,
         })
       ) {
@@ -295,7 +316,8 @@ export function useMentions(
           current.ownerPubkey ??
           candidate.ownerPubkey ??
           (candidate.isAgent && candidate.pubkey
-            ? profiles?.[pubkey]?.ownerPubkey
+            ? (profiles?.[pubkey]?.managerPubkey ??
+              profiles?.[pubkey]?.ownerPubkey)
             : null) ??
           null,
         isManagedAgent: current.isManagedAgent || candidate.isManagedAgent,
@@ -330,7 +352,7 @@ export function useMentions(
           member.role === "bot" ||
           managedAgentNamesByPubkey.has(pubkey) ||
           relayAgentNamesByPubkey.has(pubkey),
-        ownerPubkey: profile?.ownerPubkey ?? null,
+        ownerPubkey: profile?.managerPubkey ?? profile?.ownerPubkey ?? null,
         personaName: personaNameByPubkey.get(pubkey) ?? null,
         role: member.role,
         secondaryLabel:
@@ -432,6 +454,7 @@ export function useMentions(
     personaNameByPubkey,
     profiles,
     relayAgentDirectoryReady,
+    controlledHostedAgentPubkeys,
     relayAgentNamesByPubkey,
     relayAgentsQuery.data,
   ]);
@@ -818,6 +841,7 @@ export function useMentions(
   ).current;
   const revalidateMentionPubkeys = useAgentMentionRevalidation({
     agentPubkeys: agentIdentityPubkeys,
+    channelAgentPubkeys,
     getSelectedAgentPubkeys,
     currentPubkey,
     eligibilityScope: mentionChannelId

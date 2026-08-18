@@ -1,9 +1,8 @@
 //! Cluster auth and client construction (spec §Cluster auth,
 //! `docs/remote-agents.md:985-995`).
 //!
-//! Standard kubeconfig resolution (`$KUBECONFIG` → `~/.kube/config`).
-//! `provider_config` carries `context` and `namespace` only — credentials
-//! never transit config (I2, `:196-198`).
+//! A named context uses kubeconfig. An absent context uses kubeconfig first
+//! and then standard in-cluster service-account credentials.
 
 use kube::config::{ExecConfig, KubeConfigOptions, Kubeconfig};
 use kube::{Client, Config};
@@ -106,18 +105,20 @@ fn explain(context: Option<&str>, error: &kube::Error) -> String {
 pub async fn connect(context: Option<&str>) -> Result<Client, String> {
     prepend_plugin_path();
 
-    let options = KubeConfigOptions {
-        context: context.map(str::to_string),
-        ..Default::default()
+    let config = match context {
+        Some(context) => {
+            let options = KubeConfigOptions {
+                context: Some(context.to_string()),
+                ..Default::default()
+            };
+            Config::from_kubeconfig(&options)
+                .await
+                .map_err(|e| format!("could not load kubeconfig for context {context}: {e}"))?
+        }
+        None => Config::infer()
+            .await
+            .map_err(|e| format!("could not infer Kubernetes credentials: {e}"))?,
     };
-    let config = Config::from_kubeconfig(&options).await.map_err(|e| {
-        // A named context that does not exist is a user typo, and the
-        // kube-rs message for it is already specific.
-        format!(
-            "could not load kubeconfig for context {}: {e}",
-            context.unwrap_or("(current)")
-        )
-    })?;
 
     Client::try_from(config).map_err(|e| explain(context, &e))
 }

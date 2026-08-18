@@ -13,7 +13,7 @@
 //!   still queue normally.
 //! - **Queue** — all events accumulate; batched on the next flush cycle.
 
-use nostr::{Event, EventId, ToBech32};
+use nostr::{Event, ToBech32};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -22,9 +22,6 @@ use crate::config::DedupMode;
 
 /// Maximum events queued per channel before oldest events are dropped.
 const MAX_PENDING_PER_CHANNEL: usize = 500;
-
-/// Rolling replay guard for relay reconnects and duplicate subscriptions.
-const MAX_SEEN_EVENT_IDS: usize = 50_000;
 
 /// Maximum events drained into a single batch.
 const MAX_BATCH_EVENTS: usize = 50;
@@ -139,8 +136,6 @@ pub struct FlushBatch {
 /// ```
 pub struct EventQueue {
     queues: HashMap<Uuid, VecDeque<QueuedEvent>>,
-    seen_event_ids: HashSet<EventId>,
-    seen_event_order: VecDeque<EventId>,
     in_flight_channels: HashSet<Uuid>,
     /// Per-channel deadline for auto-expiring stuck in-flight entries.
     in_flight_deadlines: HashMap<Uuid, Instant>,
@@ -184,8 +179,6 @@ impl EventQueue {
     pub fn new(dedup_mode: DedupMode) -> Self {
         Self {
             queues: HashMap::new(),
-            seen_event_ids: HashSet::new(),
-            seen_event_order: VecDeque::new(),
             in_flight_channels: HashSet::new(),
             in_flight_deadlines: HashMap::new(),
             in_flight_batch_sizes: HashMap::new(),
@@ -243,17 +236,6 @@ impl EventQueue {
                 "dropping event for in-flight channel (drop mode)"
             );
             return false;
-        }
-        if self.seen_event_ids.contains(&event.event.id) {
-            tracing::debug!(event_id = %event.event.id, "dropping duplicate queued event");
-            return false;
-        }
-        self.seen_event_ids.insert(event.event.id);
-        self.seen_event_order.push_back(event.event.id);
-        while self.seen_event_order.len() > MAX_SEEN_EVENT_IDS {
-            if let Some(expired) = self.seen_event_order.pop_front() {
-                self.seen_event_ids.remove(&expired);
-            }
         }
         let queue = self.queues.entry(event.channel_id).or_default();
         // Enforce per-channel depth cap: drop oldest to make room.
@@ -2816,21 +2798,6 @@ mod tests {
 
         q.mark_complete(ch);
         // Nothing to flush.
-        assert!(q.flush_next().is_none());
-    }
-
-    #[test]
-    fn duplicate_event_id_is_never_queued_twice() {
-        let mut q = EventQueue::new(DedupMode::Queue);
-        let ch = Uuid::new_v4();
-        let event = make_queued(ch, "paid instruction");
-
-        assert!(q.push(event.clone()));
-        assert!(!q.push(event));
-
-        let batch = q.flush_next().expect("one accepted event");
-        assert_eq!(batch.events.len(), 1);
-        q.mark_complete(ch);
         assert!(q.flush_next().is_none());
     }
 

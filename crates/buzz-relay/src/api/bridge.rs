@@ -888,7 +888,7 @@ async fn submit_event_authed(
     // Ephemeral kinds are pub/sub only — the storage layer refuses them, so
     // routing them into `ingest_event` answers a legitimate publish with a
     // 500. The socket has always branched here; the bridge must too, or a
-    // feature that publishes over HTTP (paid-runtime requests) cannot work.
+    // feature that publishes ephemeral events over HTTP cannot work.
     if buzz_core::kind::is_ephemeral(kind_u32) {
         return submit_ephemeral_event(state, tenant, event, &pubkey_bytes, pubkey).await;
     }

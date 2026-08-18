@@ -43,9 +43,12 @@ import { useMessageEmoji } from "@/features/messages/lib/useMessageEmoji";
 import { parseWaveMessageContent } from "@/features/messages/lib/waveMessage";
 import { resolveSnapshotSharedBy } from "@/features/messages/lib/snapshotSharedBy";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
+import { hostedAgentPlanMessage } from "@/features/messages/lib/hostedAgentZap";
 import type { VideoReviewContext } from "@/shared/ui/VideoPlayer";
 import { VideoReviewCommentMarkdown } from "@/shared/ui/VideoReviewCommentMarkdown";
-import { MessageActionBar, type OptimisticZap } from "./MessageActionBar";
+import { MessageActionBar } from "./MessageActionBar";
+import { HostedAgentPlanCard } from "./HostedAgentPlanCard";
+import { type OptimisticZap, useMessageZap } from "./useMessageZap";
 import { editMessage } from "@/shared/api/tauri";
 import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelineMessages";
 import { toast } from "sonner";
@@ -213,6 +216,13 @@ export const MessageRow = React.memo(
       if (!optimisticProofArrived) return;
       setOptimisticZap(null);
     }, [optimisticProofArrived]);
+    const messageZap = useMessageZap({
+      channelId,
+      disabled: Boolean(optimisticZap) && !optimisticProofArrived,
+      message,
+      onOptimisticZapChange: handleOptimisticZapChange,
+    });
+    const hostedAgentPlan = hostedAgentPlanMessage(message, channelId);
     const handleEntranceAnimationEnd = React.useCallback(
       (event: React.AnimationEvent<HTMLElement>) => {
         if (
@@ -412,6 +422,15 @@ export const MessageRow = React.memo(
             />
           );
         default: {
+          if (hostedAgentPlan) {
+            return (
+              <HostedAgentPlanCard
+                plan={hostedAgentPlan}
+                zapAction={messageZap}
+              />
+            );
+          }
+
           const waveMessage = parseWaveMessageContent(message.body);
           if (waveMessage) {
             return (
@@ -553,8 +572,8 @@ export const MessageRow = React.memo(
     );
     const agentOwnerNode = message.isAgent ? (
       <MessageAgentOwner
-        ownerLabel={message.ownerLabel}
-        ownerPubkey={message.ownerPubkey}
+        ownerLabel={message.managerLabel ?? message.ownerLabel}
+        ownerPubkey={message.managerPubkey ?? message.ownerPubkey}
       />
     ) : null;
 
@@ -579,7 +598,6 @@ export const MessageRow = React.memo(
           onFollowThread={onFollowThread}
           onMarkUnread={onMarkUnread}
           onMarkRead={onMarkRead}
-          onOptimisticZapChange={handleOptimisticZapChange}
           onReactionBadgeBurstRequest={
             reactionPending ? undefined : setBadgeBurstEmoji
           }
@@ -596,7 +614,7 @@ export const MessageRow = React.memo(
           onUnfollowThread={onUnfollowThread}
           reactionErrorMessage={reactionErrorMessage}
           reactions={reactions}
-          zapDisabled={Boolean(optimisticZap) && !optimisticProofArrived}
+          zapAction={hostedAgentPlan ? undefined : messageZap}
         />
       </div>
     );
@@ -939,6 +957,8 @@ export const MessageRow = React.memo(
     prev.message.author === next.message.author &&
     prev.message.isAgent === next.message.isAgent &&
     prev.message.ownerPubkey === next.message.ownerPubkey &&
+    prev.message.managerPubkey === next.message.managerPubkey &&
+    prev.message.managerLabel === next.message.managerLabel &&
     prev.message.ownerLabel === next.message.ownerLabel &&
     prev.message.avatarUrl === next.message.avatarUrl &&
     prev.message.accent === next.message.accent &&

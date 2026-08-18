@@ -221,7 +221,6 @@ fn update_request_provider_tristate_absent_means_no_touch() {
         "absent provider must deserialize to None (don't touch)"
     );
 }
-
 #[test]
 fn update_request_provider_tristate_null_means_clear() {
     // A JSON payload with `"provider": null` deserialized with `Some(None)` —
@@ -759,7 +758,6 @@ fn summary_fixture(
         log_path: String::new(),
         respond_to: RespondTo::OwnerOnly,
         respond_to_allowlist: Vec::new(),
-        price_per_minute_sats: None,
     }
 }
 
@@ -798,31 +796,5 @@ fn summary_with_drift_serializes_restart_diff_entries() {
             "field": "model",
             "change": { "kind": "value", "before": "gpt-5", "after": "claude-4" },
         }]))
-    );
-}
-
-#[test]
-fn paid_runtime_requires_positive_external_live_access() {
-    let payer = "a".repeat(64);
-    assert_eq!(
-        super::validate_runtime_price(
-            super::RespondTo::Allowlist,
-            std::slice::from_ref(&payer),
-            Some(20),
-        ),
-        Ok(Some(20))
-    );
-    assert!(super::validate_runtime_price(super::RespondTo::Allowlist, &[payer], Some(0)).is_err());
-    assert!(super::validate_runtime_price(
-        super::RespondTo::Allowlist,
-        &["a".repeat(64)],
-        Some(buzz_core_pkg::agent_runtime_payment::MAX_INVOCATION_PRICE_SATS + 1),
-    )
-    .is_err());
-    assert!(super::validate_runtime_price(super::RespondTo::Allowlist, &[], Some(20)).is_err());
-    assert!(super::validate_runtime_price(super::RespondTo::OwnerOnly, &[], Some(20)).is_err());
-    assert_eq!(
-        super::validate_runtime_price(super::RespondTo::Anyone, &[], Some(20)),
-        Ok(Some(20))
     );
 }

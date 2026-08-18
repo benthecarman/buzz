@@ -17,19 +17,7 @@ import {
   isWithinGroupingWindow,
   startsNewMessageGroup,
 } from "@/features/messages/lib/messageGrouping";
-import { KIND_BOLT12_ZAP, KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
-
-function isSystemTimelineMessage(
-  message: MainTimelineEntry["message"],
-): boolean {
-  if (message.kind === KIND_SYSTEM_MESSAGE) return true;
-  if (message.kind !== KIND_BOLT12_ZAP) return false;
-  try {
-    return JSON.parse(message.body).type === "agent_runtime_purchased";
-  } catch {
-    return false;
-  }
-}
+import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
 
 /**
  * One renderable row in the flattened timeline. Dividers carry no message and
@@ -180,7 +168,6 @@ function buildMembershipGroups(
 
   return groups;
 }
-
 /**
  * Walks the (already top-level-filtered) entries once, emitting a day-divider
  * at each calendar-day boundary and an unread-divider above the first unread
@@ -237,7 +224,7 @@ export function buildTimelineItems(
       items.push({ kind: "unread-divider", key: `unread-${renderKey}` });
     }
 
-    const kind = isSystemTimelineMessage(message) ? "system" : "message";
+    const kind = message.kind === KIND_SYSTEM_MESSAGE ? "system" : "message";
     if (kind === "system") {
       previousGroupEntry = null;
       previousMessageItemIndex = null;

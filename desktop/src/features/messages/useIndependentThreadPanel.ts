@@ -25,7 +25,7 @@ export function useIndependentThreadPanel(args: {
   personaLookup: Map<string, string>;
   respondToLookup: Map<string, RespondToMode>;
   relaySelfPubkey: string | null | undefined;
-  verifiedZapEvents: ReadonlyMap<string, WalletVerifiedZapEvent>;
+  verifiedZapEvents?: ReadonlyMap<string, WalletVerifiedZapEvent>;
 }) {
   // Depend on the individual fields, NOT the `args` object — callers pass a
   // fresh object literal every render, so `[args]` never memoizes and the

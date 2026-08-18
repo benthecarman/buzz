@@ -91,11 +91,6 @@ pub(super) fn build_launch_block(
     if let Some(value) = record.max_turn_duration_seconds {
         policy_env.insert("BUZZ_ACP_MAX_TURN_DURATION".into(), value.to_string());
     }
-    if !crate::managed_agents::owner_only() {
-        if let Some(value) = record.price_per_minute_sats {
-            policy_env.insert("BUZZ_ACP_PRICE_PER_MINUTE_SATS".into(), value.to_string());
-        }
-    }
     if let Some(value) = resolve_session_title(record.display_name.as_deref(), &record.name) {
         policy_env.insert(SESSION_TITLE_ENV_VAR.into(), value.clone());
         policy_env.insert(DISPLAY_NAME_ENV_VAR.into(), value);
@@ -216,7 +211,6 @@ pub(super) fn deploy_payload_json(
         "parallelism": projections.effective_parallelism,
         "respond_to": respond_to,
         "respond_to_allowlist": respond_to_allowlist,
-        "price_per_minute_sats": record.price_per_minute_sats,
         "env_vars": merged_env,
         "launch": launch,
     })

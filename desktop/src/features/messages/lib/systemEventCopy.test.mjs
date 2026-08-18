@@ -4,8 +4,17 @@ import test from "node:test";
 import {
   addedByActionPrefix,
   describeChannelTextFieldChange,
+  describeConversationEvent,
   toInlineName,
 } from "./systemEventCopy.ts";
+
+test("a DM creation event uses conversation copy", () => {
+  assert.equal(
+    describeConversationEvent("dm_created"),
+    "started this conversation",
+  );
+  assert.equal(describeConversationEvent("channel_created"), null);
+});
 
 test("an add to the reader uses passive wording", () => {
   assert.equal(addedByActionPrefix(true), "were added by");

@@ -16,7 +16,11 @@ import type {
   RelayEvent,
   UserProfileSummary,
 } from "@/shared/api/types";
-import { KIND_BOLT12_ZAP, KIND_REMINDER } from "@/shared/constants/kinds";
+import {
+  KIND_BOLT12_ZAP,
+  KIND_REMINDER,
+  KIND_SYSTEM_MESSAGE,
+} from "@/shared/constants/kinds";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 
@@ -27,6 +31,13 @@ function hasThreadReplyTags(tags: string[][]) {
 
 export function filterInboxItems(items: InboxItem[]) {
   return items.filter((item) => item.item.kind !== KIND_REMINDER);
+}
+
+/** Returns true when the Inbox must use the shared system-event renderer. */
+export function usesInboxSystemRow(
+  message: Pick<InboxContextMessage, "kind">,
+): boolean {
+  return message.kind === KIND_SYSTEM_MESSAGE;
 }
 
 export function hasInboxThreadContext(
@@ -202,6 +213,8 @@ export function toInboxContextMessage(
     isAgent: message.isAgent,
     ownerLabel: message.ownerLabel,
     ownerPubkey: message.ownerPubkey,
+    managerLabel: message.managerLabel,
+    managerPubkey: message.managerPubkey,
     avatarUrl: message.avatarUrl ?? null,
     content: message.body,
     createdAt: message.createdAt,
@@ -236,6 +249,8 @@ export function toTimelineMessage(
     isAgent: message.isAgent,
     ownerLabel: message.ownerLabel,
     ownerPubkey: message.ownerPubkey,
+    managerLabel: message.managerLabel,
+    managerPubkey: message.managerPubkey,
     avatarUrl: message.avatarUrl,
     body: message.content,
     createdAt: message.createdAt,

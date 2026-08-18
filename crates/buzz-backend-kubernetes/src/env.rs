@@ -30,7 +30,6 @@ const AUTHORITATIVE_KEYS: &[&str] = &[
     "BUZZ_ACP_AGENT_ARGS",
     "BUZZ_ACP_RESPOND_TO",
     "BUZZ_ACP_RESPOND_TO_ALLOWLIST",
-    "BUZZ_ACP_PRICE_PER_MINUTE_SATS",
     "BUZZ_ACP_MCP_COMMAND",
     "BUZZ_ACP_EXIT_AFTER_INACTIVITY",
     START_NONCE_KEY,
@@ -278,12 +277,6 @@ pub fn build_env(
     {
         env.insert("BUZZ_ACP_RESPOND_TO_ALLOWLIST".into(), list.join(","));
     }
-    if let Some(price_sats) = agent.price_per_minute_sats {
-        env.insert(
-            "BUZZ_ACP_PRICE_PER_MINUTE_SATS".into(),
-            price_sats.to_string(),
-        );
-    }
 
     if let Some(secs) = auth.inactivity_seconds {
         env.insert("BUZZ_ACP_EXIT_AFTER_INACTIVITY".into(), secs.to_string());
@@ -363,7 +356,6 @@ mod tests {
                     "BUZZ_ACP_AGENT_COMMAND": "/bin/sh",
                     "BUZZ_ACP_MCP_COMMAND": "/bin/sh",
                     "BUZZ_ACP_EXIT_AFTER_INACTIVITY": "0",
-                    "BUZZ_ACP_PRICE_PER_MINUTE_SATS": "1",
                 },
                 "owner_pubkey": "beef"
             }
@@ -378,21 +370,6 @@ mod tests {
         assert_eq!(env["BUZZ_ACP_MCP_COMMAND"], "buzz-dev-mcp");
         assert_eq!(env["BUZZ_ACP_EXIT_AFTER_INACTIVITY"], "7200");
         assert_eq!(env["BUZZ_MANAGED_AGENT_START_NONCE"], "gen0001");
-        assert!(!env.contains_key("BUZZ_ACP_PRICE_PER_MINUTE_SATS"));
-    }
-
-    #[test]
-    fn paid_agent_price_is_authoritative() {
-        let agent = payload_json(serde_json::json!({
-            "price_per_minute_sats": 255,
-            "launch": {
-                "env": {
-                    "BUZZ_ACP_PRICE_PER_MINUTE_SATS": "1"
-                }
-            }
-        }));
-        let env = build(&agent).unwrap();
-        assert_eq!(env["BUZZ_ACP_PRICE_PER_MINUTE_SATS"], "255");
     }
 
     /// Tier 1 is *overridable* — user env beats policy defaults, matching the
