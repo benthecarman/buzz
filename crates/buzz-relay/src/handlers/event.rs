@@ -8,7 +8,8 @@ use tracing::{debug, error, info, warn};
 use buzz_core::event::StoredEvent;
 use buzz_core::kind::{
     event_kind_u32, is_ephemeral, is_unshared_gated_event, AUTHOR_ONLY_KINDS,
-    KIND_AGENT_OBSERVER_FRAME, KIND_GIFT_WRAP, KIND_PRESENCE_UPDATE,
+    KIND_AGENT_OBSERVER_FRAME, KIND_GIFT_WRAP, KIND_HUDDLE_REACTION, KIND_NIP43_LEAVE_REQUEST,
+    KIND_NWC_REQUEST, KIND_NWC_RESPONSE, KIND_PAIRING, KIND_PRESENCE_UPDATE, KIND_TYPING_INDICATOR,
 };
 use buzz_core::observer::{
     content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -24,7 +25,7 @@ use crate::connection::{AuthState, ConnectionState};
 use crate::protocol::RelayMessage;
 use crate::state::AppState;
 
-use super::ingest::{reject_with_transport, IngestAuth, IngestError};
+use super::ingest::{reject_with_transport, IngestAuth, IngestError, IngestResult};
 
 /// Increment the rejection counter with a bounded reason label.
 fn reject(reason: &'static str) {
@@ -602,8 +603,8 @@ async fn enqueue_event_created_audit(
 
 /// Handle an EVENT message from a WebSocket connection.
 ///
-/// Extracts auth from the WS connection, dispatches ephemeral events locally,
-/// and delegates persistent events to [`super::ingest::ingest_event`].
+/// Extracts auth from the WS connection and delegates to the shared event
+/// submission pipeline.
 #[tracing::instrument(skip_all, fields(event_id, kind))]
 pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<AppState>) {
     let start = std::time::Instant::now();
@@ -631,15 +632,15 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
     )
     .increment(1);
 
-    let (conn_id, pubkey_bytes, auth_pubkey, scopes, channel_ids) = {
+    let (conn_id, auth_pubkey, scopes, channel_ids, agent_owner_pubkey) = {
         let auth = conn.auth_state.read().await;
         match &*auth {
             AuthState::Authenticated(ctx) => (
                 conn.conn_id,
-                ctx.pubkey.to_bytes().to_vec(),
                 ctx.pubkey,
                 ctx.scopes.clone(),
                 ctx.channel_ids.clone(),
+                ctx.agent_owner_pubkey,
             ),
             _ => {
                 reject("auth");
@@ -653,104 +654,6 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
         }
     };
 
-    // Must run before both ephemeral and persistent branches. Persistent
-    // events get a second check inside ingest_event() (step 3), but
-    // ephemeral events bypass the pipeline entirely.
-    let is_gift_wrap = kind_u32 == KIND_GIFT_WRAP;
-    if event.pubkey != auth_pubkey && !is_gift_wrap {
-        reject("invalid");
-        conn.send(RelayMessage::ok(
-            &event_id_hex,
-            false,
-            "invalid: event pubkey does not match authenticated identity",
-        ));
-        return;
-    }
-
-    if kind_u32 == buzz_core::kind::KIND_AUTH {
-        reject("invalid");
-        conn.send(RelayMessage::ok(
-            &event_id_hex,
-            false,
-            "invalid: AUTH events cannot be submitted via EVENT",
-        ));
-        return;
-    }
-
-    if kind_u32 == KIND_AGENT_OBSERVER_FRAME {
-        if !scopes.is_empty() && !scopes.contains(&buzz_auth::Scope::MessagesWrite) {
-            reject("scope");
-            conn.send(RelayMessage::ok(
-                &event_id_hex,
-                false,
-                "restricted: insufficient scope for agent observer frames",
-            ));
-            return;
-        }
-        handle_agent_observer_event(event, conn_id, &event_id_hex, conn, state).await;
-        return;
-    }
-
-    // Scope enforcement for ephemeral kinds: require MessagesWrite.
-    // Persistent events skip this gate and rely on
-    // ingest_event()'s per-kind scope allowlist instead, so a token with
-    // only ChannelsWrite can still submit kind:9002 via WS.
-    if is_ephemeral(kind_u32) {
-        if !scopes.is_empty() && !scopes.contains(&buzz_auth::Scope::MessagesWrite) {
-            reject("scope");
-            conn.send(RelayMessage::ok(
-                &event_id_hex,
-                false,
-                "restricted: insufficient scope for ephemeral events",
-            ));
-            return;
-        }
-        match buzz_deletion::store(&state.db)
-            .is_serving_active(conn.tenant.community())
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                reject("restricted");
-                conn.send(RelayMessage::ok(
-                    &event_id_hex,
-                    false,
-                    "restricted: community writes are fenced",
-                ));
-                return;
-            }
-            Err(error) => {
-                reject("error");
-                tracing::warn!(%error, event_id = %event_id_hex, "failed to check ephemeral-event community lifecycle");
-                conn.send(RelayMessage::ok(
-                    &event_id_hex,
-                    false,
-                    "error: internal server error",
-                ));
-                return;
-            }
-        }
-        match handle_ephemeral_event(
-            event,
-            conn_id,
-            pubkey_bytes,
-            auth_pubkey,
-            Arc::clone(&conn),
-            state,
-        )
-        .await
-        {
-            Ok(()) => {
-                conn.send(RelayMessage::ok(&event_id_hex, true, ""));
-            }
-            Err(message) => {
-                reject("invalid");
-                conn.send(RelayMessage::ok(&event_id_hex, false, &message));
-            }
-        }
-        return;
-    }
-
     let ingest_auth = IngestAuth::Nip42 {
         pubkey: auth_pubkey,
         scopes,
@@ -758,7 +661,8 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
         conn_id,
     };
 
-    match super::ingest::ingest_event(&state, &conn.tenant, event, ingest_auth).await {
+    match submit_event_pipeline(&conn.tenant, &state, event, ingest_auth, agent_owner_pubkey).await
+    {
         Ok(result) => {
             if result.accepted {
                 // buzz_events_stored_total is emitted inside ingest_event()
@@ -791,118 +695,261 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
     }
 }
 
-/// Handle ephemeral events (kind 20000–29999) — WS-only, never stored.
-async fn handle_ephemeral_event(
+/// Submit one authenticated event through the relay's shared transport seam.
+///
+/// Persistent events continue through the durable ingest pipeline. Registered
+/// ephemeral kinds use the live fan-out path, with transport-specific policy
+/// applied here so HTTP and WebSocket callers cannot drift apart.
+pub(crate) async fn submit_event_pipeline(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
     event: Event,
-    conn_id: uuid::Uuid,
-    pubkey_bytes: Vec<u8>,
-    auth_pubkey: nostr::PublicKey,
-    conn: Arc<ConnectionState>,
-    state: Arc<AppState>,
-) -> Result<(), String> {
-    let event_clone = event.clone();
-    let event_id = event.id.to_hex();
-    let verify_result = tokio::task::spawn_blocking(move || verify_event(&event_clone)).await;
+    auth: IngestAuth,
+    session_owner_pubkey: Option<PublicKey>,
+) -> Result<IngestResult, IngestError> {
+    let kind = event_kind_u32(&event);
 
-    match verify_result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(format!("invalid: {e}")),
-        Err(_) => return Err("error: internal error".to_string()),
+    // Although NIP-43 leave requests sit in the numeric ephemeral range, they
+    // are commands that mutate relay membership. They must reach ingest_event.
+    if uses_durable_ingest(kind) {
+        return super::ingest::ingest_event(state, tenant, event, auth).await;
     }
 
-    // Special handling for presence events (kind:20001).
-    if event_kind_u32(&event) == KIND_PRESENCE_UPDATE {
-        // Accept both bare strings ("online") and legacy JSON ({"status":"online"}).
-        let raw = event.content.to_string();
-        let status = if raw.starts_with('{') {
-            serde_json::from_str::<serde_json::Value>(&raw)
-                .ok()
-                .and_then(|v| v.get("status")?.as_str().map(String::from))
-                .unwrap_or(raw)
-        } else if raw.len() > 128 {
-            let mut end = 128;
-            while !raw.is_char_boundary(end) {
-                end -= 1;
-            }
-            raw[..end].to_string()
-        } else {
-            raw
-        };
+    validate_ephemeral_transport(kind, auth.is_http())?;
 
-        if status == "offline" {
-            let _ = state
-                .pubsub
-                .clear_presence(&conn.tenant, &auth_pubkey)
-                .await;
-        } else {
-            let _ = state
-                .pubsub
-                .set_presence(&conn.tenant, &auth_pubkey, &status)
-                .await;
+    match buzz_deletion::store(&state.db)
+        .is_serving_active(tenant.community())
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(IngestError::Rejected(
+                "restricted: community writes are fenced".into(),
+            ));
         }
-
-        // Presence is a channel-less ephemeral event. After updating Redis
-        // presence state, let it fall through to the shared global ephemeral
-        // publish/fan-out path below so other relay nodes receive the live delta.
+        Err(error) => {
+            return Err(IngestError::Internal(format!(
+                "error: checking community write fence: {error}"
+            )));
+        }
     }
 
-    // Check channel membership before publishing other ephemeral events.
-    if let Some(ch_id) = super::ingest::extract_channel_id(&event) {
-        super::ingest::check_channel_membership(&conn.tenant, &state, ch_id, &pubkey_bytes, None)
-            .await?;
+    let event = verify_ephemeral_event(event).await?;
 
-        // Mark as local before Redis publish to prevent double-delivery when
-        // the event comes back through the Redis subscriber loop.
-        state.mark_local_event(conn.tenant.community(), &event.id);
+    if event.pubkey != *auth.pubkey() && kind != KIND_GIFT_WRAP {
+        return Err(IngestError::AuthFailed(
+            "invalid: event pubkey does not match authenticated identity".into(),
+        ));
+    }
 
-        if let Err(e) = state
-            .pubsub
-            .publish_event(&conn.tenant, EventTopic::Channel(ch_id), &event)
-            .await
-        {
-            state
-                .local_event_ids
-                .invalidate(&(conn.tenant.community(), event.id.to_bytes()));
-            warn!(conn_id = %conn_id, event_id = %event_id, "Ephemeral publish failed: {e}");
-        }
+    if !auth.scopes().is_empty() && !auth.scopes().contains(&buzz_auth::Scope::MessagesWrite) {
+        return Err(IngestError::AuthFailed(
+            "restricted: insufficient scope for ephemeral events".into(),
+        ));
+    }
 
-        // Direct fan-out to local WS subscribers, through the guarded send path
-        // so a stale subscription on a removed/non-member connection cannot
-        // receive this private-channel ephemeral event.
-        // Pass the channel_id so fan_out() uses the channel-kind index.
-        let stored_event = StoredEvent::new(event.clone(), Some(ch_id));
-        fan_out_event_to_local_subscribers(&state, conn.tenant.community(), &stored_event).await;
+    let should_publish = if kind == KIND_AGENT_OBSERVER_FRAME {
+        authorize_agent_observer_event(tenant, state, &event, session_owner_pubkey.as_ref()).await?
     } else {
-        // Channel-less ephemeral events (e.g., NIP-AB pairing kind:24134).
-        //
-        // Sentinel pattern: we use `Uuid::nil()` (all-zeros UUID) as a
-        // "global channel" routing key in Redis pub/sub. This lets other relay
-        // nodes receive and fan out these events without any real channel_id.
-        // The nil UUID is ONLY a Redis routing key — it never reaches the DB.
-        // On the receiving end (main.rs subscriber loop), `is_nil()` is checked
-        // and converted back to `None` so `fan_out()` uses the global index.
-        state.mark_local_event(conn.tenant.community(), &event.id);
-
-        if let Err(e) = state
-            .pubsub
-            .publish_event(&conn.tenant, EventTopic::Global, &event)
-            .await
-        {
-            state
-                .local_event_ids
-                .invalidate(&(conn.tenant.community(), event.id.to_bytes()));
-            warn!(conn_id = %conn_id, event_id = %event_id, "Ephemeral global publish failed: {e}");
+        if kind == KIND_PRESENCE_UPDATE {
+            update_presence(tenant, state, auth.pubkey(), &event).await;
         }
+        true
+    };
 
-        // Direct fan-out to local WS subscribers through the guarded send path.
-        // Pass channel_id=None so fan_out() uses the global subscriber index;
-        // filter_fanout_by_access no-ops for channel-less events except the
-        // author-only-kind gate.
-        let stored_event = StoredEvent::new(event.clone(), None);
-        fan_out_event_to_local_subscribers(&state, conn.tenant.community(), &stored_event).await;
+    if should_publish {
+        if kind == KIND_AGENT_OBSERVER_FRAME {
+            publish_global_ephemeral_event(tenant, state, &event).await;
+        } else {
+            publish_ephemeral_event(tenant, state, &event, &auth.principal_pubkey_bytes())
+                .await
+                .map_err(map_channel_access_error)?;
+        }
+    }
+
+    Ok(IngestResult {
+        event_id: event.id.to_hex(),
+        accepted: true,
+        message: String::new(),
+    })
+}
+
+fn uses_durable_ingest(kind: u32) -> bool {
+    kind == KIND_NIP43_LEAVE_REQUEST || !is_ephemeral(kind)
+}
+
+fn validate_ephemeral_transport(kind: u32, is_http: bool) -> Result<(), IngestError> {
+    let registered = matches!(
+        kind,
+        KIND_PRESENCE_UPDATE
+            | KIND_TYPING_INDICATOR
+            | KIND_NWC_REQUEST
+            | KIND_NWC_RESPONSE
+            | KIND_PAIRING
+            | KIND_AGENT_OBSERVER_FRAME
+            | KIND_HUDDLE_REACTION
+    );
+    if !registered {
+        return Err(IngestError::Rejected(format!(
+            "invalid: unsupported ephemeral event kind {kind}"
+        )));
+    }
+
+    if is_http && !matches!(kind, KIND_NWC_REQUEST | KIND_NWC_RESPONSE) {
+        return Err(IngestError::Rejected(format!(
+            "invalid: kind {kind} is only accepted via WebSocket"
+        )));
     }
 
     Ok(())
+}
+
+async fn verify_ephemeral_event(event: Event) -> Result<Event, IngestError> {
+    let event = Arc::new(event);
+    let event_for_verify = Arc::clone(&event);
+    match tokio::task::spawn_blocking(move || verify_event(&event_for_verify)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            return Err(IngestError::Rejected(format!("invalid: {error}")));
+        }
+        Err(error) => {
+            error!(%error, "ephemeral event verification task failed");
+            return Err(IngestError::Internal(
+                "error: internal verification error".into(),
+            ));
+        }
+    }
+
+    const MAX_TIMESTAMP_DRIFT_SECS: i64 = 900;
+    let now = chrono::Utc::now().timestamp();
+    let event_ts = event.created_at.as_secs() as i64;
+    if (event_ts - now).abs() > MAX_TIMESTAMP_DRIFT_SECS {
+        return Err(IngestError::Rejected(
+            "invalid: event timestamp too far from server time".into(),
+        ));
+    }
+
+    const MAX_EVENT_CONTENT_BYTES: usize = 256 * 1024;
+    if event.content.len() > MAX_EVENT_CONTENT_BYTES {
+        return Err(IngestError::Rejected(format!(
+            "invalid: content exceeds maximum size of {} bytes (got {})",
+            MAX_EVENT_CONTENT_BYTES,
+            event.content.len()
+        )));
+    }
+
+    Ok(Arc::try_unwrap(event).unwrap_or_else(|event| (*event).clone()))
+}
+
+fn map_channel_access_error(message: String) -> IngestError {
+    if message.starts_with("error:") {
+        IngestError::Internal(message)
+    } else if message.starts_with("restricted:") {
+        IngestError::AuthFailed(message)
+    } else {
+        IngestError::Rejected(message)
+    }
+}
+
+async fn update_presence(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    auth_pubkey: &PublicKey,
+    event: &Event,
+) {
+    let raw = event.content.to_string();
+    let status = if raw.starts_with('{') {
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|value| value.get("status")?.as_str().map(String::from))
+            .unwrap_or(raw)
+    } else if raw.len() > 128 {
+        let mut end = 128;
+        while !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        raw[..end].to_string()
+    } else {
+        raw
+    };
+
+    if status == "offline" {
+        let _ = state.pubsub.clear_presence(tenant, auth_pubkey).await;
+    } else {
+        let _ = state
+            .pubsub
+            .set_presence(tenant, auth_pubkey, &status)
+            .await;
+    }
+}
+
+/// Fan out one ephemeral event without storing it.
+///
+/// Both WebSocket and HTTP transports use this function. The storage layer
+/// refuses ephemeral kinds, so this is their only delivery path.
+pub(crate) async fn publish_ephemeral_event(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+    author_pubkey_bytes: &[u8],
+) -> Result<(), String> {
+    if let Some(channel_id) = ephemeral_channel_id(event) {
+        super::ingest::check_channel_membership(
+            tenant,
+            state,
+            channel_id,
+            author_pubkey_bytes,
+            None,
+        )
+        .await?;
+
+        state.mark_local_event(tenant.community(), &event.id);
+        if let Err(error) = state
+            .pubsub
+            .publish_event(tenant, EventTopic::Channel(channel_id), event)
+            .await
+        {
+            state
+                .local_event_ids
+                .invalidate(&(tenant.community(), event.id.to_bytes()));
+            warn!(event_id = %event.id, "Ephemeral publish failed: {error}");
+        }
+
+        let stored_event = StoredEvent::new(event.clone(), Some(channel_id));
+        fan_out_event_to_local_subscribers(state, tenant.community(), &stored_event).await;
+    } else {
+        publish_global_ephemeral_event(tenant, state, event).await;
+    }
+
+    Ok(())
+}
+
+fn ephemeral_channel_id(event: &Event) -> Option<uuid::Uuid> {
+    match event_kind_u32(event) {
+        KIND_PRESENCE_UPDATE | KIND_NWC_REQUEST | KIND_NWC_RESPONSE | KIND_PAIRING => None,
+        _ => super::ingest::extract_channel_id(event),
+    }
+}
+
+async fn publish_global_ephemeral_event(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+) {
+    state.mark_local_event(tenant.community(), &event.id);
+    if let Err(error) = state
+        .pubsub
+        .publish_event(tenant, EventTopic::Global, event)
+        .await
+    {
+        state
+            .local_event_ids
+            .invalidate(&(tenant.community(), event.id.to_bytes()));
+        warn!(event_id = %event.id, "Ephemeral global publish failed: {error}");
+    }
+
+    let stored_event = StoredEvent::new(event.clone(), None);
+    fan_out_event_to_local_subscribers(state, tenant.community(), &stored_event).await;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -944,84 +991,44 @@ fn observer_frame_rate_limited(
     }
 }
 
-/// Handle encrypted agent observer frames (kind 24200).
+/// Authorize an encrypted agent observer frame before global fan-out.
 ///
-/// These frames bypass storage and are routed as global ephemeral events. The
-/// relay gates publication by the existing `agent_owner_pubkey` mapping and
-/// gates subscription in the REQ handler via the cleartext `p` tag.
-async fn handle_agent_observer_event(
-    event: Event,
-    conn_id: uuid::Uuid,
-    event_id_hex: &str,
-    conn: Arc<ConnectionState>,
-    state: Arc<AppState>,
-) {
-    let event_clone = event.clone();
-    let verify_result = tokio::task::spawn_blocking(move || verify_event(&event_clone)).await;
-    match verify_result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            conn.send(RelayMessage::ok(
-                event_id_hex,
-                false,
-                &format!("invalid: {e}"),
-            ));
-            return;
-        }
-        Err(_) => {
-            conn.send(RelayMessage::ok(
-                event_id_hex,
-                false,
-                "error: internal error",
-            ));
-            return;
-        }
-    }
-
+/// The shared submission pipeline verifies the event and enforces transport
+/// policy first. This function owns observer-specific freshness, ownership,
+/// and rate-limit rules. `Ok(false)` accepts but drops an unknown frame type.
+async fn authorize_agent_observer_event(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+    session_owner_pubkey: Option<&PublicKey>,
+) -> Result<bool, IngestError> {
     // Freshness check: reject observer frames with stale/future timestamps
     let now = chrono::Utc::now().timestamp();
     let event_ts = event.created_at.as_secs() as i64;
     if (event_ts - now).unsigned_abs() > 300 {
-        conn.send(RelayMessage::ok(
-            event_id_hex,
-            false,
-            "invalid: observer frame timestamp outside ±5 minute freshness window",
+        return Err(IngestError::Rejected(
+            "invalid: observer frame timestamp outside ±5 minute freshness window".into(),
         ));
-        return;
     }
 
-    let route = match agent_observer_route(&event) {
+    let route = match agent_observer_route(event) {
         Ok(Some(route)) => route,
         Ok(None) => {
             // Unknown frame value — silently drop, no error to publisher.
-            conn.send(RelayMessage::ok(event_id_hex, true, ""));
-            return;
+            return Ok(false);
         }
         Err(message) => {
-            reject("invalid");
-            conn.send(RelayMessage::ok(event_id_hex, false, &message));
-            return;
+            return Err(IngestError::Rejected(message));
         }
     };
 
     // Fast path: if this connection authenticated via NIP-OA and the verified
     // owner matches the observer frame's target owner, skip the DB lookup entirely.
-    let session_owner_match = {
-        let auth = conn.auth_state.read().await;
-        if let crate::connection::AuthState::Authenticated(ctx) = &*auth {
-            ctx.agent_owner_pubkey.as_ref() == Some(&route.owner)
-        } else {
-            false
-        }
-    };
+    let session_owner_match = session_owner_pubkey == Some(&route.owner);
 
     let agent_bytes = route.agent.to_bytes().to_vec();
     let owner_bytes = route.owner.to_bytes().to_vec();
-    let cache_key = (
-        conn.tenant.community(),
-        agent_bytes.clone(),
-        owner_bytes.clone(),
-    );
+    let cache_key = (tenant.community(), agent_bytes.clone(), owner_bytes.clone());
     let is_owner = if session_owner_match {
         true
     } else {
@@ -1030,7 +1037,7 @@ async fn handle_agent_observer_event(
             None => {
                 let result = state
                     .db
-                    .is_agent_owner(conn.tenant.community(), &agent_bytes, &owner_bytes)
+                    .is_agent_owner(tenant.community(), &agent_bytes, &owner_bytes)
                     .await;
                 match result {
                     Ok(v) => {
@@ -1038,26 +1045,19 @@ async fn handle_agent_observer_event(
                         v
                     }
                     Err(e) => {
-                        warn!(conn_id = %conn_id, event_id = %event_id_hex, "agent observer owner check failed: {e}");
-                        conn.send(RelayMessage::ok(
-                            event_id_hex,
-                            false,
-                            "error: internal server error",
+                        warn!(event_id = %event.id, "agent observer owner check failed: {e}");
+                        return Err(IngestError::Internal(
+                            "error: checking agent observer owner".into(),
                         ));
-                        return;
                     }
                 }
             }
         }
     };
     if !is_owner {
-        reject("auth");
-        conn.send(RelayMessage::ok(
-            event_id_hex,
-            false,
-            "restricted: observer frame is not authorized for this agent owner",
+        return Err(IngestError::AuthFailed(
+            "restricted: observer frame is not authorized for this agent owner".into(),
         ));
-        return;
     }
 
     // Rate limit telemetry frames only (100/sec per agent).
@@ -1065,39 +1065,21 @@ async fn handle_agent_observer_event(
     // be starved by bursty telemetry from the agent.
     if matches!(route.direction, AgentObserverDirection::Telemetry) {
         let agent_key: [u8; 32] = agent_bytes.as_slice().try_into().unwrap_or([0u8; 32]);
-        if observer_frame_rate_limited(&state, conn.tenant.community(), agent_key) {
-            conn.send(RelayMessage::ok(
-                event_id_hex,
-                false,
-                "rate-limited: observer frame rate exceeded (100/sec per agent)",
+        if observer_frame_rate_limited(state, tenant.community(), agent_key) {
+            return Err(IngestError::Rejected(
+                "rate-limited: observer frame rate exceeded (100/sec per agent)".into(),
             ));
-            return;
         }
     }
 
-    state.mark_local_event(conn.tenant.community(), &event.id);
-    if let Err(e) = state
-        .pubsub
-        .publish_event(&conn.tenant, EventTopic::Global, &event)
-        .await
-    {
-        state
-            .local_event_ids
-            .invalidate(&(conn.tenant.community(), event.id.to_bytes()));
-        warn!(conn_id = %conn_id, event_id = %event_id_hex, "Agent observer publish failed: {e}");
-    }
-
-    let stored_event = StoredEvent::new(event.clone(), None);
     debug!(
-        event_id = %event_id_hex,
+        event_id = %event.id,
         agent = %route.agent.to_hex(),
         owner = %route.owner.to_hex(),
         direction = ?route.direction,
-        "Agent observer fan-out"
+        "Agent observer authorized"
     );
-    fan_out_event_to_local_subscribers(&state, conn.tenant.community(), &stored_event).await;
-
-    conn.send(RelayMessage::ok(event_id_hex, true, ""));
+    Ok(true)
 }
 
 fn agent_observer_route(event: &Event) -> Result<Option<AgentObserverRoute>, String> {
@@ -1165,8 +1147,6 @@ fn single_tag_content<'a>(event: &'a Event, tag_name: &str) -> Result<&'a str, S
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::atomic::AtomicU8;
     use std::sync::Arc;
 
     use buzz_core::kind::{
@@ -1178,8 +1158,6 @@ mod tests {
         OBSERVER_FRAME_TELEMETRY,
     };
     use nostr::{EventBuilder, Keys, Kind, Tag};
-    use tokio::sync::{mpsc, Mutex, RwLock};
-    use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
     #[test]
@@ -1245,6 +1223,85 @@ mod tests {
             !super::super::ingest::requires_h_channel_scope(KIND_PRESENCE_UPDATE),
             "presence updates are global/ephemeral"
         );
+    }
+
+    #[test]
+    fn http_accepts_only_nwc_ephemeral_events() {
+        for kind in [super::KIND_NWC_REQUEST, super::KIND_NWC_RESPONSE] {
+            assert!(super::validate_ephemeral_transport(kind, true).is_ok());
+        }
+
+        for kind in [
+            super::KIND_PRESENCE_UPDATE,
+            super::KIND_TYPING_INDICATOR,
+            super::KIND_PAIRING,
+            super::KIND_AGENT_OBSERVER_FRAME,
+            super::KIND_HUDDLE_REACTION,
+        ] {
+            assert!(matches!(
+                super::validate_ephemeral_transport(kind, true),
+                Err(super::IngestError::Rejected(message))
+                    if message == format!("invalid: kind {kind} is only accepted via WebSocket")
+            ));
+        }
+    }
+
+    #[test]
+    fn websocket_accepts_registered_ephemeral_events() {
+        for kind in [
+            super::KIND_PRESENCE_UPDATE,
+            super::KIND_TYPING_INDICATOR,
+            super::KIND_NWC_REQUEST,
+            super::KIND_NWC_RESPONSE,
+            super::KIND_PAIRING,
+            super::KIND_AGENT_OBSERVER_FRAME,
+            super::KIND_HUDDLE_REACTION,
+        ] {
+            assert!(super::validate_ephemeral_transport(kind, false).is_ok());
+        }
+    }
+
+    #[test]
+    fn unknown_ephemeral_kinds_fail_closed() {
+        for is_http in [false, true] {
+            assert!(matches!(
+                super::validate_ephemeral_transport(20_999, is_http),
+                Err(super::IngestError::Rejected(message))
+                    if message == "invalid: unsupported ephemeral event kind 20999"
+            ));
+        }
+    }
+
+    #[test]
+    fn nip43_leave_request_uses_durable_ingest() {
+        assert!(super::uses_durable_ingest(super::KIND_NIP43_LEAVE_REQUEST));
+        assert!(!super::uses_durable_ingest(super::KIND_TYPING_INDICATOR));
+    }
+
+    #[test]
+    fn global_ephemeral_kinds_ignore_stray_channel_tags() {
+        let keys = Keys::generate();
+        let channel_id = Uuid::new_v4();
+        let channel = channel_id.to_string();
+
+        for kind in [
+            super::KIND_PRESENCE_UPDATE,
+            super::KIND_NWC_REQUEST,
+            super::KIND_NWC_RESPONSE,
+            super::KIND_PAIRING,
+        ] {
+            let event = EventBuilder::new(Kind::Custom(kind as u16), "content")
+                .tag(Tag::parse(["h", &channel]).expect("h tag"))
+                .sign_with_keys(&keys)
+                .expect("sign event");
+            assert_eq!(super::ephemeral_channel_id(&event), None);
+        }
+
+        let typing = EventBuilder::new(Kind::Custom(super::KIND_TYPING_INDICATOR as u16), "typing")
+            .tag(Tag::parse(["h", &channel]).expect("h tag"))
+            .sign_with_keys(&keys)
+            .expect("sign typing event");
+        assert_eq!(super::ephemeral_channel_id(&typing), Some(channel_id));
     }
 
     #[test]
@@ -1389,50 +1446,16 @@ mod tests {
             .sign_with_keys(&agent)
             .expect("sign event");
 
-        let (send_tx, mut send_rx) = mpsc::channel(1);
-        let (ctrl_tx, _ctrl_rx) = mpsc::channel(1);
-        let conn = Arc::new(crate::connection::ConnectionState {
-            conn_id: Uuid::new_v4(),
-            tenant: buzz_core::TenantContext::resolved(community_b, "b.example"),
-            remote_addr: "127.0.0.1:1234".parse().expect("socket addr"),
-            auth_state: RwLock::new(crate::connection::AuthState::Authenticated(
-                buzz_auth::AuthContext {
-                    pubkey: agent.public_key(),
-                    scopes: vec![],
-                    channel_ids: None,
-                    auth_method: buzz_auth::AuthMethod::Nip42,
-                    agent_owner_pubkey: None,
-                },
-            )),
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
-            send_tx,
-            ctrl_tx,
-            cancel: CancellationToken::new(),
-            backpressure_count: Arc::new(AtomicU8::new(0)),
-            grace_limit: 3,
-        });
+        let tenant = buzz_core::TenantContext::resolved(community_b, "b.example");
+        let error = super::authorize_agent_observer_event(&tenant, &state, &event, None)
+            .await
+            .expect_err("community B cached denial must reject the frame");
 
-        super::handle_agent_observer_event(
-            event.clone(),
-            conn.conn_id,
-            &event.id.to_hex(),
-            conn,
-            state,
-        )
-        .await;
-
-        let axum::extract::ws::Message::Text(text) =
-            send_rx.try_recv().expect("observer rejection sent")
-        else {
-            panic!("expected text relay message");
-        };
-        let frame: serde_json::Value = serde_json::from_str(&text).expect("relay frame JSON");
-        assert_eq!(frame[0], "OK");
-        assert_eq!(frame[2], false);
-        assert_eq!(
-            frame[3],
-            "restricted: observer frame is not authorized for this agent owner"
-        );
+        assert!(matches!(
+            error,
+            super::IngestError::AuthFailed(message)
+                if message == "restricted: observer frame is not authorized for this agent owner"
+        ));
     }
 
     mod pubsub_fanout {

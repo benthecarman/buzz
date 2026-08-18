@@ -12,6 +12,9 @@ abstract final class EventKind {
   static const contactList = 3;
   static const deletion = 5;
   static const reaction = 7;
+  static const bolt12Zap = 9736;
+  static const bolt12ZapIntent = 9737;
+  static const bolt12Offer = 10058;
 
   /// Kind:9030 event requesting that the relay add a community member.
   static const relayAdminAddMember = 9030;
@@ -20,9 +23,12 @@ abstract final class EventKind {
   static const relayMembership = 13534;
   static const streamMessage = 9;
   static const nip29DeleteEvent = 9005;
+  static const nwcInfo = 13194;
   static const presenceUpdate = 20001;
   static const typingIndicator = 20002;
   static const auth = 22242;
+  static const nwcRequest = 23194;
+  static const nwcResponse = 23195;
   static const agentObserverFrame = 24200;
   static const huddleReaction = 24810;
   static const readState = 30078;
@@ -61,6 +67,7 @@ abstract final class EventKind {
   static const channelEventKinds = [
     deletion, // 5
     reaction, // 7
+    bolt12Zap, // 9736 — message zap proofs
     nip29DeleteEvent, // 9005 — Buzz-native deletion
     ...channelMessageEventKinds,
     40001, // legacy pre-migration stream messages
@@ -77,6 +84,7 @@ abstract final class EventKind {
   static const channelAuxEventKinds = [
     deletion,
     reaction,
+    bolt12Zap,
     nip29DeleteEvent,
     streamMessageEdit,
   ];

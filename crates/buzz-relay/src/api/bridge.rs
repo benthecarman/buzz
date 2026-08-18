@@ -828,7 +828,7 @@ impl SubmitOutcome {
 }
 
 /// Post-auth execution for [`submit_event`]: admission, replay, membership,
-/// parse, and ingest.  Returns a [`SubmitOutcome`] that carries both the log
+/// parse, and ingest. Returns a [`SubmitOutcome`] that carries both the log
 /// fields and the HTTP response so the thin wrapper can emit exactly one
 /// terminal attribution line covering every outcome.
 async fn submit_event_authed(
@@ -908,13 +908,14 @@ async fn submit_event_authed(
     }
 
     let kind_u32 = buzz_core::kind::event_kind_u32(&event);
+
     let auth = IngestAuth::Http {
         pubkey,
         scopes: buzz_auth::Scope::all_known(), // Pure Nostr: full scopes, channel access via membership
         auth_method: crate::handlers::ingest::HttpAuthMethod::Nip98,
     };
 
-    match crate::handlers::ingest::ingest_event(state, tenant, event, auth).await {
+    match crate::handlers::event::submit_event_pipeline(tenant, state, event, auth, None).await {
         Ok(result) => {
             let response = Json(serde_json::json!({
                 "event_id": result.event_id,

@@ -1,5 +1,12 @@
 export const KIND_DELETION = 5;
 export const KIND_REACTION = 7;
+// Draft BOLT12 zaps: settled payment proof. The embedded intent is kind 9737.
+export const KIND_BOLT12_ZAP = 9736;
+export const KIND_BOLT12_ZAP_INTENT = 9737;
+export const KIND_BOLT12_OFFER = 10058;
+export const KIND_NWC_INFO = 13194;
+export const KIND_NWC_REQUEST = 23194;
+export const KIND_NWC_RESPONSE = 23195;
 export const KIND_TEXT_NOTE = 1;
 export const KIND_STREAM_MESSAGE = 9;
 // Buzz-native deletion. The relay soft-deletes the target and emits a
@@ -95,6 +102,7 @@ export const HOME_MENTION_EVENT_KINDS = [...CHANNEL_MESSAGE_EVENT_KINDS];
 export const CHANNEL_EVENT_KINDS = [
   KIND_DELETION, // 5 — NIP-09 event deletions
   KIND_REACTION, // 7 — NIP-25 reactions
+  KIND_BOLT12_ZAP, // 9736 — message zap proofs
   KIND_NIP29_DELETE_EVENT, // 9005 — NIP-29 / Buzz-native deletions
   ...CHANNEL_MESSAGE_EVENT_KINDS,
   40001, // legacy: pre-migration stream messages
@@ -119,6 +127,7 @@ export const CHANNEL_EVENT_KINDS = [
 export const CHANNEL_AUX_EVENT_KINDS = [
   KIND_DELETION, // 5 — NIP-09 event deletions
   KIND_REACTION, // 7 — NIP-25 reactions
+  KIND_BOLT12_ZAP, // 9736 — message zap proofs
   KIND_NIP29_DELETE_EVENT, // 9005 — NIP-29 / Buzz-native deletions
   KIND_STREAM_MESSAGE_EDIT, // 40003 — message edits
 ] as const;
@@ -149,6 +158,7 @@ export const CHANNEL_TIMELINE_CONTENT_KINDS = [
 // created channel carries one channel_created + N member_joined system rows
 // that would otherwise show as phantom unreads ("4 unread, 1 message").
 const NON_CONVERSATIONAL_UNREAD_KINDS: ReadonlySet<number> = new Set([
+  KIND_BOLT12_ZAP, // 9736 — runtime payment rows
   KIND_SYSTEM_MESSAGE, // 40099
   KIND_JOB_REQUEST, // 43001
   KIND_JOB_ACCEPTED, // 43002

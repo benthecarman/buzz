@@ -20,6 +20,8 @@ pub mod event;
 pub mod filter;
 /// Git permission types — ref patterns, protection rules, policy evaluation.
 pub mod git_perms;
+/// Zap contracts for new, isolated hosted agents.
+pub mod hosted_agent;
 /// Shared invite-link contract constants.
 pub mod invite;
 /// Buzz kind number registry — custom event type constants.
@@ -28,6 +30,7 @@ pub mod kind;
 pub mod network;
 /// NIP-10 thread-marker parsing — shared `root`/`reply` marker resolver.
 pub mod nip10;
+pub mod nwc;
 /// Agent observer frame helpers.
 pub mod observer;
 /// NIP-AB device pairing — crypto primitives, message types, and errors.

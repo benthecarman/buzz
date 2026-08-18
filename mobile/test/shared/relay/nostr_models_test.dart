@@ -2,6 +2,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:buzz/shared/relay/nostr_models.dart';
 
 void main() {
+  test('BOLT12 kinds stay synchronized with desktop', () {
+    expect(EventKind.bolt12Zap, 9736);
+    expect(EventKind.bolt12ZapIntent, 9737);
+    expect(EventKind.bolt12Offer, 10058);
+    expect(EventKind.channelEventKinds, contains(EventKind.bolt12Zap));
+    expect(EventKind.channelAuxEventKinds, contains(EventKind.bolt12Zap));
+  });
+
   test('NostrFilter serializes and preserves authors', () {
     const filter = NostrFilter(
       kinds: [EventKind.readState],

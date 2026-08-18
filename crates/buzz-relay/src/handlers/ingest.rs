@@ -13,21 +13,22 @@ use buzz_auth::Scope;
 use buzz_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
     is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC,
-    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET,
-    KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
-    KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
-    KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
-    KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
-    KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
-    KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
-    KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST,
-    KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION,
-    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT,
-    KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST,
-    KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP,
-    KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST,
-    KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER, KIND_NIP43_LEAVE_REQUEST,
-    KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
+    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOLT12_OFFER, KIND_BOLT12_ZAP,
+    KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION,
+    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET,
+    KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE,
+    KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
+    KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
+    KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES,
+    KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED,
+    KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT,
+    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN,
+    KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN,
+    KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT,
+    KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST,
+    KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_NIP43_LEAVE_REQUEST, KIND_NIP65_RELAY_LIST_METADATA, KIND_NWC_INFO, KIND_NWC_REQUEST,
+    KIND_NWC_RESPONSE, KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
     KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE, KIND_PROJECT, KIND_REACTION,
     KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED,
     KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED,
@@ -439,8 +440,9 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_PROFILE => Ok(Scope::UsersWrite),
         KIND_TEXT_NOTE | KIND_LONG_FORM => Ok(Scope::MessagesWrite),
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
-        | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
-        | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG | super::push_lease::KIND_PUSH_LEASE => {
+        | KIND_BOLT12_OFFER | KIND_NWC_INFO | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM
+        | KIND_MANAGED_AGENT | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG
+        | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
         }
         // NIP-AM: agent turn metrics are agent-authored global events (encrypted to owner).
@@ -467,7 +469,10 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_EMOJI_SET
         | KIND_EMOJI_LIST
         | KIND_AGENT_PROFILE => Ok(Scope::UsersWrite),
-        KIND_DELETION
+        KIND_BOLT12_ZAP
+        | KIND_NWC_REQUEST
+        | KIND_NWC_RESPONSE
+        | KIND_DELETION
         | KIND_REACTION
         | KIND_GIFT_WRAP
         | KIND_STREAM_MESSAGE
@@ -562,8 +567,10 @@ pub(crate) fn extract_channel_id(event: &Event) -> Option<Uuid> {
 
 /// Result of resolving a reaction's target channel.
 pub(crate) enum ReactionChannelResult {
-    Channel(Uuid),
-    NoChannel,
+    Target {
+        channel_id: Option<Uuid>,
+        author_pubkey: Vec<u8>,
+    },
     NotFound,
     NoTarget,
     DbError(String),
@@ -598,13 +605,17 @@ pub(crate) async fn derive_reaction_channel(
     };
 
     match db.get_event_by_id(community_id, &id_bytes).await {
-        Ok(Some(target)) => match target.channel_id {
-            Some(ch_id) => ReactionChannelResult::Channel(ch_id),
-            None => ReactionChannelResult::NoChannel,
+        Ok(Some(target)) => ReactionChannelResult::Target {
+            channel_id: target.channel_id,
+            author_pubkey: target.event.pubkey.to_bytes().to_vec(),
         },
         Ok(None) => ReactionChannelResult::NotFound,
         Err(e) => ReactionChannelResult::DbError(e.to_string()),
     }
+}
+
+fn zap_target_recipient_matches(recipient: Option<&str>, author_pubkey: &[u8]) -> bool {
+    recipient.is_none_or(|recipient| recipient == hex::encode(author_pubkey))
 }
 
 /// Kinds that are always global (`channel_id = NULL`).
@@ -627,6 +638,13 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_LONG_FORM
             | KIND_USER_STATUS
             | KIND_READ_STATE
+            // Draft BOLT12 offers are recipient-owned replaceable state.
+            // Zap proofs may be global profile zaps or channel-scoped message
+            // zaps, so KIND_BOLT12_ZAP deliberately remains out of this list.
+            | KIND_BOLT12_OFFER
+            | KIND_NWC_INFO
+            | KIND_NWC_REQUEST
+            | KIND_NWC_RESPONSE
             // NIP-51 standard lists + sets and NIP-65 relay list — user-owned global state.
             // Same as kind:3 (contacts): keyed by (pubkey, kind) or (pubkey, kind, d_tag),
             // never channel-scoped. A stray `h` tag must not channel-scope them.
@@ -2206,7 +2224,8 @@ async fn ingest_event_inner(
     // the original event without ever having copied it.
     let event = std::sync::Arc::new(event);
     let event_for_verify = std::sync::Arc::clone(&event);
-    let verify_result = tokio::task::spawn_blocking(move || verify_event(&event_for_verify)).await;
+    let verify_result =
+        tokio::task::spawn_blocking(move || verify_submitted_event(&event_for_verify)).await;
     match verify_result {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
@@ -2388,15 +2407,35 @@ async fn ingest_event_inner(
         }
     }
 
-    let mut channel_id = if kind_u32 == KIND_REACTION {
+    let mut channel_id = if kind_u32 == KIND_REACTION || kind_u32 == KIND_BOLT12_ZAP {
         match derive_reaction_channel(tenant.community(), &state.db, &event).await {
-            ReactionChannelResult::Channel(ch_id) => Some(ch_id),
-            ReactionChannelResult::NoChannel => None,
+            ReactionChannelResult::Target {
+                channel_id,
+                author_pubkey,
+            } => {
+                if !zap_target_recipient_matches(
+                    validated_zap
+                        .as_ref()
+                        .map(|zap| zap.recipient_pubkey.as_str()),
+                    &author_pubkey,
+                ) {
+                    return Err(IngestError::Rejected(
+                        "invalid: zap recipient does not match target event author".into(),
+                    ));
+                }
+                channel_id
+            }
             ReactionChannelResult::NotFound => {
                 return Err(IngestError::Rejected(
-                    "invalid: reaction target event not found".into(),
+                    if kind_u32 == KIND_BOLT12_ZAP {
+                        "invalid: zap target event not found"
+                    } else {
+                        "invalid: reaction target event not found"
+                    }
+                    .into(),
                 ));
             }
+            ReactionChannelResult::NoTarget if kind_u32 == KIND_BOLT12_ZAP => None,
             ReactionChannelResult::NoTarget => {
                 return Err(IngestError::Rejected(
                     "invalid: reaction must reference a target event via e tag".into(),
@@ -3274,6 +3313,15 @@ async fn ingest_event_inner(
     })
 }
 
+fn verify_submitted_event(event: &Event) -> Result<(), String> {
+    verify_event(event).map_err(|error| error.to_string())?;
+    if event_kind_u32(event) == KIND_BOLT12_ZAP {
+        crate::bolt12_zap::validate_bolt12_zap(event)
+            .map_err(|error| format!("invalid BOLT12 zap: {error}"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -3340,6 +3388,40 @@ mod tests {
             huddle_backing_channel_id(&event).expect("channel id"),
             channel_id
         );
+    }
+
+    #[test]
+    fn submitted_zap_requires_a_valid_proof_chain() {
+        let event = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), "")
+            .sign_with_keys(&nostr::Keys::generate())
+            .expect("sign zap");
+
+        let error = verify_submitted_event(&event).expect_err("reject malformed zap");
+        assert!(error.contains("invalid BOLT12 zap"));
+    }
+
+    #[test]
+    fn submitted_zap_recipient_must_be_the_target_author() {
+        let author = [0x11; 32];
+
+        assert!(zap_target_recipient_matches(
+            Some(&hex::encode(author)),
+            &author
+        ));
+        assert!(!zap_target_recipient_matches(
+            Some(&hex::encode([0x22; 32])),
+            &author
+        ));
+        assert!(zap_target_recipient_matches(None, &author));
+    }
+
+    #[test]
+    fn submitted_reaction_uses_standard_verification() {
+        let event = EventBuilder::new(Kind::Custom(KIND_REACTION as u16), "+")
+            .sign_with_keys(&nostr::Keys::generate())
+            .expect("sign reaction");
+
+        assert!(verify_submitted_event(&event).is_ok());
     }
 
     #[test]
@@ -3652,6 +3734,54 @@ mod tests {
                 "kind {kind} must not require an h tag"
             );
         }
+    }
+
+    #[test]
+    fn bolt12_kinds_have_narrow_scopes() {
+        let dummy = make_dummy_event();
+        assert_eq!(
+            required_scope_for_kind(KIND_BOLT12_OFFER, &dummy).unwrap(),
+            Scope::UsersWrite
+        );
+        assert_eq!(
+            required_scope_for_kind(KIND_BOLT12_ZAP, &dummy).unwrap(),
+            Scope::MessagesWrite
+        );
+        assert!(is_global_only_kind(KIND_BOLT12_OFFER));
+        assert!(!requires_h_channel_scope(KIND_BOLT12_OFFER));
+    }
+
+    #[test]
+    fn bolt12_zaps_allow_global_profiles_or_event_derived_channel_scope() {
+        assert!(!is_global_only_kind(KIND_BOLT12_ZAP));
+        assert!(!requires_h_channel_scope(KIND_BOLT12_ZAP));
+    }
+
+    #[test]
+    fn nwc_kinds_are_global_and_use_narrow_scopes() {
+        let dummy = make_dummy_event();
+        assert_eq!(
+            required_scope_for_kind(KIND_NWC_INFO, &dummy).unwrap(),
+            Scope::UsersWrite
+        );
+        for kind in [KIND_NWC_REQUEST, KIND_NWC_RESPONSE] {
+            assert_eq!(
+                required_scope_for_kind(kind, &dummy).unwrap(),
+                Scope::MessagesWrite
+            );
+            assert!(is_global_only_kind(kind));
+            assert!(!requires_h_channel_scope(kind));
+        }
+        assert!(is_global_only_kind(KIND_NWC_INFO));
+    }
+
+    #[test]
+    fn bolt12_intents_are_not_admitted_as_standalone_events() {
+        let dummy = make_dummy_event();
+        assert_eq!(
+            required_scope_for_kind(buzz_core::kind::KIND_BOLT12_ZAP_INTENT, &dummy),
+            Err("restricted: unknown event kind")
+        );
     }
 
     #[test]

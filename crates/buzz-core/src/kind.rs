@@ -56,6 +56,21 @@ pub const KIND_CHANNEL_METADATA: u32 = 41;
 pub const KIND_DELETION: u32 = 5;
 /// NIP-25: Content is emoji char or `+`/`-`.
 pub const KIND_REACTION: u32 = 7;
+/// Draft BOLT12 zaps: settled zap proof published by the payer.
+///
+/// The relay validates the embedded intent, recipient offer, and payer proof.
+/// Profile zaps are global. The relay derives a message zap's channel from its
+/// NIP-B1 `e` target, as it does for NIP-25 reactions.
+pub const KIND_BOLT12_ZAP: u32 = 9736;
+/// Draft BOLT12 zaps: signed payer intent embedded in a kind 9736 event.
+///
+/// Intents are never broadcast directly. Relays deliberately do not admit
+/// this kind as a standalone event.
+pub const KIND_BOLT12_ZAP_INTENT: u32 = 9737;
+/// Draft BOLT12 zaps: recipient-authored replaceable offer announcement.
+pub const KIND_BOLT12_OFFER: u32 = 10058;
+/// NIP-47: replaceable wallet-service capability announcement.
+pub const KIND_NWC_INFO: u32 = 13194;
 /// NIP-17: Outer envelope for private DMs — hides sender, content, timestamp.
 pub const KIND_GIFT_WRAP: u32 = 1059;
 /// NIP-94: File metadata attachment.
@@ -84,6 +99,26 @@ pub const KIND_HTTP_AUTH: u32 = 27235;
 
 // NEW: Buzz command kinds (Pure Nostr plan)
 /// Agent metadata + owner reference (replaceable, agent-authored).
+///
+/// # Content contract
+///
+/// One JSON object, written as a whole because the kind is replaceable — a
+/// publisher that omits a field clears it for every reader:
+///
+/// - `channel_add_policy` (`anyone` | `owner_only` | `nobody`) — the only
+///   field the relay itself consumes ([`crate::kind::KIND_AGENT_PROFILE`]
+///   side effect writes it to `users.channel_add_policy`).
+/// - `respond_to`, `respond_to_allowlist`, `channel_ids` — the agent's
+///   audience and where it listens. Desktop
+///   (`agentAutocompleteEligibility.ts`) and mobile
+///   (`agent_identity_provider.dart`) gate mention autocomplete on these:
+///   an agent that omits them is unmentionable by anyone but its own owner,
+/// - `display_name` — how other members' clients label the agent.
+///
+/// The harness publishes the whole object at startup and whenever its channel
+/// set changes (`publish_agent_directory` in `buzz-acp`). Anything that writes
+/// this kind from elsewhere must carry every field it does not intend to
+/// clear.
 pub const KIND_AGENT_PROFILE: u32 = 10100;
 
 /// NIP-AE: Agent Engram (parameterized replaceable, agent-authored).
@@ -157,6 +192,8 @@ pub const RESULT_GATED_KINDS: &[u32] = &[KIND_DM_VISIBILITY, KIND_AGENT_TURN_MET
 /// included for filter-layer enforcement but are never stored, so the
 /// storage-layer search defense does not apply to them.
 pub const P_GATED_KINDS: &[u32] = &[
+    KIND_NWC_REQUEST,
+    KIND_NWC_RESPONSE,
     KIND_AGENT_OBSERVER_FRAME,
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
@@ -467,6 +504,10 @@ pub const KIND_PAIRING: u32 = 24134;
 pub const KIND_TYPING_INDICATOR: u32 = 20002;
 /// Ephemeral: owner-scoped encrypted agent observer telemetry and control frame.
 pub const KIND_AGENT_OBSERVER_FRAME: u32 = 24200;
+/// NIP-47: encrypted client-to-wallet-service request.
+pub const KIND_NWC_REQUEST: u32 = 23194;
+/// NIP-47: encrypted wallet-service-to-client response.
+pub const KIND_NWC_RESPONSE: u32 = 23195;
 /// Ephemeral: huddle emoji reaction burst. Channel-scoped to the ephemeral
 /// huddle channel with an `h` tag; never stored in the timeline.
 pub const KIND_HUDDLE_REACTION: u32 = 24810;
@@ -647,6 +688,10 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_CHANNEL_METADATA,
     KIND_DELETION,
     KIND_REACTION,
+    KIND_BOLT12_ZAP,
+    KIND_BOLT12_ZAP_INTENT,
+    KIND_BOLT12_OFFER,
+    KIND_NWC_INFO,
     KIND_GIFT_WRAP,
     KIND_FILE_METADATA,
     KIND_AGENT_PROFILE,
@@ -698,6 +743,8 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_BLOSSOM_AUTH,
     KIND_PAIRING,
     KIND_AGENT_OBSERVER_FRAME,
+    KIND_NWC_REQUEST,
+    KIND_NWC_RESPONSE,
     KIND_HTTP_AUTH,
     KIND_STREAM_MESSAGE,
     KIND_STREAM_MESSAGE_V2,
