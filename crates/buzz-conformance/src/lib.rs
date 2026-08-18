@@ -40,6 +40,8 @@
 
 pub mod checker;
 pub mod transitions;
+pub mod wallet;
+pub mod wallet_offer;
 
 use serde::{Deserialize, Serialize};
 

@@ -1,0 +1,4 @@
+{"schema_version":1,"attempt_id":"attempt-001","action":{"type":"prepare_generic"},"state_before":{"status":"absent","payment_recorded":false},"state_after":{"status":"generic_prepared","payment_recorded":false}}
+{"schema_version":1,"attempt_id":"attempt-001","action":{"type":"begin_dispatch"},"state_before":{"status":"generic_prepared","payment_recorded":false},"state_after":{"status":"generic_paying","payment_recorded":false}}
+{"schema_version":1,"attempt_id":"attempt-001","action":{"type":"record_completed"},"state_before":{"status":"generic_paying","payment_recorded":false},"state_after":{"status":"generic_completed","payment_recorded":true}}
+{"schema_version":1,"attempt_id":"attempt-001","action":{"type":"reuse_terminal"},"state_before":{"status":"generic_completed","payment_recorded":true},"state_after":{"status":"generic_completed","payment_recorded":true}}

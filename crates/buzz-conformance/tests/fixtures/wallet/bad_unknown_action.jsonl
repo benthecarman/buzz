@@ -1,0 +1,1 @@
+{"schema_version":1,"attempt_id":"attempt-001","action":{"type":"send_again"},"state_before":{"status":"generic_paying","payment_recorded":false},"state_after":{"status":"generic_paying","payment_recorded":false}}
