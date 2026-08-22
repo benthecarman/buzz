@@ -315,24 +315,38 @@ pub(crate) async fn run_demo_echo(
     tracing::info!(%session_id, %peer, "mesh demo echo: session open");
     let mut drain_tick = tokio::time::interval(std::time::Duration::from_millis(100));
     loop {
-        let frame = tokio::select! {
-            _ = drain_tick.tick() => {
-                if shutting_down.load(Ordering::Relaxed) {
-                    if let Some(community_id) = stream.community_id() {
-                        if let Err(e) = stream.send_goodbye(community_id, GoodbyeReason::Draining).await {
-                            tracing::warn!(%session_id, "mesh demo echo: draining goodbye failed: {e}");
-                        } else {
-                            tracing::info!(%session_id, "mesh demo echo: sent draining goodbye");
+        // Keep one receive future alive across drain checks. Restarting the
+        // receive on every tick can cancel it after it consumes part of a
+        // length-prefixed frame and corrupt the stream.
+        let frame = {
+            let receive = stream.recv_validated(&directory);
+            tokio::pin!(receive);
+            loop {
+                tokio::select! {
+                    frame = &mut receive => break Some(frame),
+                    _ = drain_tick.tick() => {
+                        if shutting_down.load(Ordering::Relaxed) {
+                            break None;
                         }
-                    } else {
-                        let _ = stream.finish();
-                        tracing::info!(%session_id, "mesh demo echo: drain before community latch — closing");
                     }
-                    return;
                 }
-                continue;
             }
-            frame = stream.recv_validated(&directory) => frame,
+        };
+        let Some(frame) = frame else {
+            if let Some(community_id) = stream.community_id() {
+                if let Err(e) = stream
+                    .send_goodbye(community_id, GoodbyeReason::Draining)
+                    .await
+                {
+                    tracing::warn!(%session_id, "mesh demo echo: draining goodbye failed: {e}");
+                } else {
+                    tracing::info!(%session_id, "mesh demo echo: sent draining goodbye");
+                }
+            } else {
+                let _ = stream.finish();
+                tracing::info!(%session_id, "mesh demo echo: drain before community latch — closing");
+            }
+            return;
         };
         match frame {
             Ok(Some(ReliableFrame::Data(payload))) => {
@@ -583,8 +597,47 @@ mod tests {
         }
     }
 
+    struct DelayedEofRecv;
+    impl StreamRecvHalf for DelayedEofRecv {
+        fn recv_frame(&mut self) -> BoxFuture<'_, Result<Option<MeshStreamFrame>, MeshError>> {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                Ok(None)
+            })
+        }
+    }
+
     fn stub_stream() -> MeshStream {
         MeshStream::new(Box::new(StubSend), Box::new(StubRecv))
+    }
+
+    #[tokio::test]
+    async fn demo_echo_preserves_receive_across_drain_checks() {
+        let fenced = FencedHeader {
+            session_id: uuid::Uuid::new_v4(),
+            generation: 1,
+            owner_runtime_id: rid(1),
+        };
+        let stream = MeshStream::new(Box::new(StubSend), Box::new(DelayedEofRecv));
+        let inbound = ReliableInbound {
+            fenced,
+            from: rid(2),
+            stream: crate::tunnel::reliable::ReliableMeshStream::new_inbound(fenced, stream),
+        };
+        let pool = deadpool_redis::Config::from_url("redis://127.0.0.1:1")
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .unwrap();
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_demo_echo(
+                SessionDirectory::new(pool),
+                inbound,
+                Arc::new(AtomicBool::new(false)),
+            ),
+        )
+        .await
+        .expect("delayed receive completes across drain checks");
     }
 
     fn rid(byte: u8) -> RuntimeId {
