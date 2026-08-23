@@ -10,6 +10,9 @@
 //! - Static bearer (`DATABRICKS_TOKEN`): returned immediately.
 //! - PKCE cache hit: read from disk, no network round-trip.
 //! - PKCE cache empty, no token: `Err(AgentError::LlmAuth)`.
+//!
+//! Maple's catalog is only reachable through the opensecret SDK's attested
+//! transport, so its discovery lives here too.
 
 use std::sync::Arc;
 
@@ -414,7 +417,96 @@ pub async fn discover_models(cfg: &Config) -> Result<Option<Vec<ModelEntry>>, Ag
         Provider::Databricks | Provider::DatabricksV2 => {
             discover_databricks_models(cfg).await.map(Some)
         }
+        Provider::Maple => discover_maple_models(cfg).await.map(Some),
         Provider::Anthropic | Provider::OpenAi | Provider::OpenRouter => Ok(None),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Maple (OpenSecret)
+// ---------------------------------------------------------------------------
+
+/// Cap on one Maple catalog exchange, attestation handshake included. The
+/// SDK's HTTP client sets no timeout, and this call sits on the `session/new`
+/// path where a hang would block agent startup.
+const MAPLE_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Discover the Maple (OpenSecret) model catalog: `GET /v1/models` through
+/// the opensecret SDK.
+///
+/// The catalog is unreachable over plain HTTPS, so the desktop's picker
+/// cannot probe it directly; it calls this via `buzz-agent models` or ACP
+/// `session/new`.
+///
+/// Auth is the static `MAPLE_API_KEY`. An empty key is allowed: the enclave
+/// lists models for any attested session, so the picker can fill in before
+/// the user enters a key. An older enclave that still requires a credential
+/// answers a keyless call with `Err(AgentError::LlmAuth)`.
+async fn discover_maple_models(cfg: &Config) -> Result<Vec<ModelEntry>, AgentError> {
+    let client = crate::llm::build_maple_client(cfg)?.ok_or_else(|| {
+        AgentError::InvalidParams("discover_maple_models called for non-Maple provider".into())
+    })?;
+    let keyless = cfg.api_key.trim().is_empty();
+    let response = tokio::time::timeout(MAPLE_DISCOVERY_TIMEOUT, client.get_models())
+        .await
+        .map_err(|_| {
+            AgentError::Llm(format!(
+                "Maple model discovery timed out after {MAPLE_DISCOVERY_TIMEOUT:?}"
+            ))
+        })?
+        .map_err(|error| maple_discovery_error(error, keyless))?;
+    let models = filter_maple_models(response.data.into_iter().map(|m| m.id));
+    if models.is_empty() {
+        return Err(AgentError::Llm(
+            "Maple model discovery returned no chat-capable models".into(),
+        ));
+    }
+    Ok(models)
+}
+
+/// Maple's raw model ids as picker entries, dropping ids that cannot serve
+/// chat traffic. The catalog has no display-name or task field, so the id is
+/// also the label and the name is the only capability signal, as in
+/// [`is_chat_capable_endpoint`].
+fn filter_maple_models(ids: impl Iterator<Item = String>) -> Vec<ModelEntry> {
+    ids.filter(|id| is_maple_chat_model(id))
+        .map(|id| ModelEntry {
+            name: id.clone(),
+            id,
+        })
+        .collect()
+}
+
+fn is_maple_chat_model(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    if !is_chat_capable_endpoint(id) {
+        return false;
+    }
+    !["embed", "whisper", "tts", "transcribe", "speech"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// Map an opensecret SDK discovery failure onto `AgentError`. 401/403 become
+/// `LlmAuth` so `session/new` rejects with the credential error instead of
+/// silently degrading to the configured model.
+///
+/// A keyless call rejected for auth means this enclave does not list models
+/// without a credential. Word that as the standard `config: MAPLE_API_KEY
+/// required` error so the frontend shows its usual key prompt.
+fn maple_discovery_error(error: opensecret::Error, keyless: bool) -> AgentError {
+    match error {
+        opensecret::Error::Api {
+            status: status @ (401 | 403),
+            message,
+        } if keyless => AgentError::LlmAuth(format!(
+            "config: MAPLE_API_KEY required — this enclave does not list models without a credential (HTTP {status}: {message})"
+        )),
+        opensecret::Error::Api {
+            status: status @ (401 | 403),
+            message,
+        } => AgentError::LlmAuth(format!("Maple model discovery HTTP {status}: {message}")),
+        other => AgentError::Llm(format!("Maple model discovery failed: {other}")),
     }
 }
 
@@ -758,5 +850,60 @@ mod tests {
                 .expect("no-catalog providers must not error");
             assert!(discovered.is_none(), "{provider:?} has no live catalog");
         }
+    }
+
+    /// A keyless listing rejected for auth is reported as the standard
+    /// missing-key config error so the desktop shows its "enter an API key"
+    /// prompt; the same rejection with a key present names the HTTP status.
+    #[test]
+    fn maple_discovery_auth_rejection_wording_depends_on_keyless() {
+        let rejected = || opensecret::Error::Api {
+            status: 401,
+            message: "Invalid JWT".into(),
+        };
+        match maple_discovery_error(rejected(), true) {
+            AgentError::LlmAuth(s) => assert!(s.contains("config: MAPLE_API_KEY required"), "{s}"),
+            other => panic!("expected LlmAuth, got {other:?}"),
+        }
+        match maple_discovery_error(rejected(), false) {
+            AgentError::LlmAuth(s) => {
+                assert!(s.contains("HTTP 401"), "{s}");
+                assert!(!s.contains("MAPLE_API_KEY required"), "{s}");
+            }
+            other => panic!("expected LlmAuth, got {other:?}"),
+        }
+        // Non-auth failures are plain errors regardless of key presence.
+        assert!(matches!(
+            maple_discovery_error(opensecret::Error::Session("stale".into()), true),
+            AgentError::Llm(_)
+        ));
+    }
+
+    /// The catalog is dynamic, so this pins the filter rules, not a
+    /// snapshot: audio, TTS, and embedding ids drop; everything else stays,
+    /// including audio-capable chat models. Order is preserved and the id is
+    /// also the label, since Maple has no name field.
+    #[test]
+    fn filter_maple_models_drops_non_chat_families() {
+        let kept = [
+            "llama3-3-70b",
+            "deepseek-v4-flash",
+            "gpt-oss-120b",
+            "voxtral-small-24b",
+            "some-future-model",
+        ];
+        let dropped = [
+            "whisper-large-v3",
+            "voxtral-tts",
+            "nomic-embed-text",
+            "qwen3-embedding-0-6b",
+            "kokoro-speech",
+            "parakeet-transcribe",
+        ];
+        let models =
+            filter_maple_models(kept.iter().chain(dropped.iter()).map(|id| id.to_string()));
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, kept);
+        assert!(models.iter().all(|m| m.id == m.name));
     }
 }
