@@ -258,6 +258,16 @@ By default (`OPENAI_COMPAT_API=auto`) the agent picks **Responses** when `OPENAI
 
 `Provider` is a Rust `enum` with one `match` in `Llm::complete`. There is no trait, no `Box<dyn>`, no async-trait. Adding a provider is a `match` arm and one `body`/`parse` pair in `llm.rs`.
 
+### Model discovery
+
+`buzz-agent models` prints the provider's live model catalog as a JSON array of `{"id","name"}` objects on stdout. It reads the same provider env vars as the ACP server but does **not** require a model. Providers without a live agent-side catalog (Anthropic, OpenAI, OpenRouter; frontends list those over plain HTTP) print `[]`. Failures exit non-zero with the error on stderr.
+
+```bash
+BUZZ_AGENT_PROVIDER=databricks_v2 DATABRICKS_HOST=https://dbc-...cloud.databricks.com buzz-agent models
+```
+
+The per-provider dispatch lives in `catalog.rs` (`discover_models`) and also backs the `availableModels` list in the ACP `session/new` response, so a provider added there reaches every frontend, including Buzz Desktop's model picker.
+
 ## MCP Servers
 
 The client passes MCP server specs in `session/new`. The agent spawns each one as a stdio subprocess, calls `tools/list`, and merges everything into a single tool catalog the LLM sees. Tool names are namespaced as `server__tool` (double underscore separator). Bare tool names containing `__` are rejected at registration.

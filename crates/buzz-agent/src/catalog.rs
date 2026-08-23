@@ -1,16 +1,15 @@
-//! Databricks model catalog discovery.
+//! Live model-catalog discovery, per provider.
 //!
-//! Exposes [`discover_databricks_models`] — an async helper that lists
-//! available models for the `databricks` and `databricks_v2` providers
-//! without triggering a browser OAuth flow. Auth is acquired in-process via
-//! [`build_token_source`](crate::llm::build_token_source):
+//! [`discover_models`] is the dispatch point behind ACP `session/new` and
+//! the `buzz-agent models` subcommand.
+//!
+//! Databricks ([`discover_databricks_models`]) lists endpoints for the
+//! `databricks` and `databricks_v2` providers without opening a browser.
+//! Auth comes from [`build_token_source`](crate::llm::build_token_source):
 //!
 //! - Static bearer (`DATABRICKS_TOKEN`): returned immediately.
-//! - PKCE cache hit: returned from disk without a network round-trip.
-//! - PKCE cache empty / no token: returns `Err(AgentError::LlmAuth)`.
-//!
-//! This helper never opens a browser. Callers choose whether to reject, degrade,
-//! or start a separate interactive authentication flow.
+//! - PKCE cache hit: read from disk, no network round-trip.
+//! - PKCE cache empty, no token: `Err(AgentError::LlmAuth)`.
 
 use std::sync::Arc;
 
@@ -402,6 +401,24 @@ pub(crate) fn parse_v2_endpoints_page(
 }
 
 // ---------------------------------------------------------------------------
+// Provider-generic dispatch
+// ---------------------------------------------------------------------------
+
+/// Discover the live model catalog for `cfg.provider`.
+///
+/// `Ok(Some(models))` is a non-empty catalog. `Ok(None)` means the provider
+/// has no agent-side catalog: the frontend lists its models itself over
+/// plain OpenAI-compatible HTTP, or the configured model is the only option.
+pub async fn discover_models(cfg: &Config) -> Result<Option<Vec<ModelEntry>>, AgentError> {
+    match cfg.provider {
+        Provider::Databricks | Provider::DatabricksV2 => {
+            discover_databricks_models(cfg).await.map(Some)
+        }
+        Provider::Anthropic | Provider::OpenAi | Provider::OpenRouter => Ok(None),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -727,5 +744,19 @@ mod tests {
         assert!(!is_chat_capable_endpoint("databricks-bge-large-en"));
         assert!(!is_chat_capable_endpoint("databricks-gte-large-en"));
         assert!(!is_chat_capable_endpoint("databricks-qwen3-embedding-0-6b"));
+    }
+
+    /// Providers without an agent-side catalog resolve to `Ok(None)`; the
+    /// dispatch must not error for them and must not return an empty `Some`.
+    #[tokio::test]
+    async fn discover_models_returns_none_for_providers_without_live_catalog() {
+        for provider in [Provider::Anthropic, Provider::OpenAi, Provider::OpenRouter] {
+            let cfg =
+                Config::for_discovery(provider, "key".into(), "https://example.invalid".into());
+            let discovered = discover_models(&cfg)
+                .await
+                .expect("no-catalog providers must not error");
+            assert!(discovered.is_none(), "{provider:?} has no live catalog");
+        }
     }
 }

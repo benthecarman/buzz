@@ -525,66 +525,22 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
-        let databricks_host = env("DATABRICKS_HOST");
-        let databricks_model = env("DATABRICKS_MODEL");
-        let provider = resolve_provider(
-            env("BUZZ_AGENT_PROVIDER").as_deref(),
-            env("ANTHROPIC_API_KEY").as_deref(),
-            env("OPENAI_COMPAT_API_KEY").as_deref(),
-            env("OPENROUTER_API_KEY").as_deref(),
-        )?;
+        let provider = resolve_provider_from_env()?;
+        let conn = provider_connection_from_env(provider)?;
 
         // Universal model override — takes priority over provider-specific model
         // env vars (ANTHROPIC_MODEL, OPENAI_COMPAT_MODEL, DATABRICKS_MODEL) when
         // present. Set by the desktop from the persona/record to express explicit
         // user intent; provider-specific vars serve as defaults for CLI/standalone use.
         let buzz_agent_model = env("BUZZ_AGENT_MODEL");
-
-        // OPENAI_COMPAT_API is only read when provider=openai, so a stray
-        // bad value can't break an Anthropic-only deployment.
-        //
-        // Databricks borrows api_key as the *optional* `DATABRICKS_TOKEN` escape
-        // hatch — empty means "use OAuth PKCE." Legacy Databricks encodes the
-        // model in the URL path; Databricks v2 keeps it in the request body.
-        let (api_key, model, base_url, openai_api) = match provider {
-            Provider::Anthropic => (
-                req("ANTHROPIC_API_KEY")?,
-                resolve_model(
-                    buzz_agent_model.as_deref(),
-                    env("ANTHROPIC_MODEL").as_deref(),
-                )
-                .ok_or_else(|| "config: ANTHROPIC_MODEL required".to_string())?,
-                env_or("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
-                OpenAiApi::Auto, // unused for Anthropic
-            ),
-            Provider::OpenAi => (
-                req("OPENAI_COMPAT_API_KEY")?,
-                resolve_model(
-                    buzz_agent_model.as_deref(),
-                    env("OPENAI_COMPAT_MODEL").as_deref(),
-                )
-                .ok_or_else(|| "config: OPENAI_COMPAT_MODEL required".to_string())?,
-                env_or("OPENAI_COMPAT_BASE_URL", "https://api.openai.com/v1"),
-                parse_openai_api(env("OPENAI_COMPAT_API").as_deref())?,
-            ),
-            Provider::Databricks | Provider::DatabricksV2 => (
-                env("DATABRICKS_TOKEN").unwrap_or_default(),
-                resolve_model(buzz_agent_model.as_deref(), databricks_model.as_deref())
-                    .ok_or_else(|| "config: DATABRICKS_MODEL required".to_string())?,
-                databricks_host.ok_or_else(|| "config: DATABRICKS_HOST required".to_string())?,
-                OpenAiApi::Chat, // only read by OpenAI/legacy Databricks dispatch
-            ),
-            Provider::OpenRouter => (
-                req("OPENROUTER_API_KEY")?,
-                resolve_model(
-                    buzz_agent_model.as_deref(),
-                    env("OPENROUTER_MODEL").as_deref(),
-                )
-                .ok_or_else(|| "config: OPENROUTER_MODEL required".to_string())?,
-                env_or("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-                OpenAiApi::Chat, // OpenRouter uses Chat Completions only
-            ),
-        };
+        let model = resolve_model(buzz_agent_model.as_deref(), conn.provider_model.as_deref())
+            .ok_or_else(|| format!("config: {} required", conn.model_env_var))?;
+        let ProviderConnection {
+            api_key,
+            base_url,
+            openai_api,
+            ..
+        } = conn;
         let system_prompt = match (env("BUZZ_AGENT_SYSTEM_PROMPT"), env("BUZZ_AGENT_SYSTEM_PROMPT_FILE")) {
             (Some(_), Some(_)) => return Err(
                 "config: BUZZ_AGENT_SYSTEM_PROMPT and BUZZ_AGENT_SYSTEM_PROMPT_FILE are mutually exclusive".into()),
@@ -637,12 +593,24 @@ impl Config {
         Ok(cfg)
     }
 
+    /// Same env vars as [`Config::from_env`], but no model is required:
+    /// `buzz-agent models` runs before a model has been chosen. The ACP
+    /// server path keeps using `from_env`, since a running agent always has
+    /// a model.
+    pub fn discovery_from_env() -> Result<Self, String> {
+        let provider = resolve_provider_from_env()?;
+        let conn = provider_connection_from_env(provider)?;
+        let mut cfg = Self::for_discovery(provider, conn.api_key, conn.base_url);
+        cfg.openai_api = conn.openai_api;
+        Ok(cfg)
+    }
+
     /// Construct a minimal `Config` for model-catalog discovery.
     ///
     /// Only the fields used by [`build_token_source`](crate::llm::build_token_source)
     /// and the catalog HTTP helpers are meaningful; all others are set to
-    /// inert defaults. Never call `from_env` for discovery — it requires
-    /// `DATABRICKS_MODEL` and other fields that are irrelevant here.
+    /// inert defaults. Never call `from_env` for discovery; use
+    /// [`Config::discovery_from_env`] instead.
     pub fn for_discovery(provider: Provider, api_key: String, base_url: String) -> Self {
         Self {
             provider,
@@ -823,6 +791,72 @@ fn resolve_provider(
             "config: BUZZ_AGENT_PROVIDER is required — set it to your provider (e.g. anthropic, openai, databricks)".into(),
         ),
     }
+}
+
+/// Resolve the provider from the standard env vars (`BUZZ_AGENT_PROVIDER`
+/// plus each provider's key). Shared by `from_env` and `discovery_from_env`.
+fn resolve_provider_from_env() -> Result<Provider, String> {
+    resolve_provider(
+        env("BUZZ_AGENT_PROVIDER").as_deref(),
+        env("ANTHROPIC_API_KEY").as_deref(),
+        env("OPENAI_COMPAT_API_KEY").as_deref(),
+        env("OPENROUTER_API_KEY").as_deref(),
+    )
+}
+
+/// Per-provider connection settings from env: everything `from_env` needs
+/// except the model. Split out so [`Config::discovery_from_env`] can build a
+/// connection without one.
+struct ProviderConnection {
+    api_key: String,
+    base_url: String,
+    openai_api: OpenAiApi,
+    /// Provider-specific model env var (e.g. `DATABRICKS_MODEL`), the
+    /// default when `BUZZ_AGENT_MODEL` is absent.
+    provider_model: Option<String>,
+    /// Name of that env var, for the "required" error message.
+    model_env_var: &'static str,
+}
+
+/// Resolve one provider's connection settings from env.
+///
+/// `OPENAI_COMPAT_API` is only read when provider=openai, so a stray bad
+/// value can't break an Anthropic-only deployment. Databricks borrows
+/// `api_key` as the optional `DATABRICKS_TOKEN` escape hatch; empty means
+/// "use OAuth PKCE." Legacy Databricks encodes the model in the URL path,
+/// Databricks v2 in the request body.
+fn provider_connection_from_env(provider: Provider) -> Result<ProviderConnection, String> {
+    Ok(match provider {
+        Provider::Anthropic => ProviderConnection {
+            api_key: req("ANTHROPIC_API_KEY")?,
+            base_url: env_or("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+            openai_api: OpenAiApi::Auto, // unused for Anthropic
+            provider_model: env("ANTHROPIC_MODEL"),
+            model_env_var: "ANTHROPIC_MODEL",
+        },
+        Provider::OpenAi => ProviderConnection {
+            api_key: req("OPENAI_COMPAT_API_KEY")?,
+            base_url: env_or("OPENAI_COMPAT_BASE_URL", "https://api.openai.com/v1"),
+            openai_api: parse_openai_api(env("OPENAI_COMPAT_API").as_deref())?,
+            provider_model: env("OPENAI_COMPAT_MODEL"),
+            model_env_var: "OPENAI_COMPAT_MODEL",
+        },
+        Provider::Databricks | Provider::DatabricksV2 => ProviderConnection {
+            api_key: env("DATABRICKS_TOKEN").unwrap_or_default(),
+            base_url: env("DATABRICKS_HOST")
+                .ok_or_else(|| "config: DATABRICKS_HOST required".to_string())?,
+            openai_api: OpenAiApi::Chat, // only read by OpenAI/legacy Databricks dispatch
+            provider_model: env("DATABRICKS_MODEL"),
+            model_env_var: "DATABRICKS_MODEL",
+        },
+        Provider::OpenRouter => ProviderConnection {
+            api_key: req("OPENROUTER_API_KEY")?,
+            base_url: env_or("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+            openai_api: OpenAiApi::Chat, // OpenRouter uses Chat Completions only
+            provider_model: env("OPENROUTER_MODEL"),
+            model_env_var: "OPENROUTER_MODEL",
+        },
+    })
 }
 
 /// Parse `OPENAI_COMPAT_API`. Pure (env-free) for testability; the
