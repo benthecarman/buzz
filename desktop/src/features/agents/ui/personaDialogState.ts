@@ -1,6 +1,7 @@
 import type {
   AgentPersona,
   CreatePersonaInput,
+  ManagedAgent,
   PersonaBehaviorInput,
   UpdatePersonaInput,
 } from "@/shared/api/types";
@@ -10,6 +11,7 @@ export type PersonaDialogState = {
   initialValues: CreatePersonaInput | UpdatePersonaInput;
   submitLabel: string;
   title: string;
+  walletAgent?: Pick<ManagedAgent, "name" | "pubkey">;
 };
 
 /**
@@ -104,7 +106,8 @@ function behaviorEntry(
 
 export function editPersonaDialogState(
   persona: AgentPersona,
-  accessSource?: Pick<AgentPersona, "respondTo" | "respondToAllowlist">,
+  accessSource?: Pick<AgentPersona, "respondTo" | "respondToAllowlist"> &
+    Partial<Pick<ManagedAgent, "name" | "pubkey">>,
 ): PersonaDialogState {
   const behaviorSource = accessSource
     ? {
@@ -117,6 +120,10 @@ export function editPersonaDialogState(
     title: "Edit agent",
     description: "",
     submitLabel: "Save changes",
+    walletAgent:
+      accessSource?.name && accessSource.pubkey
+        ? { name: accessSource.name, pubkey: accessSource.pubkey }
+        : undefined,
     initialValues: {
       id: persona.id,
       displayName: persona.displayName,

@@ -9,7 +9,11 @@ import {
   resetRenderScopedReactionHydration,
 } from "./renderScopedReactions.ts";
 import { formatTimelineMessages } from "./formatTimelineMessages.ts";
-import { channelMessagesKey } from "./messageQueryKeys.ts";
+import {
+  flattenChannelWindowEvents,
+  replaceNewestChannelWindow,
+} from "./channelWindowStore.ts";
+import { channelMessagesKey, channelWindowKey } from "./messageQueryKeys.ts";
 
 const CHANNEL_ID = "36411e44-0e2d-4cfe-bd6e-567eb169db9f";
 
@@ -45,7 +49,7 @@ function makeQueryClientStub(initialEvents = []) {
     setQueryData(key, updater) {
       const k = JSON.stringify(key);
       const next =
-        typeof updater === "function" ? updater(store.get(k) ?? []) : updater;
+        typeof updater === "function" ? updater(store.get(k)) : updater;
       store.set(k, next);
       return next;
     },
@@ -151,6 +155,40 @@ test("hydrates visible reactions into the channel timeline cache", async () => {
         mine: r.reactedByCurrentUser,
       })),
     [{ count: 1, emoji: "✅", mine: true }],
+  );
+});
+
+test("retains hydrated aux events through a head window refresh", async () => {
+  const messageId = hex("1");
+  const zapId = hex("2");
+  const message = event(messageId, 9, { content: "ship it?" });
+  const zap = event(zapId, 9736, {
+    tags: [["e", messageId]],
+  });
+  const queryClient = makeQueryClientStub([message]);
+
+  await hydrateRenderScopedReactions({
+    channelId: CHANNEL_ID,
+    messageIds: [messageId],
+    queryClient,
+    deps: {
+      fetchReactionEventsForMessages: async () => [zap],
+    },
+  });
+
+  const hydratedWindow = queryClient.getQueryData(channelWindowKey(CHANNEL_ID));
+  const refreshedWindow = replaceNewestChannelWindow(hydratedWindow, {
+    startCursor: null,
+    rows: [{ event: message, thread: null }],
+    aux: [],
+    nextCursor: null,
+    hasMore: false,
+  });
+
+  assert.ok(
+    flattenChannelWindowEvents(refreshedWindow).some(
+      (candidate) => candidate.id === zapId,
+    ),
   );
 });
 

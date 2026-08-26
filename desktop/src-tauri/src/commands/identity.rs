@@ -1,8 +1,7 @@
 use nostr::{
     nips::nip44, Event, EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp, ToBech32,
 };
-use tauri::Manager;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     app_state::AppState,
@@ -133,6 +132,145 @@ pub async fn sign_event(
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
+}
+
+/// Build the buyer's NIP-OA attestation message for a new hosted agent.
+#[tauri::command]
+pub async fn build_hosted_agent_owner_attestation(
+    app: AppHandle,
+    request_json: String,
+    zap_json: String,
+    plan_json: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let keys = state.signing_keys()?;
+    #[cfg(feature = "bitcoin")]
+    {
+        let owner_pubkey = keys.public_key().to_hex();
+        let claim = crate::commands::hosted_agent_claim::validate(
+            &request_json,
+            &zap_json,
+            &plan_json,
+            &keys,
+        )?;
+        let offer = crate::commands::wallet::enabled::hosted_agent_offer(
+            &app,
+            &state,
+            &claim.agent_pubkey,
+            &claim.agent_name,
+        )
+        .await
+        .map_err(|error| format!("create hosted-agent receive offer: {error}"))?;
+        let attestation = tauri::async_runtime::spawn_blocking(move || {
+            owner_attestation_event(&request_json, &keys, &offer)
+        })
+        .await
+        .map_err(|error| format!("owner attestation task failed: {error}"))??;
+        crate::commands::wallet_nwc::authorize_hosted_agent(
+            &app,
+            &owner_pubkey,
+            &relay_ws_url_with_override(&state),
+            &claim.agent_pubkey,
+            &claim.agent_name,
+        )?;
+        Ok(attestation)
+    }
+    #[cfg(not(feature = "bitcoin"))]
+    {
+        let _ = (app, request_json, zap_json, plan_json, state, keys);
+        Err("Bitcoin wallet support is not enabled in this build".into())
+    }
+}
+
+fn owner_attestation_event(
+    request_json: &str,
+    keys: &Keys,
+    bolt12_offer: &str,
+) -> Result<String, String> {
+    let request = Event::from_json(request_json)
+        .map_err(|error| format!("invalid ownership request: {error}"))?;
+    request
+        .verify()
+        .map_err(|error| format!("invalid ownership request signature: {error}"))?;
+    if request.kind != Kind::Custom(40002) {
+        return Err("event is not a hosted-agent claim request".into());
+    }
+    let one_tag = |name: &str| -> Result<Vec<String>, String> {
+        let tags: Vec<Vec<String>> = request
+            .tags
+            .iter()
+            .filter(|tag| tag.as_slice().first().map(String::as_str) == Some(name))
+            .map(|tag| tag.as_slice().to_vec())
+            .collect();
+        if tags.len() != 1 {
+            return Err(format!("ownership request must contain one {name} tag"));
+        }
+        Ok(tags.into_iter().next().unwrap_or_default())
+    };
+    let lease = one_tag("d")?
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "ownership request has no lease ID".to_string())?;
+    uuid::Uuid::parse_str(&lease).map_err(|_| "ownership request has an invalid lease ID")?;
+    let channel = one_tag("h")?
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "ownership request has no DM channel".to_string())?;
+    uuid::Uuid::parse_str(&channel).map_err(|_| "ownership request has an invalid DM channel")?;
+    let buyer = one_tag("p")?
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "ownership request has no buyer".to_string())?;
+    if buyer != keys.public_key().to_hex() {
+        return Err("ownership request is for a different buyer".into());
+    }
+    let agent = one_tag("agent")?
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "ownership request has no agent".to_string())?;
+    let agent_pubkey =
+        PublicKey::from_hex(&agent).map_err(|_| "ownership request has an invalid agent pubkey")?;
+    let name = one_tag("name")?
+        .get(1)
+        .cloned()
+        .ok_or_else(|| "ownership request has no agent name".to_string())?;
+    if name.trim().is_empty() || name.len() > 128 {
+        return Err("ownership request has an invalid agent name".into());
+    }
+    let auth_json = buzz_sdk_pkg::nip_oa::compute_auth_tag(keys, &agent_pubkey, "")
+        .map_err(|error| format!("failed to authorize hosted agent: {error}"))?;
+    let auth_values: Vec<String> = serde_json::from_str(&auth_json)
+        .map_err(|error| format!("failed to decode ownership proof: {error}"))?;
+    let auth_tag = Tag::parse(auth_values)
+        .map_err(|error| format!("failed to parse ownership proof: {error}"))?;
+    let mut tags = vec![
+        Tag::parse(["d", lease.as_str()]).map_err(|error| error.to_string())?,
+        Tag::parse(["h", channel.as_str()]).map_err(|error| error.to_string())?,
+        Tag::parse(["p", request.pubkey.to_hex().as_str()]).map_err(|error| error.to_string())?,
+        Tag::parse(["agent", agent.as_str()]).map_err(|error| error.to_string())?,
+        Tag::parse(["name", name.as_str()]).map_err(|error| error.to_string())?,
+        Tag::parse(["offer", bolt12_offer]).map_err(|error| error.to_string())?,
+        Tag::parse(["e", request.id.to_hex().as_str(), "", "claim-request"])
+            .map_err(|error| error.to_string())?,
+        auth_tag,
+    ];
+    for marker in ["plan", "zap"] {
+        let source = request
+            .tags
+            .iter()
+            .find(|tag| {
+                let values = tag.as_slice();
+                values.first().map(String::as_str) == Some("e")
+                    && values.get(3).map(String::as_str) == Some(marker)
+            })
+            .ok_or_else(|| format!("ownership request has no {marker} reference"))?;
+        tags.push(source.clone());
+    }
+    EventBuilder::new(Kind::Custom(40002), "")
+        .tags(tags)
+        .sign_with_keys(keys)
+        .map(|event| event.as_json())
+        .map_err(|error| format!("failed to sign owner attestation: {error}"))
 }
 
 #[tauri::command]
@@ -782,6 +920,70 @@ mod nostr_identity_binding_tests {
         .unwrap_err();
 
         assert_eq!(error, "expires_at is expired");
+    }
+}
+
+#[cfg(test)]
+mod hosted_agent_ownership_tests {
+    use super::owner_attestation_event;
+    use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
+
+    fn request(host: &Keys, buyer: &Keys, agent: &Keys) -> Event {
+        let lease = uuid::Uuid::new_v4().to_string();
+        let dm = uuid::Uuid::new_v4().to_string();
+        EventBuilder::new(Kind::Custom(40002), "Claim this agent")
+            .tags([
+                Tag::parse(["d", lease.as_str()]).unwrap(),
+                Tag::parse(["h", dm.as_str()]).unwrap(),
+                Tag::parse(["p", buyer.public_key().to_hex().as_str()]).unwrap(),
+                Tag::parse(["agent", agent.public_key().to_hex().as_str()]).unwrap(),
+                Tag::parse(["name", "Silly Elephant"]).unwrap(),
+                Tag::parse(["e", "11".repeat(32).as_str(), "", "plan"]).unwrap(),
+                Tag::parse(["e", "22".repeat(32).as_str(), "", "zap"]).unwrap(),
+            ])
+            .sign_with_keys(host)
+            .unwrap()
+    }
+
+    #[test]
+    fn buyer_broadcasts_a_matching_nip_oa_attestation() {
+        let host = Keys::generate();
+        let buyer = Keys::generate();
+        let agent = Keys::generate();
+        let request = request(&host, &buyer, &agent);
+        let claim = Event::from_json(
+            owner_attestation_event(&request.as_json(), &buyer, "lno1agentoffer").unwrap(),
+        )
+        .unwrap();
+        let auth = claim
+            .tags
+            .iter()
+            .find(|tag| tag.as_slice().first().map(String::as_str) == Some("auth"))
+            .unwrap();
+        let auth_json = serde_json::to_string(auth.as_slice()).unwrap();
+
+        assert_eq!(claim.kind, Kind::Custom(40002));
+        assert_eq!(claim.pubkey, buyer.public_key());
+        assert!(claim
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["offer", "lno1agentoffer"]));
+        assert_eq!(
+            buzz_sdk_pkg::nip_oa::verify_auth_tag(&auth_json, &agent.public_key()).unwrap(),
+            buyer.public_key()
+        );
+    }
+
+    #[test]
+    fn a_different_buyer_cannot_accept_the_request() {
+        let host = Keys::generate();
+        let buyer = Keys::generate();
+        let request = request(&host, &buyer, &Keys::generate());
+
+        assert!(
+            owner_attestation_event(&request.as_json(), &Keys::generate(), "lno1agentoffer")
+                .is_err()
+        );
     }
 }
 

@@ -41,7 +41,6 @@ import {
 } from "./useMentionSendFlow.helpers";
 import { buildAgentAddressMentionTags } from "@/features/messages/lib/agentAddressMention.mjs";
 import type { UseMentionSendFlowOptions } from "./useMentionSendFlow.types";
-
 export function useMentionSendFlow({
   channelId,
   channelLinks,
@@ -582,8 +581,11 @@ export function useMentionSendFlow({
             onComplete: async (uploaded, signal) => {
               try {
                 await finishSend(uploaded, signal);
-              } catch {
+              } catch (error) {
                 restoreComposerAfterFailure();
+                toast.error(
+                  getErrorMessage(error, "The message could not be sent."),
+                );
               } finally {
                 settleUpload();
               }
@@ -609,8 +611,13 @@ export function useMentionSendFlow({
         if (!preparedUpload) {
           try {
             await finishSend([]);
-          } catch {
+          } catch (error) {
             restoreComposerAfterFailure();
+            // A paid instruction that fails to publish must say so: the
+            // checkout already closed, so silence here reads as "sent".
+            toast.error(
+              getErrorMessage(error, "The message could not be sent."),
+            );
           }
         }
       } catch (error) {

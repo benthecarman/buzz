@@ -112,6 +112,7 @@ export function UserProfilePersonaDialogs({
         open={personaDialogState !== null}
         submitLabel={personaDialogState?.submitLabel ?? "Save"}
         title={personaDialogState?.title ?? "Agent"}
+        walletAgent={personaDialogState?.walletAgent}
       />
       <PersonaDeleteDialog
         instanceCount={instanceCount}

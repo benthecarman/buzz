@@ -5,6 +5,7 @@ import {
   buildChannelAuxDeletionFilter,
   buildChannelAuxFilter,
   buildChannelReactionAuxFilter,
+  buildChannelRuntimeZapFilter,
   buildChannelStructuralAuxFilter,
   buildHuddleTtsLiveFilter,
 } from "./relayChannelFilters.ts";
@@ -40,11 +41,19 @@ test("buildChannelAuxDeletionFilter keys on #e only, no #h", () => {
   assert.equal("#h" in filter, false);
 });
 
-test("buildChannelReactionAuxFilter fetches only kind:7 by #e", () => {
+test("buildChannelReactionAuxFilter fetches reactions and zaps by #e", () => {
   const filter = buildChannelReactionAuxFilter(CHANNEL, IDS);
-  assert.deepEqual(filter.kinds, [7]);
+  assert.deepEqual(filter.kinds, [7, 9736]);
   assert.deepEqual(filter["#e"], IDS);
   assert.equal("#h" in filter, false);
+});
+
+test("buildChannelRuntimeZapFilter fetches channel payment zaps", () => {
+  assert.deepEqual(buildChannelRuntimeZapFilter(CHANNEL), {
+    kinds: [9736],
+    "#h": [CHANNEL],
+    limit: 10_000,
+  });
 });
 
 test("buildChannelStructuralAuxFilter excludes reactions", () => {

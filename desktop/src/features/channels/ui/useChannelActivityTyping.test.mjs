@@ -90,6 +90,19 @@ describe("mergeMemberAgentFlagsIntoProfiles", () => {
     assert.equal(merged[AGENT]?.ownerPubkey, null);
   });
 
+  it("copies an agent owner from channel membership", () => {
+    const merged = mergeMemberAgentFlagsIntoProfiles({}, [
+      {
+        pubkey: AGENT,
+        role: "bot",
+        isAgent: true,
+        ownerPubkey: AGENT_2,
+      },
+    ]);
+
+    assert.equal(merged[AGENT]?.ownerPubkey, AGENT_2);
+  });
+
   it("flags an isAgent-only member (non-bot role) as an agent", () => {
     const merged = mergeMemberAgentFlagsIntoProfiles({}, [
       { pubkey: AGENT, role: "member", isAgent: true },

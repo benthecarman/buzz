@@ -8,11 +8,13 @@ repository.workspace = true
 description = "Core types, event verification, and filter matching for Buzz"
 
 [features]
-test-utils = []
+test-utils = ["dep:lightning-payer-proof-ldk"]
 
 [dependencies]
 base64     = { workspace = true }
 nostr      = { workspace = true }
+lightning-payer-proof = { workspace = true }
+lightning-payer-proof-ldk = { workspace = true, optional = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }
@@ -26,5 +28,8 @@ subtle            = { workspace = true }
 zeroize           = { workspace = true }
 percent-encoding  = "2.3"
 url               = { workspace = true }
+
+[dev-dependencies]
+lightning-payer-proof-ldk = { workspace = true }
 
 # NO tokio, NO sqlx, NO redis, NO axum — zero I/O dependencies

@@ -498,6 +498,7 @@ fn member(pubkey: &str) -> crate::models::ChannelMemberInfo {
         is_agent: false,
         joined_at: None,
         display_name: None,
+        owner_pubkey: None,
     }
 }
 

@@ -44,6 +44,7 @@ import {
   recordTimeoutFromRejection,
 } from "@/features/moderation/lib/timeoutStore";
 import { relayClient, setVisibleChannel } from "@/shared/api/relayClient";
+import { buildChannelRuntimeZapFilter } from "@/shared/api/relayChannelFilters";
 import { customEmojiQueryKey } from "@/features/custom-emoji/hooks";
 import { channelsQueryKey } from "@/features/channels/hooks";
 import { reactionEmojiUrl } from "@/shared/api/customEmoji";
@@ -309,6 +310,20 @@ export function useChannelMessagesQuery(channel: Channel | null) {
         previousMessages,
         signal,
       );
+    },
+    staleTime: 5 * 60 * 1_000,
+    gcTime: 60 * 60 * 1_000,
+  });
+}
+
+export function useChannelRuntimeZapsQuery(channel: Channel | null) {
+  const channelId = channel?.id ?? "none";
+  return useQuery({
+    enabled: channel !== null && channel.channelType !== "forum",
+    queryKey: ["channel-runtime-zaps", channelId],
+    queryFn: () => {
+      if (!channel) throw new Error("No channel selected.");
+      return relayClient.fetchEvents(buildChannelRuntimeZapFilter(channel.id));
     },
     staleTime: 5 * 60 * 1_000,
     gcTime: 60 * 60 * 1_000,

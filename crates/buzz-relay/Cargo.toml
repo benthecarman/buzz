@@ -37,7 +37,7 @@ tokio-util = { workspace = true, features = ["io"] }
 tower = { workspace = true }
 tower-http = { workspace = true }
 nostr = { workspace = true }
-lightning = { workspace = true }
+lightning-payer-proof = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

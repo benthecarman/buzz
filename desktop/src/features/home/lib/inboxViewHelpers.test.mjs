@@ -13,6 +13,7 @@ import {
   matchesInboxFilter,
   toInboxContextMessage,
   toTimelineMessage,
+  usesInboxSystemRow,
 } from "./inboxViewHelpers.ts";
 
 test("Inbox uses the dedicated reminder list instead of feed reminder rows", () => {
@@ -21,6 +22,23 @@ test("Inbox uses the dedicated reminder list instead of feed reminder rows", () 
   const items = [message, reminder];
 
   assert.deepEqual(filterInboxItems(items), [message]);
+});
+
+test("Inbox routes DM creation events to the system row", () => {
+  const dmCreated = {
+    kind: 40099,
+    content: JSON.stringify({
+      actor: "9979493bb7b3a01a85360c08944eb0728df5e7c67beedf77343d9542fda3dd3a",
+      participants: [
+        "9979493bb7b3a01a85360c08944eb0728df5e7c67beedf77343d9542fda3dd3a",
+        "e1ff3bfdd4e40315959b08b4fcc8245eaa514637e1d4ec2ae166b743341be1af",
+      ],
+      type: "dm_created",
+    }),
+  };
+
+  assert.equal(usesInboxSystemRow(dmCreated), true);
+  assert.equal(usesInboxSystemRow({ kind: 9 }), false);
 });
 
 test("hasInboxThreadContext finds replies in the grouped row or loaded context", () => {
@@ -126,6 +144,10 @@ test("Inbox All includes each personally relevant message source", () => {
         pubkey: "human",
         tags: [["a", `30617:${"a".repeat(64)}:buzz`]],
       },
+    },
+    {
+      categories: ["activity"],
+      item: { channelType: null, kind: 9736, pubkey: "human", tags: [] },
     },
   ];
 

@@ -4,6 +4,7 @@ import {
   CHANNEL_TIMELINE_CONTENT_KINDS,
   HOME_MENTION_EVENT_KINDS,
   KIND_DELETION,
+  KIND_BOLT12_ZAP,
   KIND_NIP29_DELETE_EVENT,
   KIND_REACTION,
   KIND_STREAM_MESSAGE,
@@ -119,7 +120,7 @@ export function buildChannelStructuralAuxFilter(
 }
 
 /**
- * Reactions-only filter for the message rows the GUI is currently rendering.
+ * Reaction and zap filter for the message rows the GUI currently renders.
  * Keep this separate from structural aux backfill so the slow kind:5 deletion
  * scan cannot delay reaction pills that affect visible pixels right now.
  */
@@ -127,7 +128,21 @@ export function buildChannelReactionAuxFilter(
   _channelId: string,
   messageIds: string[],
 ): RelaySubscriptionFilter {
-  return buildChannelAuxKindFilter(messageIds, [KIND_REACTION]);
+  return buildChannelAuxKindFilter(messageIds, [
+    KIND_REACTION,
+    KIND_BOLT12_ZAP,
+  ]);
+}
+
+/** Runtime payment zaps target the global pricing event, not a message row. */
+export function buildChannelRuntimeZapFilter(
+  channelId: string,
+): RelaySubscriptionFilter {
+  return {
+    kinds: [KIND_BOLT12_ZAP],
+    "#h": [channelId],
+    limit: MAX_HISTORICAL_LIMIT,
+  };
 }
 
 export function buildChannelAuxDeletionFilter(

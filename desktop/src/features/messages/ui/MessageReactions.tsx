@@ -2,8 +2,10 @@ import { SmilePlus } from "lucide-react";
 import * as React from "react";
 
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
-import type { TimelineReaction } from "@/features/messages/types";
+import type { TimelineReaction, TimelineZap } from "@/features/messages/types";
 import { recordQuickReactionEmoji } from "@/features/messages/ui/useQuickReactionEmojis";
+import bitcoinIconUrl from "@/features/profile/assets/bitcoin.svg?inline";
+import { formatBitcoin } from "@/features/wallet/lib/formatBitcoin";
 import { cn } from "@/shared/lib/cn";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
@@ -144,6 +146,8 @@ function ReactionPopoverContent({ reaction }: { reaction: TimelineReaction }) {
 export function MessageReactions({
   messageId,
   reactions,
+  zaps = [],
+  optimisticZapAmount = null,
   canToggle,
   pending,
   onSelect,
@@ -153,6 +157,8 @@ export function MessageReactions({
 }: {
   messageId: string;
   reactions: TimelineReaction[];
+  zaps?: TimelineZap[];
+  optimisticZapAmount?: number | null;
   canToggle: boolean;
   pending: boolean;
   onSelect: (emoji: string) => void;
@@ -161,6 +167,11 @@ export function MessageReactions({
   onBurstEmojiRendered?: (emoji: string) => void;
 }) {
   const { burstEmoji } = useEmojiBurst();
+  const hasOptimisticZap = optimisticZapAmount !== null;
+  const zapAmount =
+    zaps.reduce((total, zap) => total + zap.amount, 0) +
+    (optimisticZapAmount ?? 0);
+  const zapCount = zaps.length + (hasOptimisticZap ? 1 : 0);
   const [pendingBadgeBurstEmoji, setPendingBadgeBurstEmoji] = React.useState<
     string | null
   >(null);
@@ -247,7 +258,7 @@ export function MessageReactions({
     return cancelFrame;
   }, [badgeBurstEmoji, burstEmoji, onBurstEmojiRendered, reactions]);
 
-  if (reactions.length === 0) {
+  if (reactions.length === 0 && zapCount === 0) {
     return null;
   }
 
@@ -259,6 +270,7 @@ export function MessageReactions({
       )}
       data-testid="message-reactions"
     >
+      {zapCount > 0 ? <ZapPill amount={zapAmount} count={zapCount} /> : null}
       {reactions.map((reaction) => (
         <ReactionPill
           key={`${messageId}-${reaction.emoji}`}
@@ -279,6 +291,33 @@ export function MessageReactions({
         />
       ) : null}
     </div>
+  );
+}
+
+function ZapPill({ amount, count }: { amount: number; count: number }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={`${formatBitcoin(amount)} across ${count} ${count === 1 ? "zap" : "zaps"}`}
+          className={cn(
+            REACTION_PILL_BASE_CLASSES,
+            "min-w-12 cursor-pointer justify-center gap-1.5 border-border/70 bg-muted/70 px-2 text-foreground/90",
+          )}
+          data-testid="message-zap"
+          type="button"
+        >
+          <img
+            alt=""
+            aria-hidden="true"
+            className="h-5 w-5"
+            src={bitcoinIconUrl}
+          />
+          <span>{amount.toLocaleString()}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{count === 1 ? "1 zap" : `${count} zaps`}</TooltipContent>
+    </Tooltip>
   );
 }
 

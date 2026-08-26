@@ -104,21 +104,8 @@ mod tests {
     }
 
     #[test]
-    fn background_reconciliation_does_not_contact_the_wallet() {
-        let source = include_str!("../commands/wallet/enabled/zap_commands.rs");
-        let background_start = source
-            .find("pub(crate) async fn reconcile_wallet_background_once")
-            .expect("background reconciler exists");
-        let background_end = source[background_start..]
-            .find("async fn reconcile_paying_zap_attempts")
-            .map(|offset| background_start + offset)
-            .expect("background reconciler has a boundary");
-        let background_source = &source[background_start..background_end];
-        for forbidden in ["provider_for(", "provider.poll_updates("] {
-            assert!(
-                !background_source.contains(forbidden),
-                "background zap sync contacted the wallet through {forbidden}"
-            );
-        }
+    fn wallet_protocol_does_not_call_the_lexe_adapter() {
+        let source = include_str!("zap.rs");
+        assert!(!source.contains("lexe_provider"));
     }
 }

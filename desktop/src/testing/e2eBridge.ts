@@ -24,7 +24,12 @@ import type {
   FeedItemCategory,
   RelayEvent,
 } from "@/shared/api/types";
-import type { WalletTransaction } from "@/features/wallet/types";
+import type {
+  WalletNwcClient,
+  WalletNwcDefaultPolicy,
+  WalletNwcPolicyUpdate,
+  WalletTransaction,
+} from "@/features/wallet/types";
 import { getMarkdownParseCount } from "@/shared/ui/markdown/nodeCache";
 import { syncAgentTurnsFromEvents } from "@/features/agents/activeAgentTurnsStore";
 import { recordTimeoutFromRejection } from "@/features/moderation/lib/timeoutStore";
@@ -452,6 +457,9 @@ type E2eConfig = {
     walletBalance?: number;
     walletSpendableBalance?: number;
     walletTransactions?: WalletTransaction[];
+    walletNwcClients?: WalletNwcClient[];
+    /** Current mocked default NWC policy, mutable by the set-default handler. */
+    walletDefaultNwcPolicy?: WalletNwcDefaultPolicy;
     /** Delay wallet history reads to exercise snapshot ordering races. */
     walletTransactionDelayMs?: number;
     /** Exact persisted request returned for pending-payment reconciliation. */
@@ -9094,6 +9102,28 @@ async function handleCreateManagedAgent(
   };
 
   mockManagedAgents.unshift(managedAgent);
+  if (config?.mock) {
+    const defaultPolicy = config.mock.walletDefaultNwcPolicy ?? {
+      mode: "manual" as const,
+      budgetAmount: null,
+      budgetPeriod: null,
+    };
+    const clients = config.mock.walletNwcClients ?? [];
+    config.mock.walletNwcClients = [
+      {
+        agentPubkey: pubkey,
+        agentName: name,
+        mode: defaultPolicy.mode,
+        budgetAmount: defaultPolicy.budgetAmount,
+        budgetPeriod: defaultPolicy.budgetPeriod,
+        spentAmount: 0,
+        remainingAmount: defaultPolicy.budgetAmount,
+        periodEndsAtMs:
+          defaultPolicy.mode === "budget" ? Date.now() + 86_400_000 : null,
+      },
+      ...clients.filter((client) => client.agentPubkey !== pubkey),
+    ];
+  }
   if (args.input.spawnAfterCreate && managedAgent.backend.type === "local") {
     // The real create command spawns a pair runtime on the agent's effective
     // relay (`start_local_agent_with_preflight`), so mirror that row here.
@@ -12659,6 +12689,62 @@ export function maybeInstallE2eTauriMocks() {
           lightningBalance: activeConfig?.mock?.walletBalance ?? 21_000,
           onchainBalance: 0,
         };
+      case "wallet_list_nwc_clients":
+        return activeConfig?.mock?.walletNwcClients ?? [];
+      case "wallet_set_nwc_policy": {
+        const update = (payload as { update: WalletNwcPolicyUpdate }).update;
+        const clients = activeConfig?.mock?.walletNwcClients ?? [];
+        const current = clients.find(
+          (client) => client.agentPubkey === update.agentPubkey,
+        ) ?? {
+          agentPubkey: update.agentPubkey,
+          agentName:
+            mockManagedAgents.find(
+              (agent) => agent.pubkey === update.agentPubkey,
+            )?.name ?? "Agent",
+          mode: "manual" as const,
+          budgetAmount: null,
+          budgetPeriod: null,
+          spentAmount: 0,
+          remainingAmount: null,
+          periodEndsAtMs: null,
+        };
+        const saved: WalletNwcClient = {
+          ...current,
+          mode: update.mode,
+          budgetAmount: update.budgetAmount,
+          budgetPeriod: update.budgetPeriod,
+          spentAmount: 0,
+          remainingAmount: update.budgetAmount,
+          periodEndsAtMs:
+            update.mode === "budget" ? Date.now() + 86_400_000 : null,
+        };
+        if (activeConfig?.mock) {
+          activeConfig.mock.walletNwcClients = [
+            saved,
+            ...clients.filter(
+              (client) => client.agentPubkey !== saved.agentPubkey,
+            ),
+          ];
+        }
+        return saved;
+      }
+      case "wallet_get_default_nwc_policy":
+        return (
+          activeConfig?.mock?.walletDefaultNwcPolicy ?? {
+            mode: "manual",
+            budgetAmount: null,
+            budgetPeriod: null,
+          }
+        );
+      case "wallet_set_default_nwc_policy": {
+        const update = (payload as { update: WalletNwcDefaultPolicy }).update;
+        const saved: WalletNwcDefaultPolicy = { ...update };
+        if (activeConfig?.mock) {
+          activeConfig.mock.walletDefaultNwcPolicy = saved;
+        }
+        return saved;
+      }
       case "wallet_create_receive_request": {
         return {
           bip321Uri: `bitcoin:?lightning=${VALID_INVOICE}&lno=${VALID_OFFER}`,
@@ -12677,6 +12763,7 @@ export function maybeInstallE2eTauriMocks() {
           (payload as { destination?: string }).destination ?? VALID_INVOICE;
         return {
           normalizedDestination: destination,
+          instructionType: "bolt11",
           description: "Lightning payment",
           amount: null,
           minAmount: 1,
@@ -13860,6 +13947,34 @@ export function maybeInstallE2eTauriMocks() {
             (payload as { createdAt?: number }).createdAt,
           ),
         );
+      case "build_hosted_agent_owner_attestation": {
+        const request = JSON.parse(
+          (payload as { requestJson: string }).requestJson,
+        ) as RelayEvent;
+        const tag = (name: string) =>
+          request.tags.find((values) => values[0] === name);
+        const refs = request.tags.filter(
+          (values) => values[0] === "e" && ["plan", "zap"].includes(values[3]),
+        );
+        return JSON.stringify(
+          createMockEvent(
+            40002,
+            "",
+            [
+              tag("d") ?? [],
+              tag("h") ?? [],
+              ["p", request.pubkey],
+              tag("agent") ?? [],
+              tag("name") ?? [],
+              ["offer", "lno1mockhostedagentoffer"],
+              ["e", request.id, "", "claim-request"],
+              ...refs,
+              ["auth", "mock", "", "mock"],
+            ],
+            identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey,
+          ),
+        );
+      }
       case "nip44_encrypt_to_self":
         return (payload as { plaintext: string }).plaintext;
       case "nip44_decrypt_from_self":

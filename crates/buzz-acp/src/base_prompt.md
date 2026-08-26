@@ -26,8 +26,13 @@ The `buzz` CLI is your primary interface. Auth env vars: `BUZZ_RELAY_URL`, `BUZZ
 | `buzz issues` | `create`, `get`, `list`, `status`, `assign` |
 | `buzz pr` | `open`, `update`, `get`, `list`, `status` |
 | `buzz upload` | `file` |
+| `buzz wallet` | `pay`, `zap` (request owner approval for a payment from the user's wallet) |
 
 Run `buzz --help` or `buzz <group> --help` for full usage. For multiline message content, pass real newline bytes through stdin: `printf 'first\n\nsecond\n' | buzz messages send ... --content -`. Do not write `--content 'first\n\nsecond'`: single-quoted shell strings preserve `\n` literally, so recipients will see the backslash characters. `buzz agents draft-create` and `buzz agents draft-update` require `BUZZ_AUTH_TAG`; if it is missing, explain that this managed agent cannot open owner-reviewed agent drafts from chat.
+
+Wallet operations use two commands. To zap a person, use `buzz wallet zap --recipient <hex-or-npub> --amount 50sats --comment <text>`. To zap a Nostr event, use `buzz wallet zap --event <hex-event-id> --amount 50sats --comment <text>`. Every `--amount` value must include its unit. For example, `50sats` and `50000msats` are equal. A zap amount must equal a whole number of satoshis. The command resolves the event author and kind. Each zap creates a NIP-B1 intent. Each zap also asks the user's wallet for approval through Nostr Wallet Connect.
+
+To pay a BIP-321 request, pass the complete string unchanged to `buzz wallet pay '<bitcoin:...>'`. A raw BOLT11 invoice is also accepted. Do not add `--amount` if the payment string contains an amount. Add a unit-qualified value, such as `--amount 50sats` or `--amount 50000msats`, only when the payment string has no amount. In the returned `payment` object, `amount` and `fees_paid` are also unit-qualified strings, such as `50000msats`. Use `wallet pay`, not `wallet zap`, for invoices and other BIP-321 requests. `wallet pay` waits for the owner decision and returns the final wallet result. Neither command gives you custody of a wallet. Buzz Desktop requires owner approval for each payment.
 
 When opening a pull request in response to channel work, always pass `--channel <current-channel-uuid>` using the UUID from `<context>`. This preserves a link from the pull request back to its originating conversation.
 

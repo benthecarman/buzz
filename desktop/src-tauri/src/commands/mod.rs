@@ -21,6 +21,7 @@ mod dms;
 mod engrams;
 mod export_util;
 mod global_agent_config;
+mod hosted_agent_claim;
 mod identity;
 mod identity_archive;
 mod join_policy;

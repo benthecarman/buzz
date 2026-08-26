@@ -704,6 +704,7 @@ function InboxMessageDetailPane({
                   agentPubkeys={agentPubkeys}
                   canReply={canReply}
                   channelId={item.item.channelId}
+                  currentPubkey={currentPubkey}
                   isContinuation={isContinuation}
                   isFirst={index === 0}
                   isFocusHighlightVisible={isFocusHighlightVisible}
@@ -717,6 +718,7 @@ function InboxMessageDetailPane({
                   onEdit={canEditMessage ? handleSelectEditTarget : undefined}
                   onSelectReplyTarget={handleSelectReplyTarget}
                   onToggleReaction={onToggleReaction}
+                  profiles={profiles}
                   showUnreadBoundary={hasUnreadBoundary}
                   videoReviewCommentRootId={videoReviewPresentation.commentRootIdsByMessageId.get(
                     message.id,

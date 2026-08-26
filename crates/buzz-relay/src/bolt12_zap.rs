@@ -2,20 +2,19 @@
 
 use std::str::FromStr;
 
-use lightning::offers::{offer::Offer, payer_proof::PayerProof};
-use nostr::{Event, JsonUtil, Kind};
+use lightning_payer_proof::{verify, Offer};
+use nostr::{Event, JsonUtil, Kind, Tag};
 use thiserror::Error;
 
 use buzz_core::kind::{KIND_BOLT12_OFFER, KIND_BOLT12_ZAP, KIND_BOLT12_ZAP_INTENT};
-
-/// Temporary proof value used until wallet providers expose payer proofs.
-pub const PLACEHOLDER_PAYER_PROOF: &str = "placeholder";
 
 /// A settled zap after the complete signed proof chain passes validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedBolt12Zap {
     /// Settled zap event ID.
     pub event_id: String,
+    /// Payment hash that uniquely identifies the settled Lightning payment.
+    pub payment_hash: [u8; 32],
     /// Whole satoshis paid to the recipient.
     pub amount: u64,
     /// Comment from the signed zap intent.
@@ -94,7 +93,7 @@ fn require_matching_tag(outer: &Event, intent: &Event, name: &str) -> Result<(),
     Ok(())
 }
 
-fn validate_offer_event(event: &Event, recipient: &str) -> Result<(), Bolt12ZapError> {
+fn validate_offer_event(event: &Event, recipient: &str) -> Result<Vec<Offer>, Bolt12ZapError> {
     event
         .verify()
         .map_err(|error| Bolt12ZapError::new(format!("invalid offer event: {error}")))?;
@@ -113,20 +112,17 @@ fn validate_offer_event(event: &Event, recipient: &str) -> Result<(), Bolt12ZapE
                 .then(|| parts.get(1).map(String::as_str))
                 .flatten()
         })
+        .filter_map(|value| {
+            let offer = Offer::from_str(value).ok()?;
+            (offer.to_string() == value).then_some(offer)
+        })
         .collect::<Vec<_>>();
-    if offers.is_empty() || offers.iter().any(|offer| !is_canonical_offer(offer)) {
+    if offers.is_empty() {
         return Err(Bolt12ZapError::new(
-            "offer announcement must contain only canonical BOLT12 offers",
+            "offer announcement must contain a canonical BOLT12 offer",
         ));
     }
-    Ok(())
-}
-
-fn is_canonical_offer(value: &str) -> bool {
-    value.starts_with("lno1")
-        && !value.chars().any(char::is_whitespace)
-        && value == value.to_ascii_lowercase()
-        && Offer::from_str(value).is_ok_and(|offer| offer.to_string() == value)
+    Ok(offers)
 }
 
 /// Validate a settled BOLT12 zap and its embedded signed proof chain.
@@ -143,12 +139,17 @@ pub fn validate_bolt12_zap(event: &Event) -> Result<ValidatedBolt12Zap, Bolt12Za
     let description = exact_tag(event, "description")?;
     let offer_event_json = exact_tag(event, "offer_event")?;
     let proof = exact_tag(event, "proof")?;
-    let payer_proof = (proof != PLACEHOLDER_PAYER_PROOF)
-        .then(|| {
-            PayerProof::from_str(proof)
-                .map_err(|error| Bolt12ZapError::new(format!("invalid payer proof: {error:?}")))
-        })
-        .transpose()?;
+    if !proof.starts_with("lnp1")
+        || proof != proof.to_ascii_lowercase()
+        || proof.chars().any(char::is_whitespace)
+        || proof.contains('+')
+    {
+        return Err(Bolt12ZapError::new(
+            "payer proof is not canonically encoded",
+        ));
+    }
+    let payer_proof = verify(proof)
+        .map_err(|error| Bolt12ZapError::new(format!("invalid payer proof: {error}")))?;
 
     let amount_msats = amount_text
         .parse::<u64>()
@@ -158,13 +159,9 @@ pub fn validate_bolt12_zap(event: &Event) -> Result<ValidatedBolt12Zap, Bolt12Za
             "zap amount must be a positive whole-satoshi value",
         ));
     }
-    if payer_proof
-        .as_ref()
-        .and_then(PayerProof::invoice_amount_msats)
-        .is_some_and(|proof_amount| proof_amount != amount_msats)
-    {
+    if payer_proof.invoice_amount_msats() != Some(amount_msats) {
         return Err(Bolt12ZapError::new(
-            "zap amount does not match its payer proof",
+            "zap amount is missing from or does not match its payer proof",
         ));
     }
 
@@ -184,6 +181,33 @@ pub fn validate_bolt12_zap(event: &Event) -> Result<ValidatedBolt12Zap, Bolt12Za
         || exact_tag(&intent, "offer_event")? != offer_event_json
     {
         return Err(Bolt12ZapError::new("zap does not match its signed intent"));
+    }
+    let expected_proof_note = format!("nostr:nipB1:{}", intent.id.to_hex());
+    if payer_proof.proof_note().map(|note| note.0).as_deref() != Some(expected_proof_note.as_str())
+    {
+        return Err(Bolt12ZapError::new(
+            "payer proof does not name the signed zap intent",
+        ));
+    }
+    let payment_hash = payer_proof.payment_hash().0;
+    let mut expected_tags = intent
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().map(String::as_str) != Some("zap_id"))
+        .cloned()
+        .collect::<Vec<_>>();
+    expected_tags.extend([
+        Tag::parse(["description", intent.as_json().as_str()])
+            .map_err(|_| Bolt12ZapError::new("invalid canonical description tag"))?,
+        Tag::parse(["P", event.pubkey.to_hex().as_str()])
+            .map_err(|_| Bolt12ZapError::new("invalid canonical payer tag"))?,
+        Tag::parse(["proof", proof])
+            .map_err(|_| Bolt12ZapError::new("invalid canonical proof tag"))?,
+    ]);
+    if !event.tags.iter().eq(expected_tags.iter()) {
+        return Err(Bolt12ZapError::new(
+            "zap is not the canonical envelope for its intent and proof",
+        ));
     }
 
     let zap_id = exact_tag(&intent, "zap_id")?;
@@ -210,7 +234,15 @@ pub fn validate_bolt12_zap(event: &Event) -> Result<ValidatedBolt12Zap, Bolt12Za
         ));
     }
 
-    validate_offer_event(&offer_event, &recipient)?;
+    let offers = validate_offer_event(&offer_event, &recipient)?;
+    if !offers
+        .iter()
+        .any(|offer| payer_proof.pays_offers_recipient(offer))
+    {
+        return Err(Bolt12ZapError::new(
+            "payer proof does not pay an announced offer recipient",
+        ));
+    }
     if offer_event.created_at > intent.created_at {
         return Err(Bolt12ZapError::new(
             "zap intent predates its offer announcement",
@@ -226,6 +258,7 @@ pub fn validate_bolt12_zap(event: &Event) -> Result<ValidatedBolt12Zap, Bolt12Za
 
     Ok(ValidatedBolt12Zap {
         event_id: event.id.to_hex(),
+        payment_hash,
         amount: amount_msats / 1_000,
         comment: intent.content,
         intent_event_id: intent.id.to_hex(),
@@ -237,25 +270,45 @@ pub fn validate_bolt12_zap(event: &Event) -> Result<ValidatedBolt12Zap, Bolt12Za
 
 #[cfg(test)]
 mod tests {
-    use nostr::{EventBuilder, Keys, Tag};
+    use nostr::{EventBuilder, Keys, Tag, Timestamp};
 
     use super::*;
+    use buzz_core::payer_proof_test_utils::payer_proof_for_note;
 
-    const VALID_OFFER: &str =
-        "lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
+    const OTHER_OFFER_HEX: &str = "0802a4100a0c636f66666565206265616e731621035be5e9478209674a96e60f1f037f6176540fd001fa1d64694770c56a7709c42c";
 
-    fn tagged_zap(offer: &str, proof: &str) -> (Event, Event) {
-        let payer = Keys::generate();
+    fn decode_hex(value: &str) -> Vec<u8> {
+        hex::decode(value).unwrap()
+    }
+
+    fn offer_from_hex(value: &str) -> String {
+        Offer::try_from(decode_hex(value)).unwrap().to_string()
+    }
+
+    fn valid_offer() -> String {
+        payer_proof_for_note("").0
+    }
+
+    fn payer_keys() -> Keys {
+        Keys::parse("0101010101010101010101010101010101010101010101010101010101010101").unwrap()
+    }
+
+    fn tagged_zap_with_offers(offers: &[&str], proof: Option<&str>) -> (Event, Event) {
+        let payer = payer_keys();
         let recipient = Keys::generate();
         let offer_event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
-            .tag(Tag::parse(["offer", offer]).unwrap())
+            .tags(
+                offers
+                    .iter()
+                    .map(|offer| Tag::parse(["offer", *offer]).unwrap()),
+            )
             .sign_with_keys(&recipient)
             .unwrap();
         let target = "ab".repeat(32);
         let intent = EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP_INTENT as u16), "nice work")
             .tags([
                 Tag::parse(["p", recipient.public_key().to_hex().as_str()]).unwrap(),
-                Tag::parse(["amount", "21000"]).unwrap(),
+                Tag::parse(["amount", "42000"]).unwrap(),
                 Tag::parse(["offer_event", offer_event.as_json().as_str()]).unwrap(),
                 Tag::parse(["zap_id", "00112233445566778899aabbccddeeff"]).unwrap(),
                 Tag::parse(["e", target.as_str()]).unwrap(),
@@ -263,6 +316,15 @@ mod tests {
             ])
             .sign_with_keys(&payer)
             .unwrap();
+        let generated_proof;
+        let proof = match proof {
+            Some(proof) => proof,
+            None => {
+                generated_proof =
+                    payer_proof_for_note(&format!("nostr:nipB1:{}", intent.id.to_hex())).1;
+                &generated_proof
+            }
+        };
         let mut tags = intent
             .tags
             .iter()
@@ -281,29 +343,92 @@ mod tests {
         (intent, zap)
     }
 
+    fn tagged_zap(offer: &str, proof: Option<&str>) -> (Event, Event) {
+        tagged_zap_with_offers(&[offer], proof)
+    }
+
     #[test]
-    fn validates_complete_placeholder_proof_chain() {
-        let (intent, zap) = tagged_zap(VALID_OFFER, PLACEHOLDER_PAYER_PROOF);
+    fn validates_complete_payer_proof_chain() {
+        let offer = valid_offer();
+        let (intent, zap) = tagged_zap(&offer, None);
         let parsed = validate_bolt12_zap(&zap).unwrap();
         assert_eq!(parsed.event_id, zap.id.to_hex());
+        assert_eq!(
+            parsed.payment_hash,
+            verify(exact_tag(&zap, "proof").unwrap())
+                .unwrap()
+                .payment_hash()
+                .0
+        );
         assert_eq!(parsed.intent_event_id, intent.id.to_hex());
-        assert_eq!(parsed.amount, 21);
+        assert_eq!(parsed.amount, 42);
         assert_eq!(parsed.comment, "nice work");
         assert_eq!(parsed.target_event_id, Some("ab".repeat(32)));
     }
 
     #[test]
+    fn skips_invalid_offer_tags() {
+        let offer = valid_offer();
+        let (_, zap) = tagged_zap_with_offers(&["invalid-offer", &offer], None);
+        assert!(validate_bolt12_zap(&zap).is_ok());
+    }
+
+    #[test]
     fn rejects_noncanonical_offer() {
-        let (_, zap) = tagged_zap(
-            &VALID_OFFER[..VALID_OFFER.len() - 1],
-            PLACEHOLDER_PAYER_PROOF,
-        );
+        let offer = valid_offer();
+        let (_, zap) = tagged_zap(&offer[..offer.len() - 1], None);
         assert!(validate_bolt12_zap(&zap).is_err());
     }
 
     #[test]
     fn rejects_invalid_payer_proof() {
-        let (_, zap) = tagged_zap(VALID_OFFER, "lnp1qqqq");
+        let offer = valid_offer();
+        let (_, zap) = tagged_zap(&offer, Some("lnp1qqqq"));
+        assert!(validate_bolt12_zap(&zap).is_err());
+    }
+
+    #[test]
+    fn rejects_proof_bound_to_another_intent() {
+        let offer = valid_offer();
+        let (_, wrong_proof, _) = payer_proof_for_note(&format!("nostr:nipB1:{}", "00".repeat(32)));
+        let (_, zap) = tagged_zap(&offer, Some(&wrong_proof));
+        assert!(validate_bolt12_zap(&zap).is_err());
+    }
+
+    #[test]
+    fn accepts_an_outer_timestamp_independent_of_the_invoice() {
+        let offer = valid_offer();
+        let (_, zap) = tagged_zap(&offer, None);
+        let original = validate_bolt12_zap(&zap).unwrap();
+        let altered = EventBuilder::new(zap.kind, zap.content.clone())
+            .tags(zap.tags.iter().cloned())
+            .custom_created_at(Timestamp::from(zap.created_at.as_secs() + 1))
+            .sign_with_keys(&payer_keys())
+            .unwrap();
+        let altered = validate_bolt12_zap(&altered).unwrap();
+
+        assert_ne!(altered.event_id, original.event_id);
+        assert_eq!(altered.payment_hash, original.payment_hash);
+    }
+
+    #[test]
+    fn rejects_extra_outer_tags() {
+        let offer = valid_offer();
+        let (_, zap) = tagged_zap(&offer, None);
+        let mut tags = zap.tags.iter().cloned().collect::<Vec<_>>();
+        tags.push(Tag::parse(["client", "alternate-wrapper"]).unwrap());
+        let altered = EventBuilder::new(zap.kind, zap.content.clone())
+            .tags(tags)
+            .custom_created_at(zap.created_at)
+            .sign_with_keys(&payer_keys())
+            .unwrap();
+
+        assert!(validate_bolt12_zap(&altered).is_err());
+    }
+
+    #[test]
+    fn rejects_proof_for_another_offer_recipient() {
+        let (_, zap) = tagged_zap(&offer_from_hex(OTHER_OFFER_HEX), None);
         assert!(validate_bolt12_zap(&zap).is_err());
     }
 }

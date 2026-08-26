@@ -2,7 +2,10 @@ import * as React from "react";
 
 import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import type { InboxContextMessage } from "@/features/home/lib/inbox";
-import { toTimelineMessage } from "@/features/home/lib/inboxViewHelpers";
+import {
+  toTimelineMessage,
+  usesInboxSystemRow,
+} from "@/features/home/lib/inboxViewHelpers";
 import { formatTimeWithoutDayPeriod } from "@/features/messages/lib/dateFormatters";
 import { formatItemTimestamp } from "@/shared/lib/datetime";
 import type { TimelineMessage } from "@/features/messages/types";
@@ -11,10 +14,13 @@ import { MessageActionBar } from "@/features/messages/ui/MessageActionBar";
 import { MessageAgentOwner } from "@/features/messages/ui/MessageAgentOwner";
 import { MessageMetaSeparator } from "@/features/messages/ui/MessageHeader";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
+import { SystemMessageRow } from "@/features/messages/ui/SystemMessageRow";
 import { UnreadDivider } from "@/features/messages/ui/UnreadDivider";
 import { useReactionHandler } from "@/features/messages/ui/useReactionHandler";
+import { useMessageZap } from "@/features/messages/ui/useMessageZap";
 import { useMessageEmoji } from "@/features/messages/lib/useMessageEmoji";
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
+import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelineMessages";
@@ -36,6 +42,7 @@ type InboxMessageRowProps = {
   isFirst?: boolean;
   isFocusHighlightVisible: boolean;
   message: InboxDisplayMessage;
+  currentPubkey?: string;
   onDelete?: (message: InboxDisplayMessage) => void;
   onEdit?: (message: InboxDisplayMessage) => void;
   onSelectReplyTarget: (message: InboxDisplayMessage) => void;
@@ -45,11 +52,46 @@ type InboxMessageRowProps = {
     remove: boolean,
   ) => Promise<void>;
   showUnreadBoundary?: boolean;
+  profiles?: UserProfileLookup;
   videoReviewCommentRootId?: string;
   videoReviewContext?: VideoReviewContext;
 };
 
 export function InboxMessageRow({
+  currentPubkey,
+  message,
+  onToggleReaction,
+  profiles,
+  showUnreadBoundary = false,
+  ...props
+}: InboxMessageRowProps) {
+  if (usesInboxSystemRow(message)) {
+    return (
+      <div className="relative px-2">
+        {showUnreadBoundary ? <UnreadDivider /> : null}
+        <SystemMessageRow
+          currentPubkey={currentPubkey}
+          message={toTimelineMessage(message)}
+          onToggleReaction={onToggleReaction}
+          profiles={profiles}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <StandardInboxMessageRow
+      {...props}
+      currentPubkey={currentPubkey}
+      message={message}
+      onToggleReaction={onToggleReaction}
+      profiles={profiles}
+      showUnreadBoundary={showUnreadBoundary}
+    />
+  );
+}
+
+function StandardInboxMessageRow({
   agentPubkeys,
   canReply,
   channelId = null,
@@ -87,6 +129,7 @@ export function InboxMessageRow({
     errorMessage: reactionErrorMessage,
     select: handleReactionSelect,
   } = useReactionHandler(timelineMessage, onToggleReaction);
+  const zapAction = useMessageZap({ channelId, message: timelineMessage });
   // "Is this pubkey an agent" = the community-scoped baseline every surface
   // shares plus this surface's extras passed via `agentPubkeys` (HomeView
   // folds feed-profile `isAgent` flags in). Mirrors MessageRow's predicate.
@@ -149,7 +192,11 @@ export function InboxMessageRow({
             : "home-inbox-context-message"
         }
       >
-        {canReply || canToggleReactions || onDelete || onEdit ? (
+        {canReply ||
+        canToggleReactions ||
+        onDelete ||
+        onEdit ||
+        zapAction.canZap ? (
           <div
             className={cn(
               "absolute right-2 top-1 z-10",
@@ -172,6 +219,7 @@ export function InboxMessageRow({
               }
               reactionErrorMessage={reactionErrorMessage}
               reactions={reactions}
+              zapAction={zapAction}
             />
           </div>
         ) : null}

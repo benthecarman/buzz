@@ -27,6 +27,7 @@ import { UserAvatar } from "@/shared/ui/UserAvatar";
 import {
   addedByActionPrefix,
   describeChannelTextFieldChange,
+  describeConversationEvent,
   toInlineName,
 } from "../lib/systemEventCopy";
 import { MessageAgentOwner } from "./MessageAgentOwner";
@@ -587,6 +588,14 @@ function describeSystemEvent(
         title: actorName,
         action: "created this channel",
       };
+    case "dm_created": {
+      const action = describeConversationEvent(payload.type);
+      if (!payload.actor || !action) return null;
+      return {
+        title: actorName,
+        action,
+      };
+    }
     case "channel_archived":
       return {
         title: actorName,

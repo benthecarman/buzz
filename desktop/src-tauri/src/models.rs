@@ -170,6 +170,9 @@ pub struct ChannelMemberInfo {
     #[serde(default)]
     pub joined_at: Option<String>,
     pub display_name: Option<String>,
+    /// Buyer verified by the agent's NIP-OA owner proof.
+    #[serde(default)]
+    pub owner_pubkey: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

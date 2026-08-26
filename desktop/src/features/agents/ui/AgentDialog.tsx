@@ -21,6 +21,9 @@ import {
   type AgentDefinitionSubmitOptions,
 } from "./AgentDefinitionDialog";
 import { WhereToRunSection } from "./WhereToRunSection";
+import type { WalletNwcDefaultPolicy } from "@/features/wallet/types";
+import { AgentSpendingEditor } from "@/features/wallet/ui/AgentSpendingEditor";
+import { useNewAgentWalletPolicy } from "@/features/wallet/ui/NewAgentSpendingEditor";
 import {
   canSubmitWhereToRun,
   emptyWhereToRunDraft,
@@ -42,6 +45,7 @@ type AgentDialogCreateProps = {
     input: CreatePersonaInput | UpdatePersonaInput,
     intent: AgentCreateIntent,
     backendIntent: BackendIntent | null,
+    options: { walletPolicy: WalletNwcDefaultPolicy | null },
   ) => Promise<boolean>;
 };
 
@@ -78,6 +82,7 @@ type AgentDialogDefinitionEditProps = {
     options: AgentDefinitionSubmitOptions,
   ) => Promise<unknown>;
   publishCatalogUpdatesOnSave?: boolean;
+  walletAgent?: { name: string; pubkey: string };
 };
 
 type AgentDialogProps =
@@ -116,8 +121,21 @@ export function AgentDialog(props: AgentDialogProps) {
   if (props.mode === "definition-edit") {
     // A definition has no instance and no run draft, so the run location stays
     // unknown and the warning uses its local-wording fallback.
-    const { mode: _mode, ...definitionProps } = props;
-    return <AgentDefinitionDialog {...definitionProps} />;
+    const { mode: _mode, walletAgent, ...definitionProps } = props;
+    if (!walletAgent) {
+      return <AgentDefinitionDialog {...definitionProps} />;
+    }
+    return (
+      <AgentDefinitionDialog
+        {...definitionProps}
+        afterRespondTo={
+          <AgentSpendingEditor
+            agentName={walletAgent.name}
+            agentPubkey={walletAgent.pubkey}
+          />
+        }
+      />
+    );
   }
   return <AgentCreateDialogRouter {...props} />;
 }
@@ -135,6 +153,7 @@ function AgentCreateDialogRouter({
   onSubmitDefinition,
 }: AgentDialogCreateProps) {
   const [runDraft, setRunDraft] = React.useState(emptyWhereToRunDraft);
+  const wallet = useNewAgentWalletPolicy(() => onDirtyChange?.(true));
   const initialValues = React.useMemo(
     () => providedInitialValues ?? createPersonaDialogState().initialValues,
     [providedInitialValues],
@@ -147,17 +166,20 @@ function AgentCreateDialogRouter({
     // because it owns the "Run on" draft.
     <AgentRunLocationProvider runLocation={runLocationForRunOn(runDraft.runOn)}>
       <AgentDefinitionDialog
-        createRunSection={
-          <WhereToRunSection
-            draft={runDraft}
-            isPending={isDefinitionPending}
-            onDraftChange={(nextDraft) => {
-              setRunDraft(nextDraft);
-              onDirtyChange?.(true);
-            }}
-          />
+        afterRespondTo={
+          <>
+            {wallet.editor}
+            <WhereToRunSection
+              draft={runDraft}
+              isPending={isDefinitionPending}
+              onDraftChange={(nextDraft) => {
+                setRunDraft(nextDraft);
+                onDirtyChange?.(true);
+              }}
+            />
+          </>
         }
-        createSubmitBlocked={!canSubmitWhereToRun(runDraft)}
+        createSubmitBlocked={!canSubmitWhereToRun(runDraft) || !wallet.valid}
         description={copy.description}
         embedded={embedded}
         error={definitionError}
@@ -170,6 +192,7 @@ function AgentCreateDialogRouter({
             input,
             "definition_start",
             resolveBackendIntent(runDraft),
+            { walletPolicy: wallet.policy },
           );
           if (submitted) {
             onDirtyChange?.(false);

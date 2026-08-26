@@ -8,6 +8,7 @@ import type {
   RelayEvent,
   RespondToMode,
 } from "@/shared/api/types";
+import type { WalletVerifiedZapEvent } from "@/features/wallet/types";
 
 export function useIndependentThreadPanel(args: {
   activeChannel: Channel | null;
@@ -24,6 +25,7 @@ export function useIndependentThreadPanel(args: {
   personaLookup: Map<string, string>;
   respondToLookup: Map<string, RespondToMode>;
   relaySelfPubkey: string | null | undefined;
+  verifiedZapEvents?: ReadonlyMap<string, WalletVerifiedZapEvent>;
 }) {
   // Depend on the individual fields, NOT the `args` object — callers pass a
   // fresh object literal every render, so `[args]` never memoizes and the
@@ -50,6 +52,7 @@ export function useIndependentThreadPanel(args: {
         args.respondToLookup,
         args.relaySelfPubkey,
         args.ownerProfiles,
+        args.verifiedZapEvents,
       ),
     [
       args.channelEvents,
@@ -66,6 +69,7 @@ export function useIndependentThreadPanel(args: {
       args.personaLookup,
       args.respondToLookup,
       args.relaySelfPubkey,
+      args.verifiedZapEvents,
     ],
   );
 }

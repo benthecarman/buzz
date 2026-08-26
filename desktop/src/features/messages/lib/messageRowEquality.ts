@@ -1,6 +1,7 @@
 import type {
   TimelineMessage,
   TimelineReaction,
+  TimelineZap,
 } from "@/features/messages/types";
 
 /**
@@ -64,6 +65,28 @@ export function reactionsEqual(
       ) {
         return false;
       }
+    }
+  }
+  return true;
+}
+
+export function zapsEqual(
+  a: TimelineZap[] | undefined,
+  b: TimelineZap[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (
+      left.amount !== right.amount ||
+      left.comment !== right.comment ||
+      left.intentEventId !== right.intentEventId ||
+      left.payerPubkey !== right.payerPubkey ||
+      left.recipientPubkey !== right.recipientPubkey
+    ) {
+      return false;
     }
   }
   return true;

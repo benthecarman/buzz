@@ -6,24 +6,125 @@ use super::{
 };
 use crate::{
     app_state::AppState,
-    relay::{relay_api_base_url_with_override, submit_signed_event_at_with_keys},
+    commands::wallet_nwc::reconcile_nwc_budget,
+    relay::{
+        relay_api_base_url_with_override, submit_signed_event_at_with_keys,
+        submit_signed_event_at_with_keys_classified,
+    },
     wallet::{
         models::{
             WalletError, WalletOfferSendRequest, WalletPaymentStatus, WalletProfileZapDraft,
             WalletProfileZapRequest, WalletProfileZapResult, WalletRecipientOffer,
         },
         provider::WalletPaymentMatch,
+        send::{SendAttemptState, SendAttemptStore},
         zap::{ZapAttempt, ZapAttemptState, ZapAttemptStore, ZapTarget},
     },
 };
+
+fn zap_payment_personal_note(
+    channel_id: Option<&str>,
+    target_event_id: Option<&str>,
+    intent_event_id: &str,
+) -> String {
+    if channel_id.is_some() {
+        format!("Buzz hosted agent payment {intent_event_id}")
+    } else if target_event_id.is_some() {
+        format!("Buzz message zap {intent_event_id}")
+    } else {
+        format!("Buzz profile payment {intent_event_id}")
+    }
+}
+
+fn reconciliation_requires_provider<T>(candidates: &[T]) -> bool {
+    !candidates.is_empty()
+}
 
 pub(crate) async fn reconcile_wallet_background_once(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<bool, WalletError> {
+    let reconciled_sends = reconcile_paying_send_attempts(app, state).await?;
     let reconciled_zaps = reconcile_paying_zap_attempts(app, state).await?;
     let published_proofs = reconcile_pending_zap_proofs(app, state).await?;
-    Ok(reconciled_zaps || published_proofs)
+    Ok(reconciled_sends || reconciled_zaps || published_proofs)
+}
+
+async fn reconcile_paying_send_attempts(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<bool, WalletError> {
+    let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+    let payer_pubkey = keys.public_key().to_hex();
+    let data_dir = app_data_dir(app)?;
+    let store = SendAttemptStore::new(&data_dir, &payer_pubkey);
+    let candidates = store.paying_attempts()?;
+    store.prune()?;
+    if !reconciliation_requires_provider(&candidates) {
+        return Ok(false);
+    }
+    let provider = wallet_manager().provider_for(&keys, &data_dir).await?;
+    let mut changed_any = false;
+
+    for candidate in candidates {
+        let request_id = candidate.request.request_id.clone();
+        let operation_lock = wallet_manager()
+            .operation_lock(&payer_pubkey, &request_id)
+            .await;
+        let _operation_guard = operation_lock.lock().await;
+        let Some(mut attempt) = store.load(&request_id)? else {
+            continue;
+        };
+        if attempt.state != SendAttemptState::Paying {
+            continue;
+        }
+        store.record_reconcile(&attempt)?;
+        let analysis = match provider.analyze(attempt.request.destination.clone()).await {
+            Ok(analysis) => analysis,
+            Err(error) => {
+                tracing::warn!(code = error.code, error = %error.message, %request_id, "background payment analysis failed");
+                continue;
+            }
+        };
+        let personal_note = format!("Buzz payment {request_id}");
+        let expected_amount = attempt.request.amount.or(analysis.amount);
+        let expected_invoice = (analysis.instruction_type == "bolt11")
+            .then_some(analysis.normalized_destination.as_str());
+        let expected_offer = (analysis.instruction_type == "bolt12")
+            .then_some(analysis.normalized_destination.as_str());
+        let payment_match = WalletPaymentMatch {
+            payer_note: None,
+            personal_note: Some(&personal_note),
+            expected_amount,
+            expected_offer,
+            expected_invoice,
+        };
+        let payment = match provider.find_outbound_payment(payment_match).await {
+            Ok(Some(payment)) => payment,
+            Ok(None) if paying_attempt_expired(attempt.updated_at_ms) => {
+                store.fail_reconciliation(&mut attempt)?;
+                reconcile_nwc_budget(app, state, &request_id, false)?;
+                changed_any = true;
+                continue;
+            }
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(code = error.code, error = %error.message, %request_id, "background payment lookup failed");
+                continue;
+            }
+        };
+        if attempt.payment.as_ref() != Some(&payment) {
+            store.record_payment(&mut attempt, payment.clone())?;
+            changed_any = true;
+        }
+        match payment.status {
+            WalletPaymentStatus::Completed => reconcile_nwc_budget(app, state, &request_id, true)?,
+            WalletPaymentStatus::Failed => reconcile_nwc_budget(app, state, &request_id, false)?,
+            WalletPaymentStatus::Pending => {}
+        }
+    }
+
+    Ok(changed_any)
 }
 
 async fn reconcile_paying_zap_attempts(
@@ -34,88 +135,93 @@ async fn reconcile_paying_zap_attempts(
     let payer_pubkey = keys.public_key().to_hex();
     let data_dir = app_data_dir(app)?;
     let relay = relay_api_base_url_with_override(state);
+    let store = ZapAttemptStore::new(&data_dir, &payer_pubkey);
+    let candidates = store.paying_attempts_for_relay(&relay)?;
+    store.prune()?;
+    if !reconciliation_requires_provider(&candidates) {
+        return Ok(false);
+    }
     let provider = wallet_manager().provider_for(&keys, &data_dir).await?;
     let mut changed_any = false;
 
-    for store in [ZapAttemptStore::new(&data_dir, &payer_pubkey)] {
-        for candidate in store.paying_attempts_for_relay(&relay)? {
-            let operation_lock = wallet_manager()
-                .operation_lock(&payer_pubkey, &candidate.idempotency_key)
-                .await;
-            let _operation_guard = operation_lock.lock().await;
-            let Some(mut attempt) = store.load(&candidate.idempotency_key)? else {
-                continue;
-            };
-            if attempt.state != ZapAttemptState::Paying
-                || attempt.relay_url.as_deref().is_none_or(|attempt_relay| {
-                    attempt_relay.trim_end_matches('/') != relay.trim_end_matches('/')
-                })
-            {
-                continue;
-            }
-
-            store.record_reconcile(&attempt)?;
-            let personal_note = if attempt.target_event_id.is_some() {
-                format!("Buzz message zap {}", attempt.intent_event_id)
-            } else {
-                format!("Buzz profile payment {}", attempt.intent_event_id)
-            };
-            let payment_match = WalletPaymentMatch {
-                payer_note: Some(&attempt.payer_note),
-                personal_note: Some(&personal_note),
-                expected_amount: Some(attempt.amount),
-                expected_offer: Some(&attempt.offer),
-            };
-            let payment = match provider.find_outbound_payment(payment_match).await {
-                Ok(Some(payment)) => payment,
-                Ok(None) if paying_attempt_expired(attempt.updated_at_ms) => {
-                    store.fail_reconciliation(&mut attempt)?;
-                    changed_any = true;
-                    tracing::warn!(
-                        intent_event_id = %attempt.intent_event_id,
-                        "expired unresolved zap payment without sending again"
-                    );
-                    continue;
-                }
-                Ok(None) => continue,
-                Err(error) => {
-                    tracing::warn!(
-                        code = error.code,
-                        error = %error.message,
-                        intent_event_id = %attempt.intent_event_id,
-                        "background zap payment lookup failed"
-                    );
-                    continue;
-                }
-            };
-
-            if payment.status == WalletPaymentStatus::Pending {
-                if attempt.payment.as_ref() != Some(&payment) {
-                    store.record_payment(&mut attempt, payment)?;
-                    changed_any = true;
-                }
-                continue;
-            }
-
-            let target_channel = attempt.channel_id.clone();
-            let result = profile_payment_result(
-                state,
-                &keys,
-                &store,
-                &mut attempt,
-                payment,
-                target_channel.as_deref(),
-            )
+    for candidate in candidates {
+        let operation_lock = wallet_manager()
+            .operation_lock(&payer_pubkey, &candidate.idempotency_key)
             .await;
-            changed_any = true;
-            if let Err(error) = result {
+        let _operation_guard = operation_lock.lock().await;
+        let Some(mut attempt) = store.load(&candidate.idempotency_key)? else {
+            continue;
+        };
+        if attempt.state != ZapAttemptState::Paying
+            || attempt.relay_url.as_deref().is_none_or(|attempt_relay| {
+                attempt_relay.trim_end_matches('/') != relay.trim_end_matches('/')
+            })
+        {
+            continue;
+        }
+
+        store.record_reconcile(&attempt)?;
+        let personal_note = zap_payment_personal_note(
+            attempt.channel_id.as_deref(),
+            attempt.target_event_id.as_deref(),
+            &attempt.intent_event_id,
+        );
+        let payment_match = WalletPaymentMatch {
+            payer_note: Some(&attempt.payer_note),
+            personal_note: Some(&personal_note),
+            expected_amount: Some(attempt.amount),
+            expected_offer: Some(&attempt.offer),
+            expected_invoice: None,
+        };
+        let payment = match provider.find_outbound_payment(payment_match).await {
+            Ok(Some(payment)) => payment,
+            Ok(None) if paying_attempt_expired(attempt.updated_at_ms) => {
+                store.fail_reconciliation(&mut attempt)?;
+                changed_any = true;
+                tracing::warn!(
+                    intent_event_id = %attempt.intent_event_id,
+                    "expired unresolved zap payment without sending again"
+                );
+                continue;
+            }
+            Ok(None) => continue,
+            Err(error) => {
                 tracing::warn!(
                     code = error.code,
                     error = %error.message,
                     intent_event_id = %attempt.intent_event_id,
-                    "background zap payment reconciliation did not finish"
+                    "background zap payment lookup failed"
                 );
+                continue;
             }
+        };
+
+        if payment.status == WalletPaymentStatus::Pending {
+            if attempt.payment.as_ref() != Some(&payment) {
+                store.record_payment(&mut attempt, payment)?;
+                changed_any = true;
+            }
+            continue;
+        }
+
+        let target_channel = attempt.channel_id.clone();
+        let result = profile_payment_result(
+            state,
+            &keys,
+            &store,
+            &mut attempt,
+            payment,
+            target_channel.as_deref(),
+        )
+        .await;
+        changed_any = true;
+        if let Err(error) = result {
+            tracing::warn!(
+                code = error.code,
+                error = %error.message,
+                intent_event_id = %attempt.intent_event_id,
+                "background zap payment reconciliation did not finish"
+            );
         }
     }
 
@@ -133,6 +239,7 @@ async fn reconcile_pending_zap_proofs(
     let mut published_any = false;
 
     for store in [ZapAttemptStore::new(&data_dir, &payer_pubkey)] {
+        store.prune()?;
         for candidate in store.unpublished_proofs_for_relay(&relay)? {
             let operation_lock = wallet_manager()
                 .operation_lock(&payer_pubkey, &candidate.idempotency_key)
@@ -155,14 +262,17 @@ async fn reconcile_pending_zap_proofs(
                     Some(channel) => Some(channel),
                     None => zap_target_channel_id(state, &keys, &attempt, &relay).await?,
                 };
-                let event =
-                    store.prepare_placeholder_proof(&mut attempt, &keys, channel.as_deref())?;
-                submit_signed_event_at_with_keys(&event, state, &relay, &keys)
+                let event = store.prepare_proof(&mut attempt, &keys, channel.as_deref())?;
+                submit_signed_event_at_with_keys_classified(&event, state, &relay, &keys)
                     .await
                     .map_err(|error| {
                         WalletError::new(
-                            "relay_publish_failed",
-                            format!("republish placeholder zap proof: {error}"),
+                            if error.is_retryable() {
+                                "relay_publish_failed"
+                            } else {
+                                "relay_publish_permanent"
+                            },
+                            format!("republish zap proof: {error}"),
                         )
                     })?;
                 store.mark_proof_published(&mut attempt)
@@ -171,12 +281,15 @@ async fn reconcile_pending_zap_proofs(
 
             match publish_result {
                 Ok(()) => published_any = true,
-                Err(error) => tracing::warn!(
-                    code = error.code,
-                    error = %error.message,
-                    intent_event_id = %attempt.intent_event_id,
-                    "background zap proof publication failed"
-                ),
+                Err(error) => {
+                    tracing::warn!(
+                        code = error.code,
+                        error = %error.message,
+                        intent_event_id = %attempt.intent_event_id,
+                        retryable = true,
+                        "background zap proof publication failed"
+                    );
+                }
             }
         }
     }
@@ -313,14 +426,14 @@ async fn resume_zap_attempt(
                         zap_target_channel_id(state, keys, attempt, relay).await?
                     }
                 };
-                let event = store.prepare_placeholder_proof(attempt, keys, channel.as_deref())?;
+                let event = store.prepare_proof(attempt, keys, channel.as_deref())?;
                 let relay = attempt.relay_url.as_deref().unwrap_or(active_relay);
                 submit_signed_event_at_with_keys(&event, state, relay, keys)
                     .await
                     .map_err(|error| {
                         WalletError::new(
                             "relay_publish_failed",
-                            format!("publish placeholder zap proof: {error}"),
+                            format!("publish zap proof: {error}"),
                         )
                     })?;
                 store.mark_proof_published(attempt)?;
@@ -339,13 +452,11 @@ async fn resume_zap_attempt(
         ZapAttemptState::Prepared | ZapAttemptState::Paying => {}
     }
 
-    let personal_note = if attempt.channel_id.is_some() {
-        format!("Buzz hosted agent payment {}", attempt.intent_event_id)
-    } else if attempt.target_event_id.is_some() {
-        format!("Buzz message zap {}", attempt.intent_event_id)
-    } else {
-        format!("Buzz profile payment {}", attempt.intent_event_id)
-    };
+    let personal_note = zap_payment_personal_note(
+        attempt.channel_id.as_deref(),
+        attempt.target_event_id.as_deref(),
+        &attempt.intent_event_id,
+    );
     let payer_note = attempt.payer_note.clone();
     let expected_amount = attempt.amount;
     let expected_offer = attempt.offer.clone();
@@ -354,6 +465,7 @@ async fn resume_zap_attempt(
         personal_note: Some(&personal_note),
         expected_amount: Some(expected_amount),
         expected_offer: Some(&expected_offer),
+        expected_invoice: None,
     };
     let payment = match attempt.state {
         ZapAttemptState::Prepared => {
@@ -362,8 +474,9 @@ async fn resume_zap_attempt(
                 .send_offer(WalletOfferSendRequest {
                     offer: attempt.offer.clone(),
                     amount: attempt.amount,
-                    payer_note: attempt.payer_note.clone(),
+                    payer_note: Some(attempt.payer_note.clone()),
                     personal_note: personal_note.clone(),
+                    idempotency_key: attempt.idempotency_key.clone(),
                 })
                 .await
             {
@@ -416,4 +529,23 @@ async fn resume_zap_attempt(
         target_channel.as_deref(),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reconciliation_requires_provider, zap_payment_personal_note};
+
+    #[test]
+    fn hosted_agent_note_wins_when_plan_is_also_a_target() {
+        assert_eq!(
+            zap_payment_personal_note(Some("channel"), Some("plan"), "intent"),
+            "Buzz hosted agent payment intent"
+        );
+    }
+
+    #[test]
+    fn reconciliation_opens_the_provider_only_for_pending_payments() {
+        assert!(!reconciliation_requires_provider::<u8>(&[]));
+        assert!(reconciliation_requires_provider(&[1]));
+    }
 }

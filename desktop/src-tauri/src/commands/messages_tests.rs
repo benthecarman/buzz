@@ -137,6 +137,15 @@ fn channel_messages_before_filter_sends_before_id_the_relay_reads() {
     assert_eq!(filter["limit"], serde_json::json!(200));
     assert_eq!(filter["#h"], serde_json::json!(["channel-1"]));
     assert!(
+        filter["kinds"]
+            .as_array()
+            .expect("channel history filter must carry kinds")
+            .contains(&serde_json::json!(
+                buzz_core_pkg::kind::KIND_HOSTED_AGENT_PLAN
+            )),
+        "channel history must include hosted-agent plans"
+    );
+    assert!(
         !filter.contains_key("n"),
         "tiebreak must be `before_id`, not the `n` alias the relay ignores"
     );

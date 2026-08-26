@@ -34,9 +34,9 @@ pub(crate) mod enabled {
         wallet::{
             models::{
                 WalletDestinationAnalysis, WalletEnableResult, WalletError, WalletFundingRequest,
-                WalletOfferPublicationResult, WalletPaymentResult, WalletPaymentStatus,
-                WalletProfileZapResult, WalletRecipientOffer, WalletSendRequest, WalletStatus,
-                WalletTransactionPage,
+                WalletOfferPublicationResult, WalletOfferSendRequest, WalletPaymentResult,
+                WalletPaymentStatus, WalletProfileZapResult, WalletRecipientOffer,
+                WalletSendRequest, WalletStatus, WalletTransactionPage,
             },
             offer_conformance::OfferPublicationTrace,
             provider::WalletPaymentMatch,
@@ -73,6 +73,32 @@ pub(crate) mod enabled {
         app.path()
             .app_data_dir()
             .map_err(|error| WalletError::unavailable(format!("resolve app data path: {error}")))
+    }
+
+    pub(crate) async fn hosted_agent_offer(
+        app: &AppHandle,
+        state: &AppState,
+        agent_pubkey: &str,
+        agent_name: &str,
+    ) -> Result<String, WalletError> {
+        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+        let provider = wallet_manager()
+            .provider_for(&keys, &app_data_dir(app)?)
+            .await?;
+        provider.offer_for_agent(agent_pubkey, agent_name).await
+    }
+
+    pub(crate) async fn analyze_destination_for_nwc(
+        app: &AppHandle,
+        state: &AppState,
+        destination: String,
+    ) -> Result<WalletDestinationAnalysis, WalletError> {
+        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
+        wallet_manager()
+            .provider_for(&keys, &app_data_dir(app)?)
+            .await?
+            .analyze(destination)
+            .await
     }
 
     pub(crate) fn is_unsupported_wallet_event_kind(error: &str) -> bool {
@@ -289,14 +315,13 @@ pub(crate) mod enabled {
                     Some(channel_id) => Some(channel_id.to_string()),
                     None => zap_target_channel_id(state, keys, attempt, &relay).await?,
                 };
-                let event =
-                    store.prepare_placeholder_proof(attempt, keys, channel_id.as_deref())?;
+                let event = store.prepare_proof(attempt, keys, channel_id.as_deref())?;
                 submit_signed_event_at_with_keys(&event, state, &relay, keys)
                     .await
                     .map_err(|error| {
                         WalletError::new(
                             "relay_publish_failed",
-                            format!("publish placeholder zap proof: {error}"),
+                            format!("publish zap proof: {error}"),
                         )
                     })?;
                 store.mark_proof_published(attempt)?;
@@ -385,9 +410,16 @@ pub(crate) mod enabled {
         app: AppHandle,
         state: State<'_, AppState>,
     ) -> Result<WalletStatus, WalletError> {
+        wallet_status(&app, &state).await
+    }
+
+    pub(crate) async fn wallet_status(
+        app: &AppHandle,
+        state: &AppState,
+    ) -> Result<WalletStatus, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         wallet_manager()
-            .provider_for(&keys, &app_data_dir(&app)?)
+            .provider_for(&keys, &app_data_dir(app)?)
             .await?
             .status()
             .await
@@ -443,12 +475,7 @@ pub(crate) mod enabled {
         state: State<'_, AppState>,
         destination: String,
     ) -> Result<WalletDestinationAnalysis, WalletError> {
-        let keys = state.signing_keys().map_err(WalletError::unavailable)?;
-        wallet_manager()
-            .provider_for(&keys, &app_data_dir(&app)?)
-            .await?
-            .analyze(destination)
-            .await
+        analyze_destination_for_nwc(&app, &state, destination).await
     }
 
     #[tauri::command]
@@ -466,13 +493,26 @@ pub(crate) mod enabled {
         state: State<'_, AppState>,
         request: WalletSendRequest,
     ) -> Result<WalletPaymentResult, WalletError> {
+        send_wallet_payment(&app, &state, request).await
+    }
+
+    pub(crate) async fn send_wallet_payment(
+        app: &AppHandle,
+        state: &AppState,
+        request: WalletSendRequest,
+    ) -> Result<WalletPaymentResult, WalletError> {
         let keys = state.signing_keys().map_err(WalletError::unavailable)?;
         let payer_pubkey = keys.public_key().to_hex();
-        let app_data_dir = app_data_dir(&app)?;
-        let lock = wallet_manager()
+        let app_data_dir = app_data_dir(app)?;
+        let request_lock = wallet_manager()
             .operation_lock(&payer_pubkey, &request.request_id)
             .await;
-        let _guard = lock.lock().await;
+        let _request_guard = request_lock.lock().await;
+        let operation_id = format!("payment:{}", request.destination);
+        let payment_lock = wallet_manager()
+            .operation_lock(&payer_pubkey, &operation_id)
+            .await;
+        let _payment_guard = payment_lock.lock().await;
         let store = SendAttemptStore::new(&app_data_dir, &payer_pubkey);
         store.prune()?;
         let mut attempt = match store.load(&request.request_id)? {
@@ -507,26 +547,53 @@ pub(crate) mod enabled {
             SendAttemptState::Prepared | SendAttemptState::Paying => {}
         }
         let provider = wallet_manager().provider_for(&keys, &app_data_dir).await?;
+        let analysis = provider
+            .analyze(attempt.request.destination.clone())
+            .await?;
         let personal_note = format!("Buzz payment {}", attempt.request.request_id);
-        let expected_amount = match attempt.request.amount {
-            Some(amount) => Some(amount),
-            None => {
-                provider
-                    .analyze(attempt.request.destination.clone())
-                    .await?
-                    .amount
-            }
-        };
+        let expected_amount = attempt.request.amount.or(analysis.amount);
+        let expected_invoice = (analysis.instruction_type == "bolt11")
+            .then_some(analysis.normalized_destination.as_str());
+        let expected_offer = (analysis.instruction_type == "bolt12")
+            .then_some(analysis.normalized_destination.as_str());
         let payment_match = || WalletPaymentMatch {
             payer_note: None,
             personal_note: Some(&personal_note),
             expected_amount,
-            expected_offer: None,
+            expected_offer,
+            expected_invoice,
         };
         let payment = match attempt.state {
             SendAttemptState::Prepared => {
+                let offer_request = if expected_offer.is_some() {
+                    Some(WalletOfferSendRequest {
+                        offer: analysis.normalized_destination.clone(),
+                        amount: expected_amount.ok_or_else(|| {
+                            WalletError::new(
+                                "invalid_amount",
+                                "The BOLT12 offer requires an amount",
+                            )
+                        })?,
+                        payer_note: attempt.request.message.clone(),
+                        personal_note: personal_note.clone(),
+                        idempotency_key: attempt.request.request_id.clone(),
+                    })
+                } else {
+                    None
+                };
+                if expected_invoice.is_some() || expected_offer.is_some() {
+                    if let Some(payment) = provider.find_outbound_payment(payment_match()).await? {
+                        store.begin_dispatch(&mut attempt)?;
+                        return generic_payment_result(&store, &mut attempt, payment);
+                    }
+                }
                 store.begin_dispatch(&mut attempt)?;
-                match provider.send(attempt.request.clone()).await {
+                let send_result = if let Some(offer_request) = offer_request {
+                    provider.send_offer(offer_request).await
+                } else {
+                    provider.send(attempt.request.clone()).await
+                };
+                match send_result {
                     Ok(payment) => payment,
                     Err(error) => {
                         store.record_reconcile(&attempt)?;

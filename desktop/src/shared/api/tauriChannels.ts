@@ -66,6 +66,7 @@ type RawChannelMember = {
   is_agent?: boolean;
   joined_at: string;
   display_name: string | null;
+  owner_pubkey?: string | null;
 };
 
 type RawChannelMembersResponse = {
@@ -117,6 +118,7 @@ function fromRawChannelMember(member: RawChannelMember): ChannelMember {
     isAgent: member.is_agent ?? false,
     joinedAt: member.joined_at,
     displayName: member.display_name,
+    ownerPubkey: member.owner_pubkey ?? null,
   };
 }
 

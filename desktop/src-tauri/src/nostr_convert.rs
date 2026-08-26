@@ -269,6 +269,7 @@ pub fn channel_members_from_event(event: &Event) -> Result<ChannelMembersRespons
             role,
             joined_at: None,
             display_name: None,
+            owner_pubkey: None,
         });
     }
 
@@ -296,7 +297,6 @@ pub fn profile_info_from_event(event: &Event) -> Result<ProfileInfo, String> {
     let avatar_url = v.get("picture").and_then(Value::as_str).map(str::to_string);
     let about = v.get("about").and_then(Value::as_str).map(str::to_string);
     let nip05_handle = v.get("nip05").and_then(Value::as_str).map(str::to_string);
-
     Ok(ProfileInfo {
         pubkey: event.pubkey.to_hex(),
         display_name,

@@ -5,6 +5,7 @@ import {
   numberArrayEqual,
   reactionsEqual,
   tagsEqual,
+  zapsEqual,
 } from "@/features/messages/lib/messageRowEquality";
 import {
   assertCanSendMessageToChannel,
@@ -15,7 +16,6 @@ import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import { HuddleAttachment } from "@/features/huddle/components/HuddleAttachment";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
 import { useReactionHandler } from "@/features/messages/ui/useReactionHandler";
-import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import { useRemindLater } from "@/features/reminders/ui/RemindMeLaterProvider";
 import {
@@ -41,9 +41,16 @@ import { useMessageEmoji } from "@/features/messages/lib/useMessageEmoji";
 import { parseWaveMessageContent } from "@/features/messages/lib/waveMessage";
 import { resolveSnapshotSharedBy } from "@/features/messages/lib/snapshotSharedBy";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
-import type { VideoReviewContext } from "@/shared/ui/VideoPlayer";
+import { hostedAgentPlanMessage } from "@/features/messages/lib/hostedAgentZap";
+import type {
+  MessageRowProps,
+  ThreadDepthGuideAction,
+} from "./messageRowTypes";
+export type { ThreadDepthGuideAction } from "./messageRowTypes";
 import { VideoReviewCommentMarkdown } from "@/shared/ui/VideoReviewCommentMarkdown";
 import { MessageActionBar } from "./MessageActionBar";
+import { HostedAgentPlanCard } from "./HostedAgentPlanCard";
+import { type OptimisticZap, useMessageZap } from "./useMessageZap";
 import { editMessage } from "@/shared/api/tauri";
 import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelineMessages";
 import { toast } from "sonner";
@@ -63,13 +70,6 @@ import { MessageAgentAddressPrefix } from "./MessageAgentAddressPrefix";
 
 const DiffMessage = React.lazy(() => import("./DiffMessage"));
 const DiffMessageExpanded = React.lazy(() => import("./DiffMessageExpanded"));
-
-export type ThreadDepthGuideAction = {
-  active?: boolean;
-  depth: number;
-  label: string;
-  message: TimelineMessage;
-};
 
 export const MessageRow = React.memo(
   function MessageRow({
@@ -113,58 +113,7 @@ export const MessageRow = React.memo(
     showDepthGuides = true,
     videoReviewCommentRootId,
     videoReviewContext,
-  }: {
-    channelId?: string | null;
-    currentPubkey?: string;
-    collapseDepthGuideActions?: ReadonlyArray<ThreadDepthGuideAction>;
-    connectDescendants?: boolean;
-    depthGuideDepths?: ReadonlyArray<number>;
-    highlighted?: boolean;
-    highlightDescendantRail?: boolean;
-    highlightReplyConnector?: boolean;
-    highlightThreadLineDepths?: ReadonlyArray<number>;
-    hoverBackground?: boolean;
-    huddleMemberPubkeys?: readonly string[];
-    huddleMemberPubkeysPending?: boolean;
-    hideAgentAccessBadge?: boolean;
-    actionBarPlacement?: "floating" | "inside";
-    collapseDescendantsLabel?: string;
-    isFollowingThread?: boolean;
-    isContinuation?: boolean;
-    isUnread?: boolean;
-    layoutVariant?: "default" | "thread-reply";
-    message: TimelineMessage;
-    onCollapseDepthGuide?: (message: TimelineMessage) => void;
-    onCollapseDepthGuideHoverChange?: (
-      message: TimelineMessage,
-      hovered: boolean,
-    ) => void;
-    onCollapseDescendants?: (message: TimelineMessage) => void;
-    onCollapseDescendantsHoverChange?: (
-      message: TimelineMessage,
-      hovered: boolean,
-    ) => void;
-    onDelete?: (message: TimelineMessage) => void;
-    onEdit?: (message: TimelineMessage) => void;
-    onFollowThread?: (message: TimelineMessage) => void;
-    onMarkUnread?: (message: TimelineMessage) => void;
-    onMarkRead?: (message: TimelineMessage) => void;
-    onToggleReaction?: (
-      message: TimelineMessage,
-      emoji: string,
-      remove: boolean,
-    ) => Promise<void>;
-    onReply?: (message: TimelineMessage) => void;
-    onSendToChannel?: (message: TimelineMessage) => Promise<void>;
-    onUnfollowThread?: (message: TimelineMessage) => void;
-    onEntranceComplete?: (messageId: string) => void;
-    playEntrance?: boolean;
-    profiles?: UserProfileLookup;
-    searchQuery?: string;
-    showDepthGuides?: boolean;
-    videoReviewCommentRootId?: string;
-    videoReviewContext?: VideoReviewContext;
-  }) {
+  }: MessageRowProps) {
     // Keep the transient send state with its timestamp rather than collapsing
     // it into a grouped message row with no header.
     const isDisplayedAsContinuation = isContinuation && !message.pending;
@@ -198,6 +147,29 @@ export const MessageRow = React.memo(
     const [badgeBurstEmoji, setBadgeBurstEmoji] = React.useState<string | null>(
       null,
     );
+    const [optimisticZap, setOptimisticZap] =
+      React.useState<OptimisticZap | null>(null);
+    const handleOptimisticZapChange = React.useCallback(
+      (next: OptimisticZap | null) => setOptimisticZap(next),
+      [],
+    );
+    const optimisticProofArrived = Boolean(
+      optimisticZap?.intentEventId &&
+        message.zaps?.some(
+          (zap) => zap.intentEventId === optimisticZap.intentEventId,
+        ),
+    );
+    React.useEffect(() => {
+      if (!optimisticProofArrived) return;
+      setOptimisticZap(null);
+    }, [optimisticProofArrived]);
+    const messageZap = useMessageZap({
+      channelId,
+      disabled: Boolean(optimisticZap) && !optimisticProofArrived,
+      message,
+      onOptimisticZapChange: handleOptimisticZapChange,
+    });
+    const hostedAgentPlan = hostedAgentPlanMessage(message, channelId);
     const handleEntranceAnimationEnd = React.useCallback(
       (event: React.AnimationEvent<HTMLElement>) => {
         if (
@@ -412,6 +384,15 @@ export const MessageRow = React.memo(
             />
           );
         default: {
+          if (hostedAgentPlan) {
+            return (
+              <HostedAgentPlanCard
+                plan={hostedAgentPlan}
+                zapAction={messageZap}
+              />
+            );
+          }
+
           const waveMessage = parseWaveMessageContent(message.body);
           if (waveMessage) {
             return (
@@ -597,6 +578,7 @@ export const MessageRow = React.memo(
           onUnfollowThread={onUnfollowThread}
           reactionErrorMessage={reactionErrorMessage}
           reactions={reactions}
+          zapAction={hostedAgentPlan ? undefined : messageZap}
         />
       </div>
     );
@@ -685,6 +667,12 @@ export const MessageRow = React.memo(
         <MessageReactions
           messageId={message.id}
           reactions={reactions}
+          zaps={hostedAgentPlan ? [] : message.zaps}
+          optimisticZapAmount={
+            hostedAgentPlan || optimisticProofArrived
+              ? null
+              : optimisticZap?.amount
+          }
           canToggle={canToggleReactions}
           pending={reactionPending}
           burstEmojiOnRender={badgeBurstEmoji}
@@ -954,6 +942,7 @@ export const MessageRow = React.memo(
     // checks made every row re-render on every streamed event in an open
     // thread (see messageRowEquality.ts).
     reactionsEqual(prev.message.reactions, next.message.reactions) &&
+    zapsEqual(prev.message.zaps, next.message.zaps) &&
     tagsEqual(prev.message.tags, next.message.tags) &&
     prev.message.role === next.message.role &&
     prev.message.personaDisplayName === next.message.personaDisplayName &&

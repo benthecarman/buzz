@@ -112,6 +112,64 @@ test("relay rate-limited: prefix check is case-sensitive (Rust always emits lowe
   );
 });
 
+test("createManagedAgent forwards enabled wallet state and every community relay", async () => {
+  const { OVERRIDES_KEY } = await import("../features/store.ts");
+  const storage = {
+    values: new Map([
+      [OVERRIDES_KEY, JSON.stringify({ bitcoin: true })],
+      [
+        "buzz-communities",
+        JSON.stringify([
+          { id: "one", relayUrl: "wss://one.example" },
+          { id: "two", relayUrl: "wss://two.example" },
+        ]),
+      ],
+    ]),
+    getItem(key) {
+      return this.values.get(key) ?? null;
+    },
+    setItem(key, value) {
+      this.values.set(key, value);
+    },
+    removeItem(key) {
+      this.values.delete(key);
+    },
+  };
+  const previousLocalStorage = globalThis.localStorage;
+  const previousWindowLocalStorage = globalThis.window.localStorage;
+  const previousInternals = globalThis.window.__TAURI_INTERNALS__;
+  let invoked;
+  globalThis.localStorage = storage;
+  globalThis.window.localStorage = storage;
+  globalThis.window.__TAURI_INTERNALS__ = {
+    invoke(command, args) {
+      invoked = { command, args };
+      return Promise.resolve({
+        agent: {},
+        private_key_nsec: "nsec1agent",
+        profile_sync_error: null,
+        spawn_error: null,
+      });
+    },
+  };
+
+  try {
+    const { createManagedAgent } = await import("./tauriManagedAgents.ts");
+    await createManagedAgent({ name: "Wallet Agent" });
+  } finally {
+    globalThis.localStorage = previousLocalStorage;
+    globalThis.window.localStorage = previousWindowLocalStorage;
+    globalThis.window.__TAURI_INTERNALS__ = previousInternals;
+  }
+
+  assert.equal(invoked.command, "create_managed_agent");
+  assert.equal(invoked.args.input.walletEnabled, true);
+  assert.deepEqual(invoked.args.input.walletRelayUrls, [
+    "wss://one.example",
+    "wss://two.example",
+  ]);
+});
+
 // ── fromRawAcpRuntimeCatalogEntry: custom row API-boundary (B-2) ─────────────
 //
 // These tests feed real raw custom catalog rows through fromRawAcpRuntimeCatalogEntry

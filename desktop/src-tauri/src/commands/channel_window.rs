@@ -2,9 +2,10 @@ use tauri::State;
 
 use crate::{app_state::AppState, models::ChannelPageCursor, relay::query_relay};
 
-const TIMELINE_KINDS: [u32; 11] = [
+const TIMELINE_KINDS: [u32; 12] = [
     9,
     40002,
+    buzz_core_pkg::kind::KIND_HOSTED_AGENT_PLAN,
     40008,
     40099,
     43001,
@@ -53,4 +54,24 @@ pub async fn get_channel_window(
         .iter()
         .filter_map(|event| serde_json::to_value(event).ok())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_window_filter_includes_hosted_agent_plans() {
+        let filter = build_channel_window_filter("channel-1", 50, None);
+        let kinds = filter["kinds"]
+            .as_array()
+            .expect("channel window filter must carry kinds");
+
+        assert!(
+            kinds.contains(&serde_json::json!(
+                buzz_core_pkg::kind::KIND_HOSTED_AGENT_PLAN
+            )),
+            "channel history must include hosted-agent plans"
+        );
+    }
 }

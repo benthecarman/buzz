@@ -1,6 +1,10 @@
 import * as React from "react";
 
-import { useManagedAgentsQuery } from "@/features/agents/hooks";
+import {
+  useManagedAgentsQuery,
+  useRelayAgentsQuery,
+} from "@/features/agents/hooks";
+import { mergeOwnedAgentPubkeys } from "@/features/agents/knownAgentPubkeys";
 import {
   requestDockBounce,
   sendDesktopNotification,
@@ -24,11 +28,9 @@ import {
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 
-type ZapProcessingResult =
-  | { status: "processed"; recipientPubkey: string | null }
-  | { status: "retry"; recipientPubkey: string | null };
+type ZapProcessingResult = { status: "processed" } | { status: "retry" };
 
-/** Subscribe to settled zap proofs tagging the user or one of their agents. */
+/** Cache sent and received zap proofs and notify for received proofs. */
 export function useZapNotifications(
   ownerPubkey: string | undefined,
   notificationSettings: NotificationSettings,
@@ -36,19 +38,32 @@ export function useZapNotifications(
   channelIds: readonly string[],
 ) {
   const managedAgents = useManagedAgentsQuery().data ?? [];
-  const recipientNames = React.useMemo(() => {
+  const relayAgents = useRelayAgentsQuery().data ?? [];
+  const identityNames = React.useMemo(() => {
     const names = new Map<string, string>();
     const owner = ownerPubkey?.trim().toLowerCase();
     if (owner) names.set(owner, "You");
+    const ownedAgentPubkeys = mergeOwnedAgentPubkeys(
+      managedAgents,
+      undefined,
+      owner,
+      relayAgents,
+    );
     for (const agent of managedAgents) {
       names.set(
         agent.pubkey.trim().toLowerCase(),
         agent.name.trim() || "Agent",
       );
     }
+    for (const agent of relayAgents) {
+      const pubkey = agent.pubkey.trim().toLowerCase();
+      if (ownedAgentPubkeys.has(pubkey) && !names.has(pubkey)) {
+        names.set(pubkey, agent.name.trim() || "Agent");
+      }
+    }
     return names;
-  }, [managedAgents, ownerPubkey]);
-  const recipientKey = [...recipientNames.keys()].sort().join(",");
+  }, [managedAgents, ownerPubkey, relayAgents]);
+  const identityKey = [...identityNames.keys()].sort().join(",");
   const channelKey = [...new Set(channelIds.map((id) => id.trim()))]
     .filter(Boolean)
     .sort()
@@ -57,14 +72,16 @@ export function useZapNotifications(
   const handleZap = React.useEffectEvent(
     async (event: RelayEvent): Promise<ZapProcessingResult> => {
       const owner = ownerPubkey?.trim().toLowerCase();
-      if (!owner) return { status: "processed", recipientPubkey: null };
+      if (!owner) return { status: "processed" };
       const zap = parseRelayZapEvent(event);
-      if (!zap) return { status: "processed", recipientPubkey: null };
-      if (!recipientNames.has(zap.recipientPubkey)) {
-        return { status: "processed", recipientPubkey: null };
+      if (!zap) return { status: "processed" };
+      const isReceived = identityNames.has(zap.recipientPubkey);
+      const isSent = identityNames.has(event.pubkey.trim().toLowerCase());
+      if (!isReceived && !isSent) {
+        return { status: "processed" };
       }
 
-      const recipientName = recipientNames.get(zap.recipientPubkey) ?? "You";
+      const recipientName = identityNames.get(zap.recipientPubkey) ?? "";
       const title =
         recipientName === "You"
           ? "You received a zap"
@@ -75,34 +92,32 @@ export function useZapNotifications(
       const historyRelayUrl = relayUrl?.trim().replace(/\/$/, "") ?? "";
       const persistResult = persistZapHistoryItem(owner, historyRelayUrl, {
         amount: zap.amount,
+        channelId: zap.channelId,
         comment: zap.comment,
         createdAt: event.created_at,
         eventId: event.id,
         intentEventId: zap.intentEventId,
+        leaseId: zap.leaseId,
+        paymentHash: zap.paymentHash,
         payerPubkey: event.pubkey,
         recipientName,
         recipientPubkey: zap.recipientPubkey,
         targetEventId: zap.targetEventId,
+        targetEventKind: zap.targetEventKind,
       });
       if (persistResult === "failed") {
-        return {
-          status: "retry",
-          recipientPubkey: zap.recipientPubkey,
-        };
+        return { status: "retry" };
       }
-      if (persistResult === "duplicate") {
-        return {
-          status: "processed",
-          recipientPubkey: zap.recipientPubkey,
-        };
+      if (persistResult === "duplicate" || persistResult === "updated") {
+        return { status: "processed" };
+      }
+      if (!isReceived) {
+        return { status: "processed" };
       }
 
       void requestDockBounce();
       if (!notificationSettings.desktopEnabled) {
-        return {
-          status: "processed",
-          recipientPubkey: zap.recipientPubkey,
-        };
+        return { status: "processed" };
       }
 
       const didSend = await sendDesktopNotification({
@@ -121,28 +136,53 @@ export function useZapNotifications(
       if (!didSend) {
         console.error("Failed to send desktop notification for received zap");
       }
-      return {
-        status: "processed",
-        recipientPubkey: zap.recipientPubkey,
-      };
+      return { status: "processed" };
     },
   );
 
   React.useEffect(() => {
     const owner = ownerPubkey?.trim().toLowerCase();
     const normalizedRelayUrl = relayUrl?.trim().replace(/\/$/, "") ?? "";
-    if (!owner || !normalizedRelayUrl || !recipientKey) return;
+    if (!owner || !normalizedRelayUrl || !identityKey) return;
     let cancelled = false;
     let disposer: (() => Promise<void>) | null = null;
     let retryTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
     let retryAttempt = 0;
     let generation = 0;
-    const recipients = recipientKey.split(",");
+    const identities = identityKey.split(",");
     const channels = channelKey ? channelKey.split(",") : [];
 
-    const scopeFor = (recipientPubkey: string): ZapSyncScope => ({
+    const scopes: ZapSyncScope[] = identities.flatMap((pubkey) => [
+      {
+        ownerPubkey: owner,
+        pubkey,
+        role: "recipient",
+        relayUrl: normalizedRelayUrl,
+      },
+      {
+        ownerPubkey: owner,
+        pubkey,
+        role: "author",
+        relayUrl: normalizedRelayUrl,
+      },
+    ]);
+    const matchingScopes = (event: RelayEvent): ZapSyncScope[] => {
+      const zap = parseRelayZapEvent(event);
+      if (!zap) return [];
+      const matches = new Set<string>();
+      if (identityNames.has(zap.recipientPubkey)) {
+        matches.add(`recipient:${zap.recipientPubkey}`);
+      }
+      const author = event.pubkey.trim().toLowerCase();
+      if (identityNames.has(author)) matches.add(`author:${author}`);
+      return scopes.filter((scope) =>
+        matches.has(`${scope.role}:${scope.pubkey}`),
+      );
+    };
+    const scopeFor = (scope: ZapSyncScope): ZapSyncScope => ({
       ownerPubkey: owner,
-      recipientPubkey,
+      pubkey: scope.pubkey,
+      role: scope.role,
       relayUrl: normalizedRelayUrl,
     });
 
@@ -188,11 +228,8 @@ export function useZapNotifications(
           bufferedEvents.set(event.id, event);
           throw new Error("Zap processing is temporarily unavailable.");
         }
-        if (result.recipientPubkey) {
-          writeZapSyncCursor(
-            scopeFor(result.recipientPubkey),
-            event.created_at,
-          );
+        for (const scope of matchingScopes(event)) {
+          writeZapSyncCursor(scopeFor(scope), event.created_at);
         }
       };
       const enqueueLiveEvent = (event: RelayEvent) => {
@@ -204,7 +241,8 @@ export function useZapNotifications(
       try {
         let pendingProcessingError: Error | null = null;
         const liveFilters = zapLiveSubscriptionFilters(
-          recipients,
+          identities,
+          identities,
           Math.max(0, syncUntil - ZAP_SYNC_OVERLAP_SECONDS),
           channels,
         );
@@ -241,15 +279,15 @@ export function useZapNotifications(
         }
         disposer = nextDisposer;
 
-        for (const recipient of recipients) {
-          const scope = scopeFor(recipient);
+        for (const syncScope of scopes) {
+          const scope = scopeFor(syncScope);
           const cursor = readZapSyncCursor(scope);
           const outcomes: Array<{
             createdAt: number;
             status: "processed" | "retry";
           }> = [];
           const events = await fetchZapCatchupEvents({
-            recipientPubkey: recipient,
+            scope,
             since: cursor,
             until: syncUntil,
             fetchPage: (filter) => relayClient.fetchEvents(filter),
@@ -304,5 +342,5 @@ export function useZapNotifications(
       if (retryTimer) globalThis.clearTimeout(retryTimer);
       void disposer?.();
     };
-  }, [channelKey, ownerPubkey, recipientKey, relayUrl]);
+  }, [channelKey, identityKey, identityNames, ownerPubkey, relayUrl]);
 }

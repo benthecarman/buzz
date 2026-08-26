@@ -30,6 +30,8 @@ pub mod admin_moderation;
 pub mod api_token;
 /// Relay-scoped archived identity persistence (NIP-IA).
 pub mod archived_identities;
+/// Settled BOLT12 zap payment-hash claims.
+pub mod bolt12_zap;
 /// Channel and membership persistence.
 pub mod channel;
 /// Community lifecycle and host-map persistence.
@@ -1201,6 +1203,28 @@ impl Db {
             }
         }
         Ok(result)
+    }
+
+    /// Atomically claim a settled payment hash and insert its kind 9736 event.
+    #[datastore_span(name = "insert_bolt12_zap_event", system = "postgresql")]
+    pub async fn insert_bolt12_zap_event(
+        &self,
+        community_id: CommunityId,
+        event: &nostr::Event,
+        channel_id: Option<Uuid>,
+        payment_hash: &[u8; 32],
+    ) -> Result<bolt12_zap::Bolt12ZapInsertOutcome> {
+        let outcome =
+            bolt12_zap::insert_event(&self.pool, community_id, event, channel_id, payment_hash)
+                .await?;
+        if let bolt12_zap::Bolt12ZapInsertOutcome::Inserted(stored_event) = &outcome {
+            if let Err(error) =
+                insert_mentions(&self.pool, community_id, &stored_event.event, channel_id).await
+            {
+                tracing::warn!(event_id = %event.id, "Failed to insert mentions: {error}");
+            }
+        }
+        Ok(outcome)
     }
 
     /// Insert an event while holding and validating an admitted serving-write

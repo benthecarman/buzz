@@ -2,16 +2,17 @@ import type { RelaySubscriptionFilter } from "@/shared/api/relayClientShared";
 import type { RelayEvent } from "@/shared/api/types";
 import { KIND_BOLT12_ZAP } from "@/shared/constants/kinds";
 
-// v3 replays proofs whose cursor was advanced before Lexe indexed the inbound
-// payment, leaving received-zap history permanently empty.
-const CURSOR_STORAGE_PREFIX = "buzz-wallet-zap-sync.v3";
+// v5 replays cached proofs so existing records gain payment hashes. Wallet
+// history uses these hashes to identify the inbound legs of agent zaps.
+const CURSOR_STORAGE_PREFIX = "buzz-wallet-zap-sync.v5";
 export const ZAP_SYNC_OVERLAP_SECONDS = 5;
 export const ZAP_SYNC_PAGE_LIMIT = 500;
 const MAX_ZAP_SYNC_PAGES = 10_000;
 
 export type ZapSyncScope = {
   ownerPubkey: string;
-  recipientPubkey: string;
+  pubkey: string;
+  role: "author" | "recipient";
   relayUrl: string;
 };
 
@@ -48,7 +49,8 @@ export function zapSyncCursorStorageKey(scope: ZapSyncScope) {
     CURSOR_STORAGE_PREFIX,
     normalizedScopePart(scope.relayUrl.replace(/\/$/, "")),
     normalizedScopePart(scope.ownerPubkey),
-    normalizedScopePart(scope.recipientPubkey),
+    scope.role,
+    normalizedScopePart(scope.pubkey),
   ].join(":");
 }
 
@@ -94,22 +96,25 @@ export function writeZapSyncCursor(
 }
 
 export function buildZapCatchupFilter(
-  recipientPubkey: string,
+  scope: Pick<ZapSyncScope, "pubkey" | "role">,
   since: number,
   until: number,
 ): RelaySubscriptionFilter {
-  return {
+  const filter: RelaySubscriptionFilter = {
     kinds: [KIND_BOLT12_ZAP],
-    "#p": [recipientPubkey.trim().toLowerCase()],
     limit: ZAP_SYNC_PAGE_LIMIT,
     since: Math.max(0, since - ZAP_SYNC_OVERLAP_SECONDS),
     until,
   };
+  const pubkey = scope.pubkey.trim().toLowerCase();
+  if (scope.role === "author") filter.authors = [pubkey];
+  else filter["#p"] = [pubkey];
+  return filter;
 }
 
 /** Fetch every stored recipient zap between a durable cursor and this sync. */
 export async function fetchZapCatchupEvents(input: {
-  recipientPubkey: string;
+  scope: Pick<ZapSyncScope, "pubkey" | "role">;
   since: number;
   until: number;
   fetchPage: (filter: RelaySubscriptionFilter) => Promise<RelayEvent[]>;
@@ -120,7 +125,7 @@ export async function fetchZapCatchupEvents(input: {
 
   for (let page = 0; page < MAX_ZAP_SYNC_PAGES; page += 1) {
     const events = await input.fetchPage(
-      buildZapCatchupFilter(input.recipientPubkey, input.since, pageUntil),
+      buildZapCatchupFilter(input.scope, input.since, pageUntil),
     );
     for (const event of events) eventsById.set(event.id, event);
     if (events.length < ZAP_SYNC_PAGE_LIMIT) {

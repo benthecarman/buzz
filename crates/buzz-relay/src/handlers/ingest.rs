@@ -19,14 +19,14 @@ use buzz_core::kind::{
     KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE,
     KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
     KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
-    KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES,
-    KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED,
-    KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT,
-    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN,
-    KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN,
-    KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT,
-    KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST,
-    KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_HOSTED_AGENT_PLAN, KIND_HUDDLE_ENDED,
+    KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT,
+    KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM,
+    KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
+    KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT,
+    KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP,
+    KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA,
+    KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
     KIND_NIP43_LEAVE_REQUEST, KIND_NIP65_RELAY_LIST_METADATA, KIND_NWC_INFO, KIND_NWC_REQUEST,
     KIND_NWC_RESPONSE, KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
     KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE, KIND_PROJECT, KIND_REACTION,
@@ -475,6 +475,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_DELETION
         | KIND_REACTION
         | KIND_GIFT_WRAP
+        | KIND_HOSTED_AGENT_PLAN
         | KIND_STREAM_MESSAGE
         | KIND_STREAM_MESSAGE_V2
         | KIND_NIP29_DELETE_EVENT
@@ -722,7 +723,8 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
 pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
     matches!(
         kind,
-        KIND_STREAM_MESSAGE
+        KIND_HOSTED_AGENT_PLAN
+            | KIND_STREAM_MESSAGE
             | KIND_STREAM_MESSAGE_V2
             | KIND_STREAM_MESSAGE_EDIT
             | KIND_STREAM_MESSAGE_PINNED
@@ -2226,8 +2228,8 @@ async fn ingest_event_inner(
     let event_for_verify = std::sync::Arc::clone(&event);
     let verify_result =
         tokio::task::spawn_blocking(move || verify_submitted_event(&event_for_verify)).await;
-    match verify_result {
-        Ok(Ok(())) => {}
+    let validated_zap = match verify_result {
+        Ok(Ok(validated_zap)) => validated_zap,
         Ok(Err(e)) => {
             return Err(IngestError::Rejected(format!("invalid: {e}")));
         }
@@ -2237,7 +2239,7 @@ async fn ingest_event_inner(
                 "error: internal verification error".into(),
             ));
         }
-    }
+    };
     let event = std::sync::Arc::try_unwrap(event).unwrap_or_else(|arc| (*arc).clone());
 
     const MAX_TIMESTAMP_DRIFT_SECS: i64 = 900; // ±15 minutes
@@ -3169,7 +3171,35 @@ async fn ingest_event_inner(
         });
     }
 
-    let (stored_event, was_inserted) = if buzz_core::kind::is_replaceable(kind_u32) {
+    let (stored_event, was_inserted) = if let Some(validated_zap) = validated_zap {
+        match state
+            .db
+            .insert_bolt12_zap_event(
+                tenant.community(),
+                &event,
+                channel_id,
+                &validated_zap.payment_hash,
+            )
+            .await
+            .map_err(|error| IngestError::Internal(format!("error: database error: {error}")))?
+        {
+            buzz_db::bolt12_zap::Bolt12ZapInsertOutcome::Inserted(stored_event) => {
+                (*stored_event, true)
+            }
+            buzz_db::bolt12_zap::Bolt12ZapInsertOutcome::EventDuplicate => {
+                return Ok(IngestResult {
+                    event_id: event_id_hex,
+                    accepted: true,
+                    message: "duplicate:".into(),
+                });
+            }
+            buzz_db::bolt12_zap::Bolt12ZapInsertOutcome::PaymentDuplicate => {
+                return Err(IngestError::Rejected(
+                    "duplicate: payment already has a zap event".into(),
+                ));
+            }
+        }
+    } else if buzz_core::kind::is_replaceable(kind_u32) {
         // NIP-16 replaceable event — atomic replace with stale-write protection.
         // channel_id is None for global kinds (0, 1, 3) due to step 5b above.
         state
@@ -3313,13 +3343,16 @@ async fn ingest_event_inner(
     })
 }
 
-fn verify_submitted_event(event: &Event) -> Result<(), String> {
+fn verify_submitted_event(
+    event: &Event,
+) -> Result<Option<crate::bolt12_zap::ValidatedBolt12Zap>, String> {
     verify_event(event).map_err(|error| error.to_string())?;
     if event_kind_u32(event) == KIND_BOLT12_ZAP {
-        crate::bolt12_zap::validate_bolt12_zap(event)
-            .map_err(|error| format!("invalid BOLT12 zap: {error}"))?;
+        return crate::bolt12_zap::validate_bolt12_zap(event)
+            .map(Some)
+            .map_err(|error| format!("invalid BOLT12 zap: {error}"));
     }
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(test)]

@@ -176,7 +176,10 @@ export function mergeAgentNamesIntoProfiles(
 export function mergeMemberAgentFlagsIntoProfiles(
   profiles: UserProfileLookup,
   channelMembers:
-    | readonly Pick<ChannelMember, "pubkey" | "role" | "isAgent">[]
+    | readonly Pick<
+        ChannelMember,
+        "pubkey" | "role" | "isAgent" | "ownerPubkey"
+      >[]
     | undefined,
 ): UserProfileLookup {
   if (!channelMembers) {
@@ -196,7 +199,7 @@ export function mergeMemberAgentFlagsIntoProfiles(
       displayName: merged[key]?.displayName ?? null,
       avatarUrl: merged[key]?.avatarUrl ?? null,
       nip05Handle: merged[key]?.nip05Handle ?? null,
-      ownerPubkey: merged[key]?.ownerPubkey ?? null,
+      ownerPubkey: merged[key]?.ownerPubkey ?? member.ownerPubkey ?? null,
       isAgent: true,
     };
   }

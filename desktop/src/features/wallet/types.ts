@@ -1,3 +1,5 @@
+import type { RelayEvent } from "@/shared/api/types";
+
 export interface WalletStatus {
   providerName: string;
   balance: number;
@@ -25,6 +27,7 @@ export interface WalletFundingRequest {
 
 export interface WalletDestinationAnalysis {
   normalizedDestination: string;
+  instructionType: string;
   description: string | null;
   amount: number | null;
   minAmount: number | null;
@@ -43,6 +46,9 @@ export interface WalletPaymentResult {
   paymentId: string;
   status: "pending" | "completed" | "failed";
   statusMessage: string;
+  preimage?: string | null;
+  payerProof?: string | null;
+  txid?: string | null;
   amount: number | null;
   fees: number;
   createdAtMs: number;
@@ -59,6 +65,7 @@ export interface WalletTransaction {
   note: string | null;
   payerNote: string | null;
   offerId: string | null;
+  paymentHash: string | null;
   createdAtMs: number;
   finalizedAtMs: number | null;
 }
@@ -88,8 +95,11 @@ export interface WalletVerifiedZapEvent {
   comment: string;
   intentEventId: string;
   recipientPubkey: string;
+  paymentHash: string | null;
   targetEventId: string | null;
+  targetEventKind: number | null;
   channelId: string | null;
+  leaseId: string | null;
 }
 
 export interface WalletProfileZapRequest {
@@ -120,12 +130,52 @@ export interface WalletNwcRequest {
   expiresAtMs: number;
   agentPubkey: string;
   agentName: string;
-  recipientPubkey: string;
+  requestType: "payment" | "zap";
+  instructionType: string;
+  recipientPubkey: string | null;
   amount: number;
   comment: string;
   destination: string;
-  payerNote: string;
+  payerNote: string | null;
   requestId: string;
+}
+
+export type WalletNwcBudgetPeriod = "hour" | "day" | "week" | "month";
+
+export interface WalletNwcClient {
+  agentPubkey: string;
+  agentName: string;
+  mode: "manual" | "budget";
+  budgetAmount: number | null;
+  budgetPeriod: WalletNwcBudgetPeriod | null;
+  spentAmount: number;
+  remainingAmount: number | null;
+  periodEndsAtMs: number | null;
+}
+
+export interface WalletNwcPolicyUpdate {
+  agentPubkey: string;
+  mode: "manual" | "budget";
+  budgetAmount: number | null;
+  budgetPeriod: WalletNwcBudgetPeriod | null;
+}
+
+/** Default policy applied to agents created or claimed later. */
+export interface WalletNwcDefaultPolicy {
+  mode: "manual" | "budget";
+  budgetAmount: number | null;
+  budgetPeriod: WalletNwcBudgetPeriod | null;
+}
+
+export interface WalletNwcHandlingResult {
+  action:
+    | "approval_required"
+    | "respond"
+    | "payment_completed"
+    | "payment_pending"
+    | "payment_failed";
+  request: WalletNwcRequest | null;
+  response: RelayEvent | null;
 }
 
 export interface WalletCommandError {

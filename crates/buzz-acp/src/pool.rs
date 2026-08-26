@@ -1036,7 +1036,7 @@ async fn create_session_and_apply_model(
         .session_title
         .as_deref()
         .map(|agent_name| compose_session_title(agent_name, channel.name));
-    let mcp_servers = mcp_servers_with_git_origin(
+    let mcp_servers = mcp_servers_with_session_context(
         &ctx.mcp_servers,
         channel.id,
         channel.channel_type,
@@ -1265,13 +1265,22 @@ async fn create_session_and_apply_model(
     Ok(resp.session_id)
 }
 
-fn mcp_servers_with_git_origin(
+fn mcp_servers_with_session_context(
     servers: &[McpServer],
     channel_id: Option<Uuid>,
     channel_type: Option<&str>,
     agent_name: Option<&str>,
 ) -> Vec<McpServer> {
     let mut servers = servers.to_vec();
+    if let Some(channel_id) = channel_id {
+        let session_channel = EnvVar {
+            name: "BUZZ_SESSION_CHANNEL_ID".into(),
+            value: channel_id.to_string(),
+        };
+        for server in &mut servers {
+            server.env.push(session_channel.clone());
+        }
+    }
     let origin = match (channel_id, channel_type) {
         (Some(channel_id), Some("stream")) => Some(EnvVar {
             name: "BUZZ_GIT_ORIGIN_CHANNEL_ID".into(),
@@ -4790,12 +4799,15 @@ mod tests {
     #[test]
     fn public_session_forwards_channel_origin_to_mcp() {
         let channel_id = Uuid::new_v4();
-        let servers = mcp_servers_with_git_origin(
+        let servers = mcp_servers_with_session_context(
             &[test_mcp_server()],
             Some(channel_id),
             Some("stream"),
             None,
         );
+        assert!(servers[0].env.iter().any(|entry| {
+            entry.name == "BUZZ_SESSION_CHANNEL_ID" && entry.value == channel_id.to_string()
+        }));
         assert!(servers[0].env.iter().any(|entry| {
             entry.name == "BUZZ_GIT_ORIGIN_CHANNEL_ID" && entry.value == channel_id.to_string()
         }));
@@ -4806,13 +4818,17 @@ mod tests {
     }
 
     #[test]
-    fn private_session_forwards_agent_name_without_channel_id() {
-        let servers = mcp_servers_with_git_origin(
+    fn private_session_forwards_channel_and_agent_name() {
+        let channel_id = Uuid::new_v4();
+        let servers = mcp_servers_with_session_context(
             &[test_mcp_server()],
-            Some(Uuid::new_v4()),
+            Some(channel_id),
             Some("dm"),
             Some("Builder"),
         );
+        assert!(servers[0].env.iter().any(|entry| {
+            entry.name == "BUZZ_SESSION_CHANNEL_ID" && entry.value == channel_id.to_string()
+        }));
         assert!(servers[0].env.iter().any(|entry| {
             entry.name == "BUZZ_GIT_ORIGIN_AGENT_NAME" && entry.value == "Builder"
         }));

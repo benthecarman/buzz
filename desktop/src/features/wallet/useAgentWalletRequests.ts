@@ -9,7 +9,7 @@ import { truncatePubkey } from "@/shared/lib/pubkey";
 import { formatBitcoin } from "./lib/formatBitcoin";
 import {
   buildNwcWalletResponse,
-  parseNwcWalletRequest,
+  handleNwcWalletRequest,
   sendWalletPayment,
 } from "./api";
 
@@ -38,15 +38,44 @@ export function useAgentWalletRequests(ownerPubkey: string | undefined) {
 
   const handleRequest = React.useEffectEvent(async (event: RelayEvent) => {
     if (handledRef.current.has(event.id)) return;
-    let request: Awaited<ReturnType<typeof parseNwcWalletRequest>>;
+    let handling: Awaited<ReturnType<typeof handleNwcWalletRequest>>;
     try {
-      request = await parseNwcWalletRequest(event);
+      handling = await handleNwcWalletRequest(event);
     } catch (error) {
       console.error("Rejected invalid agent NWC request", error);
       return;
     }
     handledRef.current.add(event.id);
-    const recipient = truncatePubkey(request.recipientPubkey);
+    if (handling.action !== "approval_required" && handling.response) {
+      try {
+        await relayClient.publishEvent(
+          handling.response,
+          RESPONSE_TIMEOUT,
+          RESPONSE_FAILED,
+        );
+        if (handling.request && handling.action === "payment_completed") {
+          toast.success(`${handling.request.agentName}'s payment was paid`, {
+            description: `${formatBitcoin(handling.request.amount)} · Auto-approved within budget`,
+          });
+        } else if (handling.request && handling.action === "payment_pending") {
+          toast.warning(`${handling.request.agentName}'s payment is pending`, {
+            description:
+              "The reserved budget remains in use while the wallet reconciles.",
+          });
+        } else if (handling.request && handling.action === "payment_failed") {
+          toast.error(`${handling.request.agentName}'s payment failed`);
+        }
+      } catch (error) {
+        console.error("Failed to return automatic NWC response", error);
+      }
+      return;
+    }
+    const request = handling.request;
+    if (!request) return;
+    const isZap = request.requestType === "zap";
+    const recipient = request.recipientPubkey
+      ? truncatePubkey(request.recipientPubkey)
+      : "BIP-321 payment request";
     const description = request.comment.trim()
       ? `${formatBitcoin(request.amount)} to ${recipient} · ${request.comment.trim().slice(0, 120)}`
       : `${formatBitcoin(request.amount)} to ${recipient}`;
@@ -54,7 +83,7 @@ export function useAgentWalletRequests(ownerPubkey: string | undefined) {
     if (approvalDuration <= 0) return;
     const toastId = `wallet-request-${event.id}`;
 
-    toast(`${request.agentName} requests a zap`, {
+    toast(`${request.agentName} requests ${isZap ? "a zap" : "a payment"}`, {
       id: toastId,
       description,
       duration: approvalDuration,
@@ -85,7 +114,9 @@ export function useAgentWalletRequests(ownerPubkey: string | undefined) {
                   responseError,
                 );
               }
-              toast.error("Agent zap failed", { description: message });
+              toast.error(`Agent ${isZap ? "zap" : "payment"} failed`, {
+                description: message,
+              });
               return;
             }
             try {
@@ -95,14 +126,20 @@ export function useAgentWalletRequests(ownerPubkey: string | undefined) {
                 RESPONSE_TIMEOUT,
                 RESPONSE_FAILED,
               );
-              toast.success(`${request.agentName}'s zap was paid`, {
-                description: formatBitcoin(request.amount),
-              });
+              toast.success(
+                `${request.agentName}'s ${isZap ? "zap" : "payment"} was paid`,
+                {
+                  description: formatBitcoin(request.amount),
+                },
+              );
             } catch (error) {
               console.error("Payment succeeded but NWC response failed", error);
-              toast.warning("Zap paid; response delivery failed", {
-                description: `${request.agentName} may need to check the payment status.`,
-              });
+              toast.warning(
+                `${isZap ? "Zap" : "Payment"} paid; response delivery failed`,
+                {
+                  description: `${request.agentName} may need to check the payment status.`,
+                },
+              );
             }
           })();
         },

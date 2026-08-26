@@ -57,6 +57,7 @@ pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
     "api_tokens",
     "archived_identities",
     "audit_log",
+    "bolt12_zap_payments",
     "channel_members",
     "channels",
     "community_bans",
@@ -86,6 +87,7 @@ pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
 
 /// Foreign-key-safe child-before-parent order for the PostgreSQL purge.
 pub const PURGE_SCOPED_TABLES: &[&str] = &[
+    "bolt12_zap_payments",
     "workflow_approvals",
     "scheduled_workflow_fires",
     "workflow_runs",
@@ -3099,6 +3101,12 @@ mod tests {
                 empty_prefix("repos/c/"),
             ],
         }
+    }
+
+    #[test]
+    fn bolt12_payments_are_in_the_deletion_surface() {
+        assert!(EXPECTED_SCOPED_TABLES.contains(&"bolt12_zap_payments"));
+        assert!(PURGE_SCOPED_TABLES.contains(&"bolt12_zap_payments"));
     }
 
     #[test]

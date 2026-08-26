@@ -88,6 +88,100 @@ function huddleStarted(overrides = {}) {
   };
 }
 
+function systemMessage(content, overrides = {}) {
+  return {
+    id: HEX64_B,
+    pubkey: RELAY_PUBKEY,
+    kind: 40099,
+    created_at: 1_700_000_001,
+    content: JSON.stringify(content),
+    tags: [["h", CHANNEL_ID]],
+    sig: "sig",
+    ...overrides,
+  };
+}
+
+function hostedAgentClaimRequest(overrides = {}) {
+  return streamMessage({
+    kind: 40002,
+    content:
+      "Payment received. I am setting up Silly Elephant now. Buzz is completing the ownership and wallet setup.",
+    tags: [
+      ["d", "411f1005-7a4b-4dc5-ace8-d1805ea99b00"],
+      ["h", CHANNEL_ID],
+      ["p", PUBKEY_B],
+      ["agent", "3".repeat(64)],
+      ["name", "Silly Elephant"],
+      ["e", "4".repeat(64), "", "plan"],
+      ["e", "5".repeat(64), "", "zap"],
+    ],
+    ...overrides,
+  });
+}
+
+test("explicit-model migration tombstones stay out of the timeline", () => {
+  const migrationTombstone = systemMessage({
+    type: "message_deleted",
+    public_reason: "Superseded by an explicit-model plan",
+    target_event_id: HEX64_A,
+  });
+  const ordinaryTombstone = systemMessage(
+    {
+      type: "message_deleted",
+      public_reason: "Removed duplicate content",
+      target_event_id: HEX64_A,
+    },
+    { id: HEX64_A },
+  );
+
+  assert.equal(isTimelineContentEvent(migrationTombstone), false);
+  assert.equal(isTimelineContentEvent(ordinaryTombstone), true);
+  assert.deepEqual(
+    formatTimelineMessages(
+      [migrationTombstone, ordinaryTombstone],
+      null,
+      undefined,
+      RELAY_PUBKEY,
+    ).map((message) => message.id),
+    [HEX64_A],
+  );
+});
+
+test("hosted-agent ownership protocol renders one factory request", () => {
+  const oldRequest = hostedAgentClaimRequest({ id: HEX64_A });
+  const latestRequest = hostedAgentClaimRequest({
+    id: HEX64_B,
+    created_at: oldRequest.created_at + 1,
+  });
+  const attestation = streamMessage({
+    id: "c".repeat(64),
+    pubkey: PUBKEY_B,
+    kind: 40002,
+    content: "",
+    created_at: latestRequest.created_at + 1,
+    tags: [
+      ["d", "411f1005-7a4b-4dc5-ace8-d1805ea99b00"],
+      ["h", CHANNEL_ID],
+      ["p", PUBKEY_A],
+      ["agent", "3".repeat(64)],
+      ["e", latestRequest.id, "", "claim-request"],
+      ["e", "4".repeat(64), "", "plan"],
+      ["e", "5".repeat(64), "", "zap"],
+      ["auth", "", "signature", PUBKEY_B],
+    ],
+  });
+  const events = [oldRequest, latestRequest, attestation];
+
+  assert.equal(isTimelineContentEvent(attestation), false);
+  assert.equal(countTopLevelTimelineRows(events), 1);
+  assert.deepEqual(
+    formatTimelineMessages(events, null, PUBKEY_B, null).map(
+      (message) => message.id,
+    ),
+    [latestRequest.id],
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Keystone regression: aux events (edits/deletions) apply by `#e` reference,
 // NOT by time-window overlap. This is the invariant the split-query +
@@ -129,7 +223,6 @@ test("a far-future deletion still hides an old message", () => {
     "the far-future deletion must filter out the old message regardless of the time gap",
   );
 });
-
 test("kind:5 (NIP-09) deletion hides the target message", () => {
   const events = [streamMessage(), deletionEvent(5, HEX64_A)];
   const out = formatTimelineMessages(events, null, undefined, null);
@@ -772,4 +865,23 @@ test("verified agent owner may publish a suppression edit", () => {
     message.tags.some((tag) => tag[0] === "link-preview"),
     true,
   );
+});
+
+test("hosted agent shows its NIP-OA owner", () => {
+  const profiles = {
+    [PUBKEY_A]: {
+      isAgent: true,
+      ownerPubkey: HEX64_B,
+    },
+  };
+  const [message] = formatTimelineMessages(
+    [streamMessage()],
+    null,
+    HEX64_B,
+    null,
+    profiles,
+  );
+
+  assert.equal(message.ownerPubkey, HEX64_B);
+  assert.equal(message.ownerLabel, "you");
 });

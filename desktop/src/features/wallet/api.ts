@@ -7,6 +7,10 @@ import type {
   WalletFundingRequest,
   WalletOfferPublicationResult,
   WalletPaymentResult,
+  WalletNwcClient,
+  WalletNwcDefaultPolicy,
+  WalletNwcHandlingResult,
+  WalletNwcPolicyUpdate,
   WalletNwcRequest,
   WalletProfileZapDraft,
   WalletProfileZapRequest,
@@ -92,6 +96,36 @@ export function parseNwcWalletRequest(
   event: RelayEvent,
 ): Promise<WalletNwcRequest> {
   return invoke<WalletNwcRequest>("wallet_parse_nwc_request", { event });
+}
+
+export function handleNwcWalletRequest(
+  event: RelayEvent,
+): Promise<WalletNwcHandlingResult> {
+  return invoke<WalletNwcHandlingResult>("wallet_handle_nwc_request", {
+    event,
+  });
+}
+
+export function listNwcWalletClients(): Promise<WalletNwcClient[]> {
+  return invoke<WalletNwcClient[]>("wallet_list_nwc_clients");
+}
+
+export function setNwcWalletPolicy(
+  update: WalletNwcPolicyUpdate,
+): Promise<WalletNwcClient> {
+  return invoke<WalletNwcClient>("wallet_set_nwc_policy", { update });
+}
+
+export function getNwcWalletDefaultPolicy(): Promise<WalletNwcDefaultPolicy> {
+  return invoke<WalletNwcDefaultPolicy>("wallet_get_default_nwc_policy");
+}
+
+export function setNwcWalletDefaultPolicy(
+  update: WalletNwcDefaultPolicy,
+): Promise<WalletNwcDefaultPolicy> {
+  return invoke<WalletNwcDefaultPolicy>("wallet_set_default_nwc_policy", {
+    update,
+  });
 }
 
 export function buildNwcWalletResponse(input: {

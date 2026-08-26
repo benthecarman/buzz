@@ -30,6 +30,10 @@ export function mergeOwnedAgentPubkeys(
     | Readonly<Record<string, { ownerPubkey?: string | null }>>
     | undefined,
   currentPubkey: string | null | undefined,
+  relayAgents?: readonly {
+    pubkey: string;
+    ownerPubkey?: string | null;
+  }[],
 ): ReadonlySet<string> {
   const pubkeys = new Set<string>();
   for (const agent of managedAgents ?? []) {
@@ -39,6 +43,14 @@ export function mergeOwnedAgentPubkeys(
   if (!currentPubkey) return pubkeys;
 
   const ownerPubkey = normalizePubkey(currentPubkey);
+  for (const agent of relayAgents ?? []) {
+    if (
+      agent.ownerPubkey &&
+      normalizePubkey(agent.ownerPubkey) === ownerPubkey
+    ) {
+      pubkeys.add(normalizePubkey(agent.pubkey));
+    }
+  }
   for (const [pubkey, profile] of Object.entries(profiles ?? {})) {
     if (
       profile.ownerPubkey &&

@@ -11,14 +11,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::kind::{KIND_NWC_REQUEST, KIND_NWC_RESPONSE};
 
-/// NWC-321 `pay` parameters used for a BOLT12 zap payment.
+/// NWC-321 `pay` parameters used for payments and BOLT12 zaps.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NwcPayParams {
-    /// BIP-321 URI containing the selected Lightning instruction.
+    /// BIP-321 URI containing one or more payment instructions.
     pub payment: String,
-    /// Amount in millisatoshis. Required for amountless BOLT12 offers.
-    pub amount: u64,
-    /// NIP-B1 payer note binding the payment to the signed zap intent.
+    /// Amount in millisatoshis. Required when the selected instruction has no amount.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<u64>,
+    /// Optional payer note. NIP-B1 uses it to bind a zap to its signed intent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payer_note: Option<String>,
     /// Optional application metadata.
@@ -33,6 +34,20 @@ pub struct NwcPayRequest {
     pub method: String,
     /// Payment parameters.
     pub params: NwcPayParams,
+}
+
+/// NWC `get_balance` parameters.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NwcGetBalanceParams {}
+
+/// A decrypted NWC request supported by Buzz wallets.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+pub enum NwcRequest {
+    /// NWC-321 payment request.
+    Pay(NwcPayParams),
+    /// Read the amount available to this NWC client.
+    GetBalance(NwcGetBalanceParams),
 }
 
 /// NWC error returned by the wallet service.
@@ -58,9 +73,15 @@ pub struct NwcPayResult {
     /// Fees in millisatoshis, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fees_paid: Option<u64>,
+    /// Lightning payment preimage, when exposed by the wallet provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preimage: Option<String>,
     /// BOLT12 payer proof, when exposed by the wallet provider.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payer_proof: Option<String>,
+    /// Bitcoin transaction ID for an on-chain payment, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub txid: Option<String>,
     /// Failure detail. Required by NWC-321 when `state` is `failed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
@@ -80,6 +101,24 @@ pub struct NwcPayResponse {
     pub error: Option<NwcErrorBody>,
     /// Present when the wallet accepted or completed the payment.
     pub result: Option<NwcPayResult>,
+}
+
+/// NWC balance result. The amount is in millisatoshis.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NwcGetBalanceResult {
+    /// Amount the NWC client can currently spend, in millisatoshis.
+    pub balance: u64,
+}
+
+/// Decrypted NWC response body for the `get_balance` method.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NwcGetBalanceResponse {
+    /// Always `get_balance` for this response type.
+    pub result_type: String,
+    /// Non-null when the request failed.
+    pub error: Option<NwcErrorBody>,
+    /// Present when the balance read succeeded.
+    pub result: Option<NwcGetBalanceResult>,
 }
 
 /// NIP-47 event validation or encryption failure.
@@ -145,9 +184,9 @@ pub fn build_pay_request(
     params: NwcPayParams,
     expiration: u64,
 ) -> Result<EventBuilder, NwcWireError> {
-    if params.amount == 0 || params.payment.is_empty() {
+    if params.amount == Some(0) || params.payment.is_empty() {
         return Err(NwcWireError::Invalid(
-            "payment and a positive amount are required".into(),
+            "payment must be set and amount must be positive when present".into(),
         ));
     }
     let plaintext = serde_json::to_string(&NwcPayRequest {
@@ -166,22 +205,66 @@ pub fn build_pay_request(
     )
 }
 
+/// Build an unsigned encrypted kind-23194 NWC `get_balance` request.
+pub fn build_get_balance_request(
+    client: &Keys,
+    wallet_service: &PublicKey,
+    expiration: u64,
+) -> Result<EventBuilder, NwcWireError> {
+    build_request(
+        client,
+        wallet_service,
+        &NwcRequest::GetBalance(NwcGetBalanceParams {}),
+        expiration,
+    )
+}
+
+fn build_request(
+    client: &Keys,
+    wallet_service: &PublicKey,
+    request: &NwcRequest,
+    expiration: u64,
+) -> Result<EventBuilder, NwcWireError> {
+    let plaintext =
+        serde_json::to_string(request).map_err(|error| NwcWireError::Payload(error.to_string()))?;
+    let ciphertext = nip44::encrypt(client.secret_key(), wallet_service, plaintext, Version::V2)
+        .map_err(|error| NwcWireError::Encryption(error.to_string()))?;
+    Ok(
+        EventBuilder::new(Kind::Custom(KIND_NWC_REQUEST as u16), ciphertext).tags([
+            tag(["p", wallet_service.to_hex().as_str()])?,
+            tag(["encryption", "nip44_v2"])?,
+            tag(["expiration", expiration.to_string().as_str()])?,
+        ]),
+    )
+}
+
+/// Validate and decrypt a supported kind-23194 NWC request.
+pub fn decrypt_request(event: &Event, wallet_service: &Keys) -> Result<NwcRequest, NwcWireError> {
+    validate_recipient(event, KIND_NWC_REQUEST, &wallet_service.public_key())?;
+    let plaintext = nip44::decrypt(wallet_service.secret_key(), &event.pubkey, &event.content)
+        .map_err(|error| NwcWireError::Encryption(error.to_string()))?;
+    serde_json::from_str(&plaintext).map_err(|error| NwcWireError::Payload(error.to_string()))
+}
+
 /// Validate and decrypt a kind-23194 NWC-321 `pay` request.
 pub fn decrypt_pay_request(
     event: &Event,
     wallet_service: &Keys,
 ) -> Result<NwcPayRequest, NwcWireError> {
-    validate_recipient(event, KIND_NWC_REQUEST, &wallet_service.public_key())?;
-    let plaintext = nip44::decrypt(wallet_service.secret_key(), &event.pubkey, &event.content)
-        .map_err(|error| NwcWireError::Encryption(error.to_string()))?;
-    let request: NwcPayRequest = serde_json::from_str(&plaintext)
-        .map_err(|error| NwcWireError::Payload(error.to_string()))?;
-    if request.method != "pay" || request.params.amount == 0 || request.params.payment.is_empty() {
+    let NwcRequest::Pay(params) = decrypt_request(event, wallet_service)? else {
+        return Err(NwcWireError::Invalid(
+            "unsupported or incomplete request".into(),
+        ));
+    };
+    if params.amount == Some(0) || params.payment.is_empty() {
         return Err(NwcWireError::Invalid(
             "unsupported or incomplete request".into(),
         ));
     }
-    Ok(request)
+    Ok(NwcPayRequest {
+        method: "pay".into(),
+        params,
+    })
 }
 
 /// Build an unsigned encrypted kind-23195 response to `request`.
@@ -189,6 +272,23 @@ pub fn build_pay_response(
     wallet_service: &Keys,
     request: &Event,
     response: &NwcPayResponse,
+) -> Result<EventBuilder, NwcWireError> {
+    build_response(wallet_service, request, response)
+}
+
+/// Build an unsigned encrypted `get_balance` response to `request`.
+pub fn build_get_balance_response(
+    wallet_service: &Keys,
+    request: &Event,
+    response: &NwcGetBalanceResponse,
+) -> Result<EventBuilder, NwcWireError> {
+    build_response(wallet_service, request, response)
+}
+
+fn build_response(
+    wallet_service: &Keys,
+    request: &Event,
+    response: &impl Serialize,
 ) -> Result<EventBuilder, NwcWireError> {
     if request.kind != Kind::Custom(KIND_NWC_REQUEST as u16) {
         return Err(NwcWireError::Invalid(
@@ -226,6 +326,26 @@ pub fn decrypt_pay_response(event: &Event, client: &Keys) -> Result<NwcPayRespon
     Ok(response)
 }
 
+/// Validate and decrypt a kind-23195 `get_balance` response.
+pub fn decrypt_get_balance_response(
+    event: &Event,
+    client: &Keys,
+) -> Result<NwcGetBalanceResponse, NwcWireError> {
+    validate_recipient(event, KIND_NWC_RESPONSE, &client.public_key())?;
+    let plaintext = nip44::decrypt(client.secret_key(), &event.pubkey, &event.content)
+        .map_err(|error| NwcWireError::Encryption(error.to_string()))?;
+    let response: NwcGetBalanceResponse = serde_json::from_str(&plaintext)
+        .map_err(|error| NwcWireError::Payload(error.to_string()))?;
+    if response.result_type != "get_balance"
+        || response.error.is_some() == response.result.is_some()
+    {
+        return Err(NwcWireError::Invalid(
+            "malformed get_balance response".into(),
+        ));
+    }
+    Ok(response)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,7 +359,7 @@ mod tests {
             &wallet.public_key(),
             NwcPayParams {
                 payment: "bitcoin:?lno=lno1example".into(),
-                amount: 21_000,
+                amount: Some(21_000),
                 payer_note: Some("nostr:nipB1:intent".into()),
                 metadata: Default::default(),
             },
@@ -249,7 +369,7 @@ mod tests {
         .sign_with_keys(&client)
         .unwrap();
         let decoded = decrypt_pay_request(&request, &wallet).unwrap();
-        assert_eq!(decoded.params.amount, 21_000);
+        assert_eq!(decoded.params.amount, Some(21_000));
 
         let response = build_pay_response(
             &wallet,
@@ -263,7 +383,9 @@ mod tests {
                     instruction_type: "bolt12".into(),
                     amount: 21_000,
                     fees_paid: Some(1_000),
+                    preimage: Some("11".repeat(32)),
                     payer_proof: None,
+                    txid: Some("22".repeat(32)),
                     failure_reason: None,
                     created_at: 1,
                     settled_at: Some(2),
@@ -273,13 +395,47 @@ mod tests {
         .unwrap()
         .sign_with_keys(&wallet)
         .unwrap();
+        let result = decrypt_pay_response(&response, &client)
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(result.state, "settled");
+        assert_eq!(result.preimage, Some("11".repeat(32)));
+        assert_eq!(result.txid, Some("22".repeat(32)));
+    }
+
+    #[test]
+    fn get_balance_request_and_response_round_trip() {
+        let client = Keys::generate();
+        let wallet = Keys::generate();
+        let request = build_get_balance_request(&client, &wallet.public_key(), u64::MAX)
+            .unwrap()
+            .sign_with_keys(&client)
+            .unwrap();
         assert_eq!(
-            decrypt_pay_response(&response, &client)
+            decrypt_request(&request, &wallet).unwrap(),
+            NwcRequest::GetBalance(NwcGetBalanceParams {})
+        );
+
+        let response = build_get_balance_response(
+            &wallet,
+            &request,
+            &NwcGetBalanceResponse {
+                result_type: "get_balance".into(),
+                error: None,
+                result: Some(NwcGetBalanceResult { balance: 21_000 }),
+            },
+        )
+        .unwrap()
+        .sign_with_keys(&wallet)
+        .unwrap();
+        assert_eq!(
+            decrypt_get_balance_response(&response, &client)
                 .unwrap()
                 .result
                 .unwrap()
-                .state,
-            "settled"
+                .balance,
+            21_000
         );
     }
 }

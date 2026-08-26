@@ -37,6 +37,7 @@ nostr = { workspace = true }
 
 # Typed BOLT12 and BIP-321 parsing/formatting.
 lightning = { workspace = true }
+lightning-payer-proof = { workspace = true }
 lexe-api-core = { workspace = true }
 lexe-payment-uri-core = { workspace = true }
 
@@ -77,6 +78,7 @@ buzz-persona = { path = "../buzz-persona" }
 # Platform app-data dir resolution — locates the desktop app's
 # channel-templates.json store for `channels create --template`
 dirs = "6"
+atomic-write-file = "0.3"
 
 # WebSocket client — ephemeral event publish (kind:20001 is WS-only on the relay)
 buzz-ws-client = { path = "../buzz-ws-client" }

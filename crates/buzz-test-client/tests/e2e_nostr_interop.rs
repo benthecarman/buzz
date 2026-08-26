@@ -22,7 +22,7 @@
 use std::time::Duration;
 
 use buzz_test_client::{BuzzTestClient, RelayMessage, TestClientError};
-use nostr::{Alphabet, EventBuilder, Filter, Keys, Kind, SingleLetterTag, Tag};
+use nostr::{Alphabet, EventBuilder, Filter, JsonUtil, Keys, Kind, SingleLetterTag, Tag};
 
 fn relay_url() -> String {
     std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://localhost:3000".to_string())
@@ -1768,7 +1768,7 @@ fn partition_window(
 }
 
 /// End-to-end channel window: replies stay out of the rows, thread summaries
-/// and reactions ride along, and `39006.has_more`/`next_cursor` chain pages
+/// and reactions/zaps ride along, and `39006.has_more`/`next_cursor` chain pages
 /// to exhaustion — including the exact-multiple final page, where row count
 /// alone would lie.
 #[tokio::test]
@@ -1816,6 +1816,45 @@ async fn test_channel_window_rows_overlays_and_exact_multiple_exhaustion() {
         .expect("sign reaction");
     let ok = client.send_event(reaction).await.expect("send reaction");
     assert!(ok.accepted, "relay rejected reaction: {}", ok.message);
+    let valid_offer = buzz_core::payer_proof_test_utils::payer_proof_for_note("").0;
+    let offer_event = EventBuilder::new(Kind::Custom(10058), "")
+        .tag(Tag::parse(["offer", valid_offer.as_str()]).unwrap())
+        .sign_with_keys(&keys)
+        .expect("sign offer event");
+    let intent = EventBuilder::new(Kind::Custom(9737), "window zap")
+        .tags([
+            Tag::parse(["p", &keys.public_key().to_hex()]).unwrap(),
+            Tag::parse(["amount", "42000"]).unwrap(),
+            Tag::parse(["offer_event", &offer_event.as_json()]).unwrap(),
+            Tag::parse(["zap_id", "00112233445566778899aabbccddeeff"]).unwrap(),
+            Tag::parse(["e", &root_id]).unwrap(),
+            Tag::parse(["k", "9"]).unwrap(),
+        ])
+        .sign_with_keys(&keys)
+        .expect("sign zap intent");
+    let (_, payer_proof, invoice_created_at) =
+        buzz_core::payer_proof_test_utils::payer_proof_for_note(&format!(
+            "nostr:nipB1:{}",
+            intent.id.to_hex()
+        ));
+    let mut zap_tags = intent
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().map(String::as_str) != Some("zap_id"))
+        .cloned()
+        .collect::<Vec<_>>();
+    zap_tags.extend([
+        Tag::parse(["description", &intent.as_json()]).unwrap(),
+        Tag::parse(["P", &keys.public_key().to_hex()]).unwrap(),
+        Tag::parse(["proof", payer_proof.as_str()]).unwrap(),
+    ]);
+    let zap = EventBuilder::new(Kind::Custom(9736), "window zap")
+        .tags(zap_tags)
+        .custom_created_at(nostr::Timestamp::from(invoice_created_at))
+        .sign_with_keys(&keys)
+        .expect("sign zap");
+    let ok = client.send_event(zap).await.expect("send zap");
+    assert!(ok.accepted, "relay rejected zap: {}", ok.message);
     client.disconnect().await.expect("disconnect");
 
     // Page 1 (head request).
@@ -1856,6 +1895,10 @@ async fn test_channel_window_rows_overlays_and_exact_multiple_exhaustion() {
     assert!(
         aux1.iter().any(|a| a["kind"].as_u64() == Some(7)),
         "reaction missing from aux closure: {aux1:?}"
+    );
+    assert!(
+        aux1.iter().any(|a| a["kind"].as_u64() == Some(9736)),
+        "zap missing from aux closure: {aux1:?}"
     );
 
     // Bounds: head request d-tag suffix, has_more true, cursor present.

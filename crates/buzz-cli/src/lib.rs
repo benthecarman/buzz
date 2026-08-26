@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use client::BuzzClient;
 use error::CliError;
 use nostr::Keys;
+use std::str::FromStr;
 use uuid::Uuid;
 
 /// Run the Buzz CLI from raw arguments (including `argv[0]`).
@@ -245,25 +246,97 @@ enum Cmd {
     Wallet(WalletCmd),
 }
 
+/// A positive wallet amount with an explicit satoshi or millisatoshi unit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WalletAmount {
+    millisatoshis: u64,
+}
+
+impl WalletAmount {
+    pub(crate) fn millisatoshis(self) -> u64 {
+        self.millisatoshis
+    }
+}
+
+impl FromStr for WalletAmount {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (digits, multiplier) = [
+            ("msats", 1_u64),
+            ("msat", 1),
+            ("sats", 1_000),
+            ("sat", 1_000),
+        ]
+        .into_iter()
+        .find_map(|(suffix, multiplier)| {
+            value
+                .strip_suffix(suffix)
+                .map(|digits| (digits, multiplier))
+        })
+        .ok_or_else(|| {
+            "amount must be an integer followed by sat, sats, msat, or msats".to_string()
+        })?;
+        let amount = digits.parse::<u64>().map_err(|_| {
+            "amount must be an integer followed by sat, sats, msat, or msats".to_string()
+        })?;
+        if amount == 0 {
+            return Err("amount must be greater than zero".to_string());
+        }
+        let millisatoshis = amount
+            .checked_mul(multiplier)
+            .ok_or_else(|| "amount is too large".to_string())?;
+        Ok(Self { millisatoshis })
+    }
+}
+
 #[derive(Subcommand)]
 pub enum WalletCmd {
-    /// Ask the owner wallet to pay a BOLT12 zap and wait for its NWC response
+    /// Read the amount available from the owner wallet
+    Balance {
+        /// Maximum time to wait for the owner wallet response
+        #[arg(long, default_value_t = 60)]
+        wait_seconds: u64,
+    },
+    /// Ask the owner wallet to pay a BIP-321 payment request
+    Pay {
+        /// Complete BIP-321 URI; a raw BOLT11 invoice is also accepted
+        payment: String,
+        /// Amount with a required unit, such as 50sats or 50000msats.
+        /// Do not set it if the payment string contains an amount.
+        #[arg(long)]
+        amount: Option<WalletAmount>,
+        /// Maximum time to wait for owner approval
+        #[arg(long, default_value_t = 600)]
+        wait_seconds: u64,
+    },
+    /// Resume an unresolved payment with its original signed request
+    Status {
+        /// Request event ID printed by the original payment command
+        request_event_id: String,
+        /// Maximum time to wait for the owner wallet response
+        #[arg(long, default_value_t = 600)]
+        wait_seconds: u64,
+    },
+    /// Zap one Nostr pubkey or event through the owner wallet
+    #[command(group(
+        clap::ArgGroup::new("zap-target")
+            .required(true)
+            .args(["recipient", "event"])
+    ))]
     Zap {
-        /// Recipient Nostr pubkey (hex)
+        /// Recipient Nostr pubkey (hex or npub); conflicts with --event
+        #[arg(long, conflicts_with = "event")]
+        recipient: Option<String>,
+        /// Amount with a required unit, such as 50sats or 50000msats
         #[arg(long)]
-        recipient: String,
-        /// Amount in whole satoshis
-        #[arg(long)]
-        amount: u64,
+        amount: WalletAmount,
         /// Optional zap comment
         #[arg(long, default_value = "")]
         comment: String,
-        /// Optional event id to zap
-        #[arg(long)]
+        /// Event id to zap; its author becomes the recipient
+        #[arg(long, conflicts_with = "recipient")]
         event: Option<String>,
-        /// Kind of the event being zapped; required with --event
-        #[arg(long)]
-        event_kind: Option<u32>,
         /// Maximum time to wait for owner approval
         #[arg(long, default_value_t = 600)]
         wait_seconds: u64,
@@ -2194,6 +2267,108 @@ mod tests {
             event.as_str(),
         ])
         .is_err());
+    }
+
+    #[test]
+    fn wallet_zap_requires_one_target() {
+        let amount = ["--amount", "100sats"];
+        assert!(Cli::try_parse_from(
+            ["buzz", "wallet", "zap", "--recipient", &"a".repeat(64)]
+                .into_iter()
+                .chain(amount),
+        )
+        .is_ok());
+        assert!(Cli::try_parse_from(
+            ["buzz", "wallet", "zap", "--event", &"b".repeat(64)]
+                .into_iter()
+                .chain(amount),
+        )
+        .is_ok());
+        assert!(Cli::try_parse_from(["buzz", "wallet", "zap", "--amount", "100sats"]).is_err());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "wallet",
+            "zap",
+            "--recipient",
+            &"a".repeat(64),
+            "--event",
+            &"b".repeat(64),
+            "--amount",
+            "100sats",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn wallet_amounts_require_units() {
+        let recipient = "a".repeat(64);
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "wallet",
+            "zap",
+            "--recipient",
+            recipient.as_str(),
+            "--amount",
+            "100",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "wallet",
+            "zap",
+            "--recipient",
+            recipient.as_str(),
+            "--amount",
+            "100000msats",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "wallet",
+            "pay",
+            "lnbc1example",
+            "--amount",
+            "100sats",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn wallet_pay_accepts_blocking_wait_option() {
+        assert!(Cli::try_parse_from(["buzz", "wallet", "pay", "lnbc1example"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "wallet",
+            "pay",
+            "lnbc1example",
+            "--wait-seconds",
+            "600",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn wallet_status_accepts_a_request_event_id() {
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "wallet",
+            "status",
+            &"ab".repeat(32),
+            "--wait-seconds",
+            "30",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn wallet_pay_help_warns_against_amount_conflicts() {
+        let mut command = Cli::command();
+        let wallet = command.find_subcommand_mut("wallet").unwrap();
+        let pay = wallet.find_subcommand_mut("pay").unwrap();
+        let help = pay.render_long_help().to_string();
+
+        assert!(help.contains("50sats or 50000msats"));
+        assert!(help.contains("Do not set it if the payment string contains an amount"));
     }
 
     #[test]

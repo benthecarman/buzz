@@ -35,6 +35,9 @@ pub mod nwc;
 pub mod observer;
 /// NIP-AB device pairing — crypto primitives, message types, and errors.
 pub mod pairing;
+#[cfg(any(test, feature = "test-utils"))]
+/// Helpers that create signed payer proofs for protocol tests.
+pub mod payer_proof_test_utils;
 /// Presence status types shared across crates.
 pub mod presence;
 /// NIP-PMA owner-encrypted private managed-agent wire codec.

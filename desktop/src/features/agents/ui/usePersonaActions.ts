@@ -37,6 +37,8 @@ import { personaSaveNotice } from "@/features/agents/lib/personaSaveNotice";
 import { useCreatedAgentChannelAttachment } from "@/features/agents/useCreatedAgentChannelAttachment";
 import { useCommunities } from "@/features/communities/useCommunities";
 import { useIdentityQuery } from "@/shared/api/hooks";
+import { setNwcWalletPolicy } from "@/features/wallet/api";
+import type { WalletNwcDefaultPolicy } from "@/features/wallet/types";
 import type {
   SnapshotFormat,
   SnapshotMemoryLevel,
@@ -177,7 +179,10 @@ export function usePersonaActions() {
     intent?: AgentCreateIntent,
     backendIntent?: BackendIntent | null,
     targetChannel?: Pick<Channel, "id" | "name"> | null,
-    options?: { publishCatalogUpdates?: boolean },
+    options?: {
+      publishCatalogUpdates?: boolean;
+      walletPolicy?: WalletNwcDefaultPolicy | null;
+    },
   ): Promise<boolean> {
     if (isPersonaSubmitPending) {
       return false;
@@ -246,6 +251,22 @@ export function usePersonaActions() {
 
         try {
           const created = await createAgentMutation.mutateAsync(agentInput);
+          if (options?.walletPolicy) {
+            try {
+              await setNwcWalletPolicy({
+                agentPubkey: created.agent.pubkey,
+                ...options.walletPolicy,
+              });
+            } catch (walletError) {
+              setPersonaErrorMessage(
+                `${created.agent.name} was created, but its wallet budget could not be set: ${
+                  walletError instanceof Error
+                    ? walletError.message
+                    : "Unknown wallet error"
+                }`,
+              );
+            }
+          }
           await createdAgentAttachment.presentCreatedAgent(
             created,
             targetChannel,
@@ -427,10 +448,16 @@ export function usePersonaActions() {
     setShouldLoadAcpRuntimes(true);
   }
 
-  function openEdit(persona: AgentPersona) {
+  function openEdit(
+    persona: AgentPersona,
+    linkedAgent?: Pick<
+      ManagedAgent,
+      "name" | "pubkey" | "respondTo" | "respondToAllowlist"
+    >,
+  ) {
     clearFeedback("library");
     setShouldLoadAcpRuntimes(true);
-    setPersonaDialogState(editPersonaDialogState(persona));
+    setPersonaDialogState(editPersonaDialogState(persona, linkedAgent));
   }
 
   function openDuplicate(persona: AgentPersona) {

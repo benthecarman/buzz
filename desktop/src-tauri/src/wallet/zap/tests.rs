@@ -2,6 +2,8 @@ use super::*;
 
 use crate::wallet::VALID_OFFER;
 
+const TIMESTAMPED_PROOF: &str = "lnp1tqssxkl9a9rcyzt8f2twvrclqdlkzaj5plgqr7sav355wux9dfmsn3pv5szx4psnpk5zq00s6e7vymzt2ds0kgtw5pr6h787ysnwjw3wu5dnzfx97mymqd5c4gp2gy9syyptkk94lm99qhr5ahqqpkpg9lz4deg6zqj0erna0etvd7y8chydtuhsgq7ded94zlrpvt89k2rml4ulg8qp4lj25rgq8jxx66lyett8d2t0u40q8rdcuec6jsdjznu4kxljg5a2xyfn0c5nvllqhsfc077k33xh79q0wnkl7p53rt5wdx5heuhv65yz2st5zedrh0d34w2kw0uwfy5am5xz5uzyvz37fkknsdy0n2kn65ej5jxpdrae7wappc0xmx7qhk7cgr7s86fq9skzctpv9skzctpv9skzctpv9skzctpv9skzctpv9skzctpv9sk06ql2qsqsyk26l5p7kcp39gkgl3dvh384c64425qrhfdf25m2vklmxc8ys785gxrwhx869jeak0q0u6yn7kq9j79nnvgzplc4wt9dg7zsa4nt5pmszslxk3x50lrw26z0azerm45shxk2d4s3k623ve8lq6wy60fq3w59erhmk6n6l5p7egrc87jvfx62msdekqde8w6rahk5fhu3k5xv8plyegs0we84x0slee27gxzus5hczl7pvsyz0pudg2tz9uegx9mjyg7rzg0cgaxdqhamprruks5zjws2xvanfgr7qchk6ur3900gxcghlzsm00mc83xrfs0gx6eulceyzwh3c29fgcwrqt2rrkdq2meyw5093uzj00zyjew22kvmrzmsf3qgxtl99xy6xrtnfth426wwy62qatlnxtryw8j7hf2uk6laq0kskar9wd6zq6tww3jkuaq";
+
 fn recipient(keys: &Keys) -> WalletRecipientOffer {
     let event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
         .tag(Tag::parse(["offer", VALID_OFFER]).unwrap())
@@ -134,13 +136,28 @@ fn parses_only_canonical_lowercase_offers() {
 }
 
 #[test]
-fn rejects_announcement_when_any_offer_is_not_canonical() {
+fn skips_noncanonical_offers_in_an_announcement() {
     let keys = Keys::generate();
     let event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
         .tags([
-            Tag::parse(["offer", VALID_OFFER]).unwrap(),
             Tag::parse(["offer", &VALID_OFFER.to_ascii_uppercase()]).unwrap(),
+            Tag::parse(["offer", VALID_OFFER]).unwrap(),
         ])
+        .sign_with_keys(&keys)
+        .unwrap();
+    assert_eq!(
+        recipient_offer(&event, &keys.public_key().to_hex())
+            .unwrap()
+            .offer,
+        VALID_OFFER
+    );
+}
+
+#[test]
+fn rejects_announcement_without_a_canonical_offer() {
+    let keys = Keys::generate();
+    let event = EventBuilder::new(Kind::Custom(KIND_BOLT12_OFFER as u16), "")
+        .tag(Tag::parse(["offer", "invalid-offer"]).unwrap())
         .sign_with_keys(&keys)
         .unwrap();
     assert_eq!(
@@ -277,6 +294,7 @@ fn settled_message_zap_builds_a_relay_proof() {
     let payer = Keys::generate();
     let recipient_keys = Keys::generate();
     let target_event_id = "ab".repeat(32);
+    let payer_proof = TIMESTAMPED_PROOF.to_string();
     let mut attempt = ZapAttempt::prepare(
         Uuid::new_v4().to_string(),
         recipient(&recipient_keys),
@@ -285,7 +303,7 @@ fn settled_message_zap_builds_a_relay_proof() {
         ZapTarget {
             event_id: Some(target_event_id.clone()),
             event_kind: Some(40_002),
-            channel_id: None,
+            channel_id: Some("channel-id".to_string()),
             lease_id: None,
         },
         &payer,
@@ -301,6 +319,9 @@ fn settled_message_zap_builds_a_relay_proof() {
                 payment_id: "payment".to_string(),
                 status: WalletPaymentStatus::Completed,
                 status_message: String::new(),
+                preimage: Some("11".repeat(32)),
+                payer_proof: Some(payer_proof.clone()),
+                txid: None,
                 amount: Some(21),
                 fees: 0,
                 created_at_ms: 100,
@@ -336,18 +357,22 @@ fn settled_message_zap_builds_a_relay_proof() {
         attempt.idempotency_key
     );
 
+    let before_proof = nostr::Timestamp::now().as_secs();
     let proof = store
-        .prepare_placeholder_proof(&mut attempt, &payer, Some("channel-id"))
+        .prepare_proof(&mut attempt, &payer, Some("channel-id"))
         .unwrap();
+    let after_proof = nostr::Timestamp::now().as_secs();
     assert_eq!(proof.kind, Kind::Custom(KIND_BOLT12_ZAP as u16));
     assert!(proof
         .tags
         .iter()
-        .any(|tag| tag.as_slice() == ["proof", PLACEHOLDER_PAYER_PROOF]));
+        .any(|tag| tag.as_slice() == ["proof", payer_proof.as_str()]));
     assert!(proof
         .tags
         .iter()
         .any(|tag| tag.as_slice() == ["h", "channel-id"]));
+    assert!(proof.created_at.as_secs() >= before_proof);
+    assert!(proof.created_at.as_secs() <= after_proof);
     assert!(proof
         .tags
         .iter()
@@ -356,43 +381,144 @@ fn settled_message_zap_builds_a_relay_proof() {
         .tags
         .iter()
         .any(|tag| tag.as_slice() == ["amount", "21000"]));
-    let persisted = store
-        .prepare_placeholder_proof(&mut attempt, &payer, None)
-        .unwrap();
+    let persisted = store.prepare_proof(&mut attempt, &payer, None).unwrap();
     assert_eq!(persisted.id, proof.id);
 
-    let mut abandoned = attempt.clone();
-    abandoned.idempotency_key = Uuid::new_v4().to_string();
-    store.save(&mut abandoned).unwrap();
-    store.abandon_proof(&mut abandoned).unwrap();
+    let mut formerly_abandoned = attempt.clone();
+    formerly_abandoned.idempotency_key = Uuid::new_v4().to_string();
+    formerly_abandoned.proof_retry_abandoned = true;
+    store.save(&mut formerly_abandoned).unwrap();
     assert!(store
         .unpublished_proofs_for_relay("https://relay.example")
         .unwrap()
         .iter()
-        .all(|candidate| candidate.idempotency_key != abandoned.idempotency_key));
-    assert!(store
-        .pending_for_recipient(
-            &abandoned.recipient_pubkey,
-            Some(&target_event_id),
-            "https://relay.example",
-        )
-        .unwrap()
-        .is_some_and(|candidate| candidate.idempotency_key != abandoned.idempotency_key));
+        .any(|candidate| candidate.idempotency_key == formerly_abandoned.idempotency_key));
 
     store.mark_proof_published(&mut attempt).unwrap();
-    assert!(store
+    let unpublished = store
         .unpublished_proofs_for_relay("https://relay.example")
-        .unwrap()
-        .is_empty());
-    assert!(store
+        .unwrap();
+    assert_eq!(unpublished.len(), 1);
+    assert_eq!(
+        unpublished[0].idempotency_key,
+        formerly_abandoned.idempotency_key
+    );
+    let pending = store
         .pending_for_recipient(
             &attempt.recipient_pubkey,
             Some(&target_event_id),
             "https://relay.example",
         )
         .unwrap()
-        .is_none());
+        .expect("legacy recovery remains pending");
+    assert_eq!(pending.idempotency_key, formerly_abandoned.idempotency_key);
     assert!(attempt.result().unwrap().proof_published);
+}
+
+#[test]
+fn settled_legacy_message_zap_builds_proof_without_channel() {
+    let temp = tempfile::tempdir().unwrap();
+    let payer = Keys::generate();
+    let recipient_keys = Keys::generate();
+    let target_event_id = "ab".repeat(32);
+    let mut attempt = ZapAttempt::prepare(
+        Uuid::new_v4().to_string(),
+        recipient(&recipient_keys),
+        21,
+        None,
+        ZapTarget {
+            event_id: Some(target_event_id.clone()),
+            event_kind: Some(40_002),
+            channel_id: None,
+            lease_id: None,
+        },
+        &payer,
+    )
+    .unwrap();
+    let store = ZapAttemptStore::new(temp.path(), &payer.public_key().to_hex());
+    store.save_prepared(&mut attempt).unwrap();
+    store.begin_dispatch(&mut attempt).unwrap();
+    store
+        .record_payment(
+            &mut attempt,
+            WalletPaymentResult {
+                payment_id: "payment".to_string(),
+                status: WalletPaymentStatus::Completed,
+                status_message: String::new(),
+                preimage: Some("11".repeat(32)),
+                payer_proof: Some(TIMESTAMPED_PROOF.to_string()),
+                txid: None,
+                amount: Some(21),
+                fees: 0,
+                created_at_ms: 100,
+                finalized_at_ms: Some(200),
+            },
+        )
+        .unwrap();
+
+    let proof = store
+        .prepare_proof(&mut attempt, &payer, Some("channel-id"))
+        .unwrap();
+
+    assert!(proof
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice() == ["e", target_event_id.as_str()]));
+    assert!(!proof
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice().first().map(String::as_str) == Some("h")));
+}
+
+#[test]
+fn settled_channel_bound_zap_rejects_a_different_channel() {
+    let temp = tempfile::tempdir().unwrap();
+    let payer = Keys::generate();
+    let recipient_keys = Keys::generate();
+    let mut attempt = ZapAttempt::prepare(
+        Uuid::new_v4().to_string(),
+        recipient(&recipient_keys),
+        21,
+        None,
+        ZapTarget {
+            event_id: Some("ab".repeat(32)),
+            event_kind: Some(40_002),
+            channel_id: Some("signed-channel".to_string()),
+            lease_id: None,
+        },
+        &payer,
+    )
+    .unwrap();
+    let store = ZapAttemptStore::new(temp.path(), &payer.public_key().to_hex());
+    store.save_prepared(&mut attempt).unwrap();
+    store.begin_dispatch(&mut attempt).unwrap();
+    store
+        .record_payment(
+            &mut attempt,
+            WalletPaymentResult {
+                payment_id: "payment".to_string(),
+                status: WalletPaymentStatus::Completed,
+                status_message: String::new(),
+                preimage: Some("11".repeat(32)),
+                payer_proof: Some(TIMESTAMPED_PROOF.to_string()),
+                txid: None,
+                amount: Some(21),
+                fees: 0,
+                created_at_ms: 100,
+                finalized_at_ms: Some(200),
+            },
+        )
+        .unwrap();
+
+    let error = store
+        .prepare_proof(&mut attempt, &payer, Some("different-channel"))
+        .unwrap_err();
+
+    assert_eq!(error.code, "invalid_zap");
+    assert_eq!(
+        error.message,
+        "The channel must be signed into the zap intent"
+    );
 }
 
 #[test]
@@ -425,6 +551,9 @@ fn paying_attempts_are_relay_scoped_for_background_reconciliation() {
                 payment_id: "payment".to_string(),
                 status: WalletPaymentStatus::Pending,
                 status_message: String::new(),
+                preimage: None,
+                payer_proof: None,
+                txid: None,
                 amount: Some(21),
                 fees: 0,
                 created_at_ms: 100,

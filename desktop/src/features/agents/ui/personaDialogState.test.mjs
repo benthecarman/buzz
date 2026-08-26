@@ -154,6 +154,35 @@ test("editPersonaDialogState preserves the persona id for updates", () => {
   });
 });
 
+test("editPersonaDialogState keeps the linked wallet agent", () => {
+  const state = editPersonaDialogState(
+    {
+      id: "persona-wallet",
+      displayName: "Budget agent",
+      avatarUrl: null,
+      systemPrompt: "Stay within budget.",
+      runtime: null,
+      model: null,
+      provider: null,
+      isBuiltIn: false,
+      isActive: true,
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-02T00:00:00Z",
+    },
+    {
+      name: "Budget agent instance",
+      pubkey: "a".repeat(64),
+      respondTo: "owner-only",
+      respondToAllowlist: [],
+    },
+  );
+
+  assert.deepEqual(state.walletAgent, {
+    name: "Budget agent instance",
+    pubkey: "a".repeat(64),
+  });
+});
+
 test("editPersonaDialogState seeds envVars and namePool from the persona", () => {
   const state = editPersonaDialogState({
     id: "persona-3",

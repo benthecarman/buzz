@@ -1,25 +1,24 @@
 use std::{
     io::Write,
     path::{Path, PathBuf},
+    str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use buzz_conformance_pkg::wallet::{WalletAbstractState, WalletAttemptStatus, WalletTraceAction};
 use buzz_core_pkg::kind::{KIND_BOLT12_OFFER, KIND_BOLT12_ZAP, KIND_BOLT12_ZAP_INTENT};
+use lightning_payer_proof::{verify, Offer};
 use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::conformance;
 use super::models::{
     WalletError, WalletPaymentResult, WalletPaymentStatus, WalletProfileZapDraft,
     WalletProfileZapResult, WalletRecipientOffer,
 };
-use super::{conformance, lexe_provider::canonical_offer};
 
 const TERMINAL_ATTEMPT_RETENTION_MS: u64 = 90 * 24 * 60 * 60 * 1_000;
-/// Valid compatibility proof until the wallet exposes a real `lnp` proof.
-pub(crate) const PLACEHOLDER_PAYER_PROOF: &str = "placeholder";
-
 fn tag(parts: impl IntoIterator<Item = impl Into<String>>) -> Result<Tag, WalletError> {
     Tag::parse(parts).map_err(|error| WalletError::new("invalid_zap", error.to_string()))
 }
@@ -86,17 +85,8 @@ pub fn recipient_offer(
                 .then(|| parts.get(1).cloned())
                 .flatten()
         })
+        .filter(|offer| validate_canonical_offer(offer).is_ok())
         .collect::<Vec<_>>();
-    if offers.is_empty()
-        || offers
-            .iter()
-            .any(|offer| validate_canonical_offer(offer).is_err())
-    {
-        return Err(WalletError::new(
-            "offer_invalid",
-            "offer announcement must contain only canonical BOLT12 offers",
-        ));
-    }
     // The current provider accepts one offer. The signed announcement remains
     // embedded in full so a verifier can validate the proof against any offer.
     let offer = offers.into_iter().next().ok_or_else(|| {
@@ -164,7 +154,9 @@ fn validate_canonical_offer(offer: &str) -> Result<(), WalletError> {
             "BOLT12 offer must be canonical lowercase lno1",
         ));
     }
-    if !canonical_offer(offer) {
+    let parsed = Offer::from_str(offer)
+        .map_err(|_| WalletError::new("offer_invalid", "BOLT12 offer cannot be decoded"))?;
+    if parsed.to_string() != offer {
         return Err(WalletError::new(
             "offer_invalid",
             "BOLT12 offer is not canonically encoded",
@@ -185,13 +177,8 @@ pub enum ZapAttemptState {
     Prepared,
     /// Payment may have reached Lexe and must be reconciled before retrying.
     Paying,
-    /// Payment settled. A kind `9736` event carrying the temporary placeholder
-    /// payer proof can now be published.
-    #[serde(
-        alias = "paid_awaiting_proof",
-        alias = "publishing_placeholder",
-        alias = "placeholder_published"
-    )]
+    /// Payment settled. A kind `9736` event carrying the payer proof can now be
+    /// published.
     PaidWithoutProof,
     /// The provider reported a terminal failure. A new user-confirmed attempt
     /// may use a new idempotency key.
@@ -248,7 +235,7 @@ pub struct ZapAttempt {
     /// Whether the persisted proof event was accepted by the active relay.
     #[serde(default)]
     pub proof_published: bool,
-    /// A permanent relay rejection makes further publication retries unsafe or useless.
+    /// Legacy flag retained for version 5 records; proof recovery ignores it.
     #[serde(default)]
     pub proof_retry_abandoned: bool,
     #[serde(default)]
@@ -327,7 +314,7 @@ impl ZapAttempt {
             .transpose()
     }
 
-    fn build_placeholder_proof_event(
+    fn build_proof_event(
         &self,
         keys: &Keys,
         channel_id: Option<&str>,
@@ -337,33 +324,62 @@ impl ZapAttempt {
                 != Some(WalletPaymentStatus::Completed)
         {
             return Err(WalletError::unavailable(
-                "placeholder zap proof requires a settled payment",
+                "zap proof requires a settled payment",
             ));
         }
         let intent = Event::from_json(&self.intent_event_json)
             .map_err(|error| WalletError::new("invalid_zap", error.to_string()))?;
+        let intent_channels = intent
+            .tags
+            .iter()
+            .filter_map(|tag| {
+                let parts = tag.as_slice();
+                (parts.first().map(String::as_str) == Some("h"))
+                    .then(|| parts.get(1).map(String::as_str))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        if intent_channels.len() > 1
+            || intent_channels
+                .first()
+                .is_some_and(|intent_channel| Some(*intent_channel) != channel_id)
+        {
+            return Err(WalletError::new(
+                "invalid_zap",
+                "The channel must be signed into the zap intent",
+            ));
+        }
         let mut tags = intent
             .tags
             .iter()
             .filter(|tag| tag.as_slice().first().map(String::as_str) != Some("zap_id"))
             .cloned()
             .collect::<Vec<_>>();
-        tags.push(tag(["description", self.intent_event_json.as_str()])?);
+        let intent_json = intent.as_json();
+        tags.push(tag(["description", intent_json.as_str()])?);
         tags.push(tag(["P", keys.public_key().to_hex().as_str()])?);
-        tags.push(tag(["proof", PLACEHOLDER_PAYER_PROOF])?);
-        if let Some(channel_id) = channel_id
-            .filter(|channel_id| !tags.iter().any(|tag| tag.as_slice() == ["h", *channel_id]))
-        {
-            tags.push(tag(["h", channel_id])?);
-        }
+        let payer_proof = self
+            .payment
+            .as_ref()
+            .and_then(|payment| payment.payer_proof.as_deref())
+            .ok_or_else(|| {
+                WalletError::new(
+                    "payer_proof_unavailable",
+                    "The settled BOLT12 payment has no payer proof",
+                )
+            })?;
+        tags.push(tag(["proof", payer_proof])?);
+        verify(payer_proof).map_err(|error| {
+            WalletError::new(
+                "payer_proof_invalid",
+                format!("The settled BOLT12 payer proof is invalid: {error}"),
+            )
+        })?;
         EventBuilder::new(Kind::Custom(KIND_BOLT12_ZAP as u16), intent.content)
             .tags(tags)
             .sign_with_keys(keys)
             .map_err(|error| {
-                WalletError::new(
-                    "relay_publish_failed",
-                    format!("sign placeholder zap proof: {error}"),
-                )
+                WalletError::new("relay_publish_failed", format!("sign zap proof: {error}"))
             })
     }
 
@@ -655,8 +671,8 @@ impl ZapAttemptStore {
         Ok(())
     }
 
-    /// Persist the exact signed placeholder proof before relay publication.
-    pub fn prepare_placeholder_proof(
+    /// Persist the exact signed payer proof before relay publication.
+    pub fn prepare_proof(
         &self,
         attempt: &mut ZapAttempt,
         keys: &Keys,
@@ -665,7 +681,7 @@ impl ZapAttemptStore {
         if let Some(event) = attempt.proof_event()? {
             return Ok(event);
         }
-        let event = attempt.build_placeholder_proof_event(keys, channel_id)?;
+        let event = attempt.build_proof_event(keys, channel_id)?;
         attempt.proof_event_json = Some(event.as_json());
         self.save(attempt)?;
         Ok(event)
@@ -679,17 +695,6 @@ impl ZapAttemptStore {
             ));
         }
         attempt.proof_published = true;
-        self.save(attempt)
-    }
-
-    /// Stop retrying a proof after a permanent relay rejection.
-    pub fn abandon_proof(&self, attempt: &mut ZapAttempt) -> Result<(), WalletError> {
-        if attempt.state != ZapAttemptState::PaidWithoutProof || attempt.proof_published {
-            return Err(WalletError::unavailable(
-                "zap proof cannot be abandoned from its current state",
-            ));
-        }
-        attempt.proof_retry_abandoned = true;
         self.save(attempt)
     }
 
@@ -753,8 +758,7 @@ impl ZapAttemptStore {
                 attempt.state,
                 ZapAttemptState::Prepared | ZapAttemptState::Paying
             ) || (attempt.state == ZapAttemptState::PaidWithoutProof
-                && !attempt.proof_published
-                && !attempt.proof_retry_abandoned);
+                && !attempt.proof_published);
             if attempt.recipient_pubkey == recipient_pubkey
                 && attempt.target_event_id.as_deref() == target_event_id
                 && attempt.relay_url.as_deref().is_none_or(|relay| {
@@ -783,7 +787,6 @@ impl ZapAttemptStore {
             .filter(|attempt| {
                 attempt.state == ZapAttemptState::PaidWithoutProof
                     && !attempt.proof_published
-                    && !attempt.proof_retry_abandoned
                     && attempt
                         .payment
                         .as_ref()

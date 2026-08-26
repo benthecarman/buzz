@@ -194,7 +194,6 @@ impl ManagedAgentRecord {
         })
     }
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayAgentInfo {
     pub pubkey: String,

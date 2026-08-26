@@ -25,6 +25,8 @@ import {
 import { useCreatedAgentChannelAttachment } from "./useCreatedAgentChannelAttachment";
 import { classifyAgentManagementOrigin } from "./agentManagementBuffer";
 import { useChannelsQuery } from "@/features/channels/hooks";
+import { setNwcWalletPolicy } from "@/features/wallet/api";
+import type { WalletNwcDefaultPolicy } from "@/features/wallet/types";
 import { resolveManagedAgentAvatarUrl } from "./ui/managedAgentAvatar";
 import type { AgentCreateIntent } from "./ui/agentCreateIntent";
 import { editPersonaDialogState } from "./ui/personaDialogState";
@@ -179,6 +181,7 @@ export function useAgentManagement() {
     input: CreatePersonaInput | UpdatePersonaInput,
     intent: AgentCreateIntent,
     backendIntent: BackendIntent | null,
+    options: { walletPolicy: WalletNwcDefaultPolicy | null },
   ): Promise<boolean> {
     if (request?.action !== "create" || "id" in input) {
       return false;
@@ -214,6 +217,22 @@ export function useAgentManagement() {
           ),
         );
         if (created.spawnError) throw new Error(created.spawnError);
+        if (options.walletPolicy) {
+          try {
+            await setNwcWalletPolicy({
+              agentPubkey: created.agent.pubkey,
+              ...options.walletPolicy,
+            });
+          } catch (walletError) {
+            setError(
+              `${created.agent.name} was created, but its wallet budget could not be set: ${
+                walletError instanceof Error
+                  ? walletError.message
+                  : "Unknown wallet error"
+              }`,
+            );
+          }
+        }
         const targetChannel = (channelsQuery.data ?? []).find(
           (channel) => channel.id === request.request.channelId,
         );

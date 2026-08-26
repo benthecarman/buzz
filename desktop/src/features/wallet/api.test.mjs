@@ -5,9 +5,11 @@ import {
   createWalletReceiveRequest,
   disableWallet,
   enableWallet,
+  getNwcWalletDefaultPolicy,
   getRecipientWalletOffer,
   refreshWalletOffer,
   sendProfileZap,
+  setNwcWalletDefaultPolicy,
   setWalletPollingEnabled,
 } from "./api.ts";
 
@@ -100,6 +102,40 @@ test("offer publication commands include every configured community relay", asyn
           targetEventId: TARGET_EVENT_ID,
           targetEventKind: 40_002,
         },
+      },
+    },
+  ]);
+});
+
+test("default NWC policy commands pass the update payload through", async () => {
+  const previousWindow = globalThis.window;
+  const calls = [];
+  globalThis.window = {
+    __TAURI_INTERNALS__: {
+      invoke(command, args) {
+        calls.push({ command, args });
+        return Promise.resolve({});
+      },
+    },
+  };
+
+  try {
+    await getNwcWalletDefaultPolicy();
+    await setNwcWalletDefaultPolicy({
+      mode: "budget",
+      budgetAmount: 500,
+      budgetPeriod: "week",
+    });
+  } finally {
+    globalThis.window = previousWindow;
+  }
+
+  assert.deepEqual(calls, [
+    { command: "wallet_get_default_nwc_policy", args: {} },
+    {
+      command: "wallet_set_default_nwc_policy",
+      args: {
+        update: { mode: "budget", budgetAmount: 500, budgetPeriod: "week" },
       },
     },
   ]);

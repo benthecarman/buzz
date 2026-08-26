@@ -341,6 +341,7 @@ impl SendAttemptStore {
         attempts.sort_by_key(|attempt| attempt.updated_at_ms);
         Ok(attempts)
     }
+
     pub fn prune(&self) -> Result<(), WalletError> {
         let cutoff = now_ms().saturating_sub(TERMINAL_ATTEMPT_RETENTION_MS);
         for attempt in self.stored_attempts()? {
@@ -459,6 +460,9 @@ mod tests {
                     payment_id: "not-projected".to_string(),
                     status: WalletPaymentStatus::Completed,
                     status_message: String::new(),
+                    preimage: Some("11".repeat(32)),
+                    payer_proof: Some("lnp1test".to_string()),
+                    txid: None,
                     amount: Some(21),
                     fees: 0,
                     created_at_ms: 0,
@@ -504,6 +508,9 @@ mod tests {
                     payment_id: "not-projected".to_string(),
                     status: WalletPaymentStatus::Pending,
                     status_message: String::new(),
+                    preimage: None,
+                    payer_proof: None,
+                    txid: None,
                     amount: Some(21),
                     fees: 0,
                     created_at_ms: 0,

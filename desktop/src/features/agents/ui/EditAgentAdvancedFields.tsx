@@ -1,4 +1,5 @@
 import * as React from "react";
+import { AgentSpendingEditor } from "@/features/wallet/ui/AgentSpendingEditor";
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
@@ -31,7 +32,9 @@ import {
 
 export function EditAgentAdvancedFields({
   acpCommand,
+  agentName,
   agentArgs,
+  agentPubkey,
   autoRestartOnConfigChange,
   disabled,
   envVars,
@@ -58,7 +61,9 @@ export function EditAgentAdvancedFields({
   onSystemPromptChange,
 }: {
   acpCommand: string;
+  agentName: string;
   agentArgs: string;
+  agentPubkey: string;
   autoRestartOnConfigChange: boolean;
   disabled: boolean;
   envVars: EnvVarsValue;
@@ -149,6 +154,8 @@ export function EditAgentAdvancedFields({
 
   return (
     <div className="space-y-5 pt-2">
+      <AgentSpendingEditor agentName={agentName} agentPubkey={agentPubkey} />
+
       {/* Inherit runtime from template */}
       {linkedPersona ? (
         <div className="space-y-1.5">

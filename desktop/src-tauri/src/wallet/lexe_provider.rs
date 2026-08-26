@@ -1,21 +1,27 @@
 use std::{future::Future, path::Path, str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use lexe::types::payment::PaymentStatus;
 use lexe::{
     config::WalletEnvConfig,
     types::{
         auth::{CredentialsRef, RootSeed},
         bitcoin::{Amount, Invoice, Offer},
         command::{
-            AnalyzeRequest, CreateInvoiceRequest, CreateOfferRequest, PayOfferRequest, PayRequest,
-            PaymentSyncSummary,
+            AnalyzeRequest, CreateInvoiceRequest, CreateOfferRequest, CreatePayerProofRequest,
+            PayRequest, PayerProofDisclosures, PaymentSyncSummary,
         },
-        payment::{Order, Payment, PaymentCreatedIndex, PaymentDirection, PaymentFilter},
+        payment::{
+            ClientPaymentId, Order, Payment, PaymentCreatedIndex, PaymentDirection, PaymentFilter,
+            PaymentId, PaymentKind, PaymentStatus,
+        },
     },
     wallet::LexeWallet,
 };
+use lexe_api::{
+    def::UserNodeRunApi, models::command as node_command, types::bounded_string::BoundedString,
+};
 use lexe_payment_uri_core::Bip321Uri;
+use sha2_10::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use super::{
@@ -97,29 +103,67 @@ fn payment_sync_changed(summary: &PaymentSyncSummary) -> bool {
     summary.num_new > 0 || summary.num_updated > 0
 }
 
-fn reconciliation_fields_match(
-    direction: PaymentDirection,
-    payer_note: Option<&str>,
-    personal_note: Option<&str>,
-    amount: Option<u64>,
-    offer_id: Option<&lexe::types::payment::OfferId>,
-    payment_match: &WalletPaymentMatch<'_>,
-    expected_offer_id: Option<&lexe::types::payment::OfferId>,
-) -> bool {
-    direction == PaymentDirection::Outbound
-        && payment_match
-            .payer_note
-            .is_none_or(|note| payer_note == Some(note))
-        && payment_match
-            .personal_note
-            .is_none_or(|note| personal_note == Some(note))
-        && payment_match
-            .expected_amount
-            .is_none_or(|expected| amount == Some(expected))
-        && expected_offer_id.is_none_or(|expected| offer_id == Some(expected))
+fn client_payment_id(idempotency_key: &str) -> ClientPaymentId {
+    let digest: [u8; 32] =
+        Sha256::digest(format!("buzz-wallet-payment:{idempotency_key}").as_bytes()).into();
+    ClientPaymentId(digest)
 }
 
-pub(super) fn canonical_offer(value: &str) -> bool {
+struct ReconciliationFields<'a> {
+    direction: PaymentDirection,
+    payer_note: Option<&'a str>,
+    personal_note: Option<&'a str>,
+    amount: Option<u64>,
+    offer_id: Option<&'a lexe::types::payment::OfferId>,
+    invoice: Option<&'a Invoice>,
+}
+
+fn reconciliation_fields_match(
+    fields: ReconciliationFields<'_>,
+    payment_match: &WalletPaymentMatch<'_>,
+    expected_offer_id: Option<&lexe::types::payment::OfferId>,
+    expected_invoice: Option<&Invoice>,
+) -> bool {
+    if let Some(expected_invoice) = expected_invoice {
+        return fields.direction == PaymentDirection::Outbound
+            && fields
+                .invoice
+                .is_some_and(|invoice| invoice.payment_hash() == expected_invoice.payment_hash());
+    }
+
+    fields.direction == PaymentDirection::Outbound
+        && payment_match
+            .payer_note
+            .is_none_or(|note| fields.payer_note == Some(note))
+        && payment_match
+            .personal_note
+            .is_none_or(|note| fields.personal_note == Some(note))
+        && payment_match
+            .expected_amount
+            .is_none_or(|expected| fields.amount == Some(expected))
+        && expected_offer_id.is_none_or(|expected| fields.offer_id == Some(expected))
+}
+
+fn require_completed_invoice_preimage(
+    status: PaymentStatus,
+    direction: PaymentDirection,
+    has_invoice: bool,
+    has_preimage: bool,
+) -> Result<(), WalletError> {
+    if status == PaymentStatus::Completed
+        && direction == PaymentDirection::Outbound
+        && has_invoice
+        && !has_preimage
+    {
+        return Err(WalletError::new(
+            "payment_proof_unavailable",
+            "Lexe reported a settled BOLT11 payment without a preimage",
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_offer(value: &str) -> bool {
     Offer::from_str(value)
         .map(|offer| offer.to_string() == value)
         .unwrap_or(false)
@@ -146,6 +190,7 @@ pub(super) fn create_lexe_provider(
         wallet,
         root_seed,
         offer_path: cache_dir.join("active-offer.txt"),
+        agent_offer_dir: cache_dir.join("agent-offers"),
         offer_lock: Mutex::new(()),
     }))
 }
@@ -165,6 +210,8 @@ struct LexeProvider {
     /// ones, so the offer is persisted here to keep a restart from minting a
     /// fresh one and orphaning the previously published offer.
     offer_path: std::path::PathBuf,
+    /// Directory of stable, agent-specific receive offers.
+    agent_offer_dir: std::path::PathBuf,
     /// Serializes read-create-persist so concurrent requests cannot mint two
     /// offers and publish different values.
     offer_lock: Mutex<()>,
@@ -230,7 +277,51 @@ impl LexeProvider {
             .map_err(|error| WalletError::provider(format!("encode payment id: {error}")))
     }
 
-    fn payment_result(payment: Payment) -> Result<WalletPaymentResult, WalletError> {
+    async fn payment_result(&self, payment: Payment) -> Result<WalletPaymentResult, WalletError> {
+        require_completed_invoice_preimage(
+            payment.status,
+            payment.direction,
+            payment.invoice.is_some(),
+            payment.preimage.is_some(),
+        )?;
+        let payer_proof = if payment.status == PaymentStatus::Completed
+            && payment.direction == PaymentDirection::Outbound
+            && payment.offer_id.is_some()
+        {
+            let proof_note = payment
+                .message
+                .clone()
+                .filter(|note| note.starts_with("nostr:nipB1:"));
+            match bounded(
+                "payer-proof creation",
+                LEXE_REQUEST_TIMEOUT,
+                self.wallet.create_payer_proof(CreatePayerProofRequest {
+                    index: payment.index,
+                    disclosures: PayerProofDisclosures {
+                        invoice_amount: true,
+                        invoice_created_at: true,
+                        ..Default::default()
+                    },
+                    proof_note,
+                }),
+            )
+            .await
+            {
+                Ok(Ok(response)) => Some(response.proof.to_string()),
+                Err(error) => {
+                    tracing::warn!(%error, "BOLT12 payer proof is unavailable");
+                    None
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "BOLT12 payer proof is unavailable");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let preimage = payment.preimage.as_ref().map(Self::json_string);
+        let txid = payment.txid.map(|txid| txid.to_string());
         Ok(WalletPaymentResult {
             payment_id: Self::payment_id(&payment.index)?,
             status: match payment.status {
@@ -239,6 +330,9 @@ impl LexeProvider {
                 PaymentStatus::Failed => WalletPaymentStatus::Failed,
             },
             status_message: payment.status_msg,
+            preimage,
+            payer_proof,
+            txid,
             amount: payment.amount.map(|amount| amount.sats_u64()),
             fees: payment.fees.sats_u64(),
             created_at_ms: payment.created_at.to_millis(),
@@ -249,6 +343,7 @@ impl LexeProvider {
     fn transaction(payment: Payment) -> Result<WalletTransaction, WalletError> {
         let payer_note = payment.message.clone();
         let offer_id = payment.offer_id.as_ref().map(Self::json_string);
+        let payment_hash = payment.hash.as_ref().map(Self::json_string);
         Ok(WalletTransaction {
             id: Self::payment_id(&payment.index)?,
             direction: Self::json_string(&payment.direction),
@@ -262,6 +357,7 @@ impl LexeProvider {
                 .or(payment.payer_name),
             payer_note,
             offer_id,
+            payment_hash,
             created_at_ms: payment.created_at.to_millis(),
             finalized_at_ms: payment.finalized_at.map(|timestamp| timestamp.to_millis()),
         })
@@ -314,6 +410,26 @@ impl WalletProvider for LexeProvider {
         self.offer_at(&self.offer_path, "Buzz wallet", rotate).await
     }
 
+    async fn offer_for_agent(
+        &self,
+        agent_pubkey: &str,
+        agent_name: &str,
+    ) -> Result<String, WalletError> {
+        if agent_pubkey.len() != 64
+            || !agent_pubkey
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(WalletError::new(
+                "invalid_agent",
+                "Hosted agent pubkey must be lowercase hexadecimal",
+            ));
+        }
+        let path = self.agent_offer_dir.join(format!("{agent_pubkey}.txt"));
+        self.offer_at(&path, &format!("Buzz agent {agent_name}"), false)
+            .await
+    }
+
     async fn funding_request(&self) -> Result<WalletFundingRequest, WalletError> {
         let invoice = bounded(
             "invoice creation",
@@ -358,8 +474,15 @@ impl WalletProvider for LexeProvider {
         let payable = response.payables.into_iter().next().ok_or_else(|| {
             WalletError::new("invalid_destination", "no payable destination was found")
         })?;
+        let instruction_type = match payable.method.kind() {
+            "invoice" => "bolt11",
+            "offer" => "bolt12",
+            other => other,
+        }
+        .to_string();
         Ok(WalletDestinationAnalysis {
             normalized_destination: payable.payable,
+            instruction_type,
             description: payable.description,
             amount: payable.amount.map(|amount| amount.sats_u64()),
             min_amount: payable.min_amount.map(|amount| amount.sats_u64()),
@@ -382,7 +505,7 @@ impl WalletProvider for LexeProvider {
         )
         .await?
         .map_err(|error| WalletError::new("payment_failed", format!("{error:#}")))?;
-        Self::payment_result(payment)
+        self.payment_result(payment).await
     }
 
     async fn send_offer(
@@ -391,19 +514,44 @@ impl WalletProvider for LexeProvider {
     ) -> Result<WalletPaymentResult, WalletError> {
         let offer = Offer::from_str(&request.offer)
             .map_err(|error| WalletError::new("invalid_destination", error.to_string()))?;
-        let payment = bounded(
+        let cid = client_payment_id(&request.idempotency_key);
+        let message = request
+            .payer_note
+            .map(BoundedString::new)
+            .transpose()
+            .map_err(|error| WalletError::new("invalid_payment", error.to_string()))?;
+        let personal_note = BoundedString::new(request.personal_note)
+            .map_err(|error| WalletError::new("invalid_payment", error.to_string()))?;
+        let response = bounded(
             "offer payment dispatch",
-            LEXE_PAYMENT_TIMEOUT,
-            self.wallet.pay_offer(PayOfferRequest {
-                offer,
-                amount: Self::amount(request.amount)?,
-                message: Some(request.payer_note),
-                personal_note: Some(request.personal_note),
-            }),
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet
+                .node_client()
+                .pay_offer(node_command::PayOfferRequest {
+                    cid,
+                    offer,
+                    amount: Self::amount(request.amount)?,
+                    message,
+                    personal_note: Some(personal_note),
+                    kind: PaymentKind::Offer,
+                }),
         )
         .await?
         .map_err(|error| WalletError::new("payment_failed", format!("{error:#}")))?;
-        Self::payment_result(payment)
+        let payment = bounded(
+            "payment settlement",
+            LEXE_PAYMENT_TIMEOUT,
+            self.wallet.wait_for_payment(
+                PaymentCreatedIndex {
+                    created_at: response.created_at,
+                    id: PaymentId::OfferSend(cid),
+                },
+                None,
+            ),
+        )
+        .await?
+        .map_err(|error| WalletError::new("payment_failed", format!("{error:#}")))?;
+        self.payment_result(payment).await
     }
 
     async fn find_outbound_payment(
@@ -416,6 +564,11 @@ impl WalletProvider for LexeProvider {
             .transpose()
             .map_err(|error| WalletError::new("offer_invalid", error.to_string()))?
             .map(|offer| offer.id());
+        let expected_invoice = payment_match
+            .expected_invoice
+            .map(Invoice::from_str)
+            .transpose()
+            .map_err(|error| WalletError::new("invoice_invalid", error.to_string()))?;
         bounded(
             "payment synchronization",
             LEXE_REQUEST_TIMEOUT,
@@ -436,16 +589,20 @@ impl WalletProvider for LexeProvider {
                 .map_err(|error| WalletError::provider(format!("list payments: {error:#}")))?;
             if let Some(payment) = page.payments.into_iter().find(|payment| {
                 reconciliation_fields_match(
-                    payment.direction,
-                    payment.message.as_deref(),
-                    payment.personal_note.as_deref(),
-                    payment.amount.map(|value| value.sats_u64()),
-                    payment.offer_id.as_ref(),
+                    ReconciliationFields {
+                        direction: payment.direction,
+                        payer_note: payment.message.as_deref(),
+                        personal_note: payment.personal_note.as_deref(),
+                        amount: payment.amount.map(|value| value.sats_u64()),
+                        offer_id: payment.offer_id.as_ref(),
+                        invoice: payment.invoice.as_deref(),
+                    },
                     &payment_match,
                     expected_offer_id.as_ref(),
+                    expected_invoice.as_ref(),
                 )
             }) {
-                return Self::payment_result(payment).map(Some);
+                return self.payment_result(payment).await.map(Some);
             }
             let Some(next_index) = page.next_index else {
                 return Ok(None);
@@ -518,7 +675,8 @@ mod tests {
     };
 
     use super::{
-        bip321_uri, bounded, payment_sync_changed, reconciliation_fields_match, WalletPaymentMatch,
+        bip321_uri, bounded, client_payment_id, payment_sync_changed, reconciliation_fields_match,
+        require_completed_invoice_preimage, ReconciliationFields, WalletPaymentMatch,
     };
     use crate::wallet::{VALID_INVOICE, VALID_OFFER};
 
@@ -620,6 +778,18 @@ mod tests {
     }
 
     #[test]
+    fn client_payment_id_is_stable_and_request_scoped() {
+        assert_eq!(
+            client_payment_id("request-a"),
+            client_payment_id("request-a")
+        );
+        assert_ne!(
+            client_payment_id("request-a"),
+            client_payment_id("request-b")
+        );
+    }
+
+    #[test]
     fn reconciliation_requires_matching_outbound_payment_fields() {
         let offer_id = Offer::from_str(VALID_OFFER).unwrap().id();
         let expected = WalletPaymentMatch {
@@ -627,16 +797,21 @@ mod tests {
             personal_note: Some("Buzz profile payment intent"),
             expected_amount: Some(21),
             expected_offer: Some(VALID_OFFER),
+            expected_invoice: None,
         };
         let matches = |direction, payer_note, amount, actual_offer_id| {
             reconciliation_fields_match(
-                direction,
-                payer_note,
-                Some("Buzz profile payment intent"),
-                amount,
-                actual_offer_id,
+                ReconciliationFields {
+                    direction,
+                    payer_note,
+                    personal_note: Some("Buzz profile payment intent"),
+                    amount,
+                    offer_id: actual_offer_id,
+                    invoice: None,
+                },
                 &expected,
                 Some(&offer_id),
+                None,
             )
         };
         assert!(matches(
@@ -669,5 +844,73 @@ mod tests {
             Some(21),
             None
         ));
+    }
+
+    #[test]
+    fn reconciliation_matches_invoice_by_payment_hash() {
+        let invoice = Invoice::from_str(VALID_INVOICE).unwrap();
+        let expected = WalletPaymentMatch {
+            payer_note: None,
+            personal_note: Some("a different request note"),
+            expected_amount: Some(999),
+            expected_offer: None,
+            expected_invoice: Some(VALID_INVOICE),
+        };
+
+        assert!(reconciliation_fields_match(
+            ReconciliationFields {
+                direction: PaymentDirection::Outbound,
+                payer_note: None,
+                personal_note: Some("original request note"),
+                amount: Some(21),
+                offer_id: None,
+                invoice: Some(&invoice),
+            },
+            &expected,
+            None,
+            Some(&invoice),
+        ));
+        assert!(!reconciliation_fields_match(
+            ReconciliationFields {
+                direction: PaymentDirection::Outbound,
+                payer_note: None,
+                personal_note: None,
+                amount: Some(21),
+                offer_id: None,
+                invoice: None,
+            },
+            &expected,
+            None,
+            Some(&invoice),
+        ));
+    }
+
+    #[test]
+    fn settled_outbound_invoice_requires_preimage() {
+        assert_eq!(
+            require_completed_invoice_preimage(
+                lexe::types::payment::PaymentStatus::Completed,
+                PaymentDirection::Outbound,
+                true,
+                false,
+            )
+            .unwrap_err()
+            .code,
+            "payment_proof_unavailable"
+        );
+        assert!(require_completed_invoice_preimage(
+            lexe::types::payment::PaymentStatus::Completed,
+            PaymentDirection::Outbound,
+            true,
+            true,
+        )
+        .is_ok());
+        assert!(require_completed_invoice_preimage(
+            lexe::types::payment::PaymentStatus::Completed,
+            PaymentDirection::Outbound,
+            false,
+            false,
+        )
+        .is_ok());
     }
 }

@@ -8,7 +8,9 @@ import type {
 import type {
   TimelineMessage,
   TimelineReaction,
+  TimelineZap,
 } from "@/features/messages/types";
+import type { WalletVerifiedZapEvent } from "@/features/wallet/types";
 import {
   getThreadReference,
   isBroadcastReply,
@@ -26,7 +28,9 @@ import {
   KIND_JOB_PROGRESS,
   KIND_JOB_REQUEST,
   KIND_JOB_RESULT,
+  KIND_BOLT12_ZAP,
   KIND_HUDDLE_STARTED,
+  KIND_HOSTED_AGENT_PLAN,
   KIND_DELETION,
   KIND_NIP29_DELETE_EVENT,
   KIND_REACTION,
@@ -49,10 +53,100 @@ import { truncatePubkey } from "@/shared/lib/pubkey";
 
 const HEX_RE = /^[0-9a-f]+$/i;
 
+function isSilentMigrationTombstone(event: RelayEvent) {
+  if (event.kind !== KIND_SYSTEM_MESSAGE) return false;
+
+  try {
+    const payload = JSON.parse(event.content) as {
+      type?: unknown;
+      public_reason?: unknown;
+    };
+    return (
+      payload.type === "message_deleted" &&
+      payload.public_reason === "Superseded by an explicit-model plan"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function oneTagValue(event: RelayEvent, name: string): string | null {
+  const matches = event.tags?.filter((tag) => tag[0] === name) ?? [];
+  return matches.length === 1 ? (matches[0]?.[1] ?? null) : null;
+}
+
+function hasMarkedEventReference(event: RelayEvent, marker: string): boolean {
+  return (
+    event.tags?.filter((tag) => tag[0] === "e" && tag[3] === marker).length ===
+    1
+  );
+}
+
+function isHostedAgentOwnerAttestation(event: RelayEvent): boolean {
+  return (
+    event.kind === KIND_STREAM_MESSAGE_V2 &&
+    event.content?.trim() === "" &&
+    oneTagValue(event, "d") !== null &&
+    oneTagValue(event, "h") !== null &&
+    oneTagValue(event, "p") !== null &&
+    oneTagValue(event, "agent") !== null &&
+    oneTagValue(event, "auth") !== null &&
+    hasMarkedEventReference(event, "claim-request") &&
+    hasMarkedEventReference(event, "plan") &&
+    hasMarkedEventReference(event, "zap")
+  );
+}
+
+function hostedAgentClaimRequestKey(event: RelayEvent): string | null {
+  const leaseId = oneTagValue(event, "d");
+  return event.kind === KIND_STREAM_MESSAGE_V2 &&
+    event.content?.trim() !== "" &&
+    leaseId !== null &&
+    oneTagValue(event, "h") !== null &&
+    oneTagValue(event, "p") !== null &&
+    oneTagValue(event, "agent") !== null &&
+    oneTagValue(event, "auth") === null &&
+    hasMarkedEventReference(event, "plan") &&
+    hasMarkedEventReference(event, "zap")
+    ? `${event.pubkey}:${leaseId}`
+    : null;
+}
+
+function supersededHostedAgentClaimRequestIds(
+  events: RelayEvent[],
+): Set<string> {
+  const latestByLease = new Map<string, RelayEvent>();
+  const superseded = new Set<string>();
+  for (const event of events) {
+    const key = hostedAgentClaimRequestKey(event);
+    if (!key) continue;
+    const latest = latestByLease.get(key);
+    if (
+      !latest ||
+      event.created_at > latest.created_at ||
+      (event.created_at === latest.created_at && event.id > latest.id)
+    ) {
+      if (latest) superseded.add(latest.id);
+      latestByLease.set(key, event);
+    } else {
+      superseded.add(event.id);
+    }
+  }
+  return superseded;
+}
+
 export function isTimelineContentEvent(event: RelayEvent) {
+  if (
+    isSilentMigrationTombstone(event) ||
+    isHostedAgentOwnerAttestation(event)
+  ) {
+    return false;
+  }
+
   return (
     event.kind === KIND_STREAM_MESSAGE ||
     event.kind === KIND_STREAM_MESSAGE_V2 ||
+    event.kind === KIND_HOSTED_AGENT_PLAN ||
     event.kind === KIND_STREAM_MESSAGE_DIFF ||
     event.kind === KIND_SYSTEM_MESSAGE ||
     event.kind === KIND_JOB_REQUEST ||
@@ -93,6 +187,8 @@ function getDeletionTargets(tags: string[][]) {
  *      (`parentId == null`) or broadcast replies.
  */
 export function countTopLevelTimelineRows(events: RelayEvent[]): number {
+  const supersededClaimRequestIds =
+    supersededHostedAgentClaimRequestIds(events);
   const deletedEventIds = new Set<string>();
   for (const event of events) {
     if (
@@ -107,7 +203,11 @@ export function countTopLevelTimelineRows(events: RelayEvent[]): number {
 
   let count = 0;
   for (const event of events) {
-    if (!isTimelineContentEvent(event) || deletedEventIds.has(event.id)) {
+    if (
+      !isTimelineContentEvent(event) ||
+      deletedEventIds.has(event.id) ||
+      supersededClaimRequestIds.has(event.id)
+    ) {
       continue;
     }
     const { parentId } = getThreadReference(event.tags);
@@ -229,6 +329,8 @@ export function formatTimelineMessages(
   relaySelfPubkey?: string | null,
   /** Profiles for verified agent owners, fetched in one batch by the surface. */
   ownerProfiles?: UserProfileLookup,
+  /** Display fields from zap proofs that the relay validated. */
+  verifiedZapEvents?: ReadonlyMap<string, WalletVerifiedZapEvent>,
 ): TimelineMessage[] {
   const currentPubkeyLower = currentPubkey?.toLowerCase();
   // Identity-cached: rosters can be 10k+ members and this formatter re-runs
@@ -249,8 +351,36 @@ export function formatTimelineMessages(
     }
   }
 
+  const zapsByEventId = new Map<string, Map<string, TimelineZap>>();
+  for (const event of events) {
+    if (event.kind !== KIND_BOLT12_ZAP || deletedEventIds.has(event.id)) {
+      continue;
+    }
+    const zap = verifiedZapEvents?.get(event.id);
+    if (!zap?.targetEventId || deletedEventIds.has(zap.targetEventId)) {
+      continue;
+    }
+    const current = zapsByEventId.get(zap.targetEventId) ?? new Map();
+    current.set(zap.intentEventId, {
+      amount: zap.amount,
+      comment: zap.comment,
+      intentEventId: zap.intentEventId,
+      payerPubkey: event.pubkey.toLowerCase(),
+      recipientPubkey: zap.recipientPubkey,
+    });
+    zapsByEventId.set(zap.targetEventId, current);
+  }
+
+  const supersededClaimRequestIds =
+    supersededHostedAgentClaimRequestIds(events);
   const timelineEventsById = new Map(
-    events.filter(isTimelineContentEvent).map((event) => [event.id, event]),
+    events
+      .filter(
+        (event) =>
+          isTimelineContentEvent(event) &&
+          !supersededClaimRequestIds.has(event.id),
+      )
+      .map((event) => [event.id, event]),
   );
   const previewSuppressedTargetIds = new Set<string>();
 
@@ -298,7 +428,10 @@ export function formatTimelineMessages(
   }
 
   const visibleEvents = events.filter(
-    (event) => isTimelineContentEvent(event) && !deletedEventIds.has(event.id),
+    (event) =>
+      isTimelineContentEvent(event) &&
+      !deletedEventIds.has(event.id) &&
+      !supersededClaimRequestIds.has(event.id),
   );
   const eventsById = new Map(visibleEvents.map((event) => [event.id, event]));
   const reactionPresence = new Map<
@@ -459,7 +592,7 @@ export function formatTimelineMessages(
     return depth;
   }
 
-  return visibleEvents.map((event) => {
+  const timelineMessages: TimelineMessage[] = visibleEvents.map((event) => {
     const author = getAuthorLabel(event);
     const authorPubkey =
       authorPubkeyByEventId.get(event.id) ??
@@ -540,8 +673,17 @@ export function formatTimelineMessages(
           )
           .map(({ earliestCreatedAt: _drop, ...pill }) => pill);
       })(),
+      zaps: (() => {
+        const zaps = zapsByEventId.get(event.id);
+        return zaps ? [...zaps.values()] : undefined;
+      })(),
     };
   });
+
+  return timelineMessages.sort(
+    (first, second) =>
+      first.createdAt - second.createdAt || first.id.localeCompare(second.id),
+  );
 }
 
 function extractSystemMessagePubkeys(event: RelayEvent): string[] {
@@ -608,11 +750,13 @@ export function collectMessageAuthorPubkeys(
   const pubkeys = new Set<string>();
 
   for (const event of events) {
-    if (!isTimelineContentEvent(event)) {
+    if (!isTimelineContentEvent(event) && event.kind !== KIND_BOLT12_ZAP) {
       continue;
     }
 
-    if (event.kind === KIND_SYSTEM_MESSAGE) {
+    if (event.kind === KIND_BOLT12_ZAP) {
+      pubkeys.add(event.pubkey.toLowerCase());
+    } else if (event.kind === KIND_SYSTEM_MESSAGE) {
       for (const pk of extractSystemMessagePubkeys(event)) {
         pubkeys.add(pk);
       }

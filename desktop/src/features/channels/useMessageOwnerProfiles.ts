@@ -3,7 +3,7 @@ import * as React from "react";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 
-/** Fetches verified agent-owner profiles in one batch for message surfaces. */
+/** Fetch agent owner profiles for message surfaces. */
 export function useMessageOwnerProfiles(profiles: UserProfileLookup) {
   const ownerPubkeys = React.useMemo(
     () => [

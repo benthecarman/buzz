@@ -54,6 +54,7 @@ pub struct WalletFundingRequest {
 #[serde(rename_all = "camelCase")]
 pub struct WalletDestinationAnalysis {
     pub normalized_destination: String,
+    pub instruction_type: String,
     pub description: Option<String>,
     pub amount: Option<u64>,
     pub min_amount: Option<u64>,
@@ -81,8 +82,9 @@ pub struct WalletSendRequest {
 pub struct WalletOfferSendRequest {
     pub offer: String,
     pub amount: u64,
-    pub payer_note: String,
+    pub payer_note: Option<String>,
     pub personal_note: String,
+    pub idempotency_key: String,
 }
 
 /// Terminal or current state of one provider payment.
@@ -104,6 +106,9 @@ pub struct WalletPaymentResult {
     pub payment_id: String,
     pub status: WalletPaymentStatus,
     pub status_message: String,
+    pub preimage: Option<String>,
+    pub payer_proof: Option<String>,
+    pub txid: Option<String>,
     pub amount: Option<u64>,
     pub fees: u64,
     pub created_at_ms: u64,
@@ -128,6 +133,8 @@ pub struct WalletTransaction {
     pub payer_note: Option<String>,
     /// Provider-canonical identifier of the BOLT12 offer used by the payment.
     pub offer_id: Option<String>,
+    /// Payment hash shared by both legs of a self-payment.
+    pub payment_hash: Option<String>,
     pub created_at_ms: u64,
     pub finalized_at_ms: Option<u64>,
 }
@@ -207,8 +214,7 @@ pub struct WalletProfileZapDraft {
 
 /// Result of the experimental profile-payment flow.
 ///
-/// The current provider publishes a temporary placeholder receipt after local
-/// settlement; `proof_published` reports whether the relay accepted it.
+/// `proof_published` reports whether the relay accepted the settlement proof.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletProfileZapResult {
@@ -224,14 +230,75 @@ pub struct WalletProfileZapResult {
 #[serde(rename_all = "camelCase")]
 pub struct WalletNwcRequest {
     pub event_id: String,
+    pub expires_at_ms: u64,
     pub agent_pubkey: String,
     pub agent_name: String,
-    pub recipient_pubkey: String,
+    pub request_type: String,
+    pub instruction_type: String,
+    pub recipient_pubkey: Option<String>,
     pub amount: u64,
     pub comment: String,
     pub destination: String,
-    pub payer_note: String,
+    pub payer_note: Option<String>,
     pub request_id: String,
+}
+
+/// One agent's wallet approval policy for the active community.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletNwcClient {
+    pub agent_pubkey: String,
+    pub agent_name: String,
+    /// `manual` or `budget`.
+    pub mode: String,
+    /// Total automatic-payment allowance for one period, in satoshis.
+    pub budget_amount: Option<u64>,
+    /// `hour`, `day`, `week`, or `month`.
+    pub budget_period: Option<String>,
+    pub spent_amount: u64,
+    pub remaining_amount: Option<u64>,
+    pub period_ends_at_ms: Option<u64>,
+}
+
+/// User-selected NWC policy update for one agent.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletNwcPolicyUpdate {
+    pub agent_pubkey: String,
+    pub mode: String,
+    pub budget_amount: Option<u64>,
+    pub budget_period: Option<String>,
+}
+
+/// The owner's default NWC policy for agents created or claimed later.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletNwcDefaultPolicy {
+    /// `manual` or `budget`.
+    pub mode: String,
+    /// Total automatic-payment allowance for one period, in satoshis.
+    pub budget_amount: Option<u64>,
+    /// `hour`, `day`, `week`, or `month`.
+    pub budget_period: Option<String>,
+}
+
+/// User-selected default-policy update for future agents.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletNwcDefaultPolicyUpdate {
+    pub mode: String,
+    pub budget_amount: Option<u64>,
+    pub budget_period: Option<String>,
+}
+
+/// Result of handling an incoming NWC event on the wallet side.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletNwcHandlingResult {
+    /// Stable handling result used by the renderer to publish or request approval.
+    pub action: String,
+    pub request: Option<WalletNwcRequest>,
+    pub response: Option<serde_json::Value>,
 }
 
 /// A stable, serializable wallet error returned through Tauri.

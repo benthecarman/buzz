@@ -6,6 +6,7 @@ import {
   numberArrayEqual,
   reactionsEqual,
   tagsEqual,
+  zapsEqual,
 } from "./messageRowEquality.ts";
 
 // These helpers exist so MessageRow's memo holds when arrays are rebuilt
@@ -92,6 +93,19 @@ test("numberArrayEqual", () => {
   assert.equal(numberArrayEqual([1, 2], [2, 1]), false);
   assert.equal(numberArrayEqual(undefined, undefined), true);
   assert.equal(numberArrayEqual([1], undefined), false);
+});
+
+test("zapsEqual detects a newly arrived relay proof", () => {
+  const zap = {
+    amount: 21,
+    comment: "",
+    intentEventId: "intent",
+    payerPubkey: "payer",
+    recipientPubkey: "recipient",
+  };
+  assert.equal(zapsEqual([zap], [{ ...zap }]), true);
+  assert.equal(zapsEqual(undefined, [zap]), false);
+  assert.equal(zapsEqual([zap], [{ ...zap, intentEventId: "new" }]), false);
 });
 
 test("depthGuideActionsEqual: same values (message by id) → equal", () => {

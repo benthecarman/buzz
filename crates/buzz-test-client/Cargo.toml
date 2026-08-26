@@ -9,7 +9,7 @@ description = "Integration test client and E2E test suite for Buzz"
 
 [dependencies]
 anyhow = { workspace = true }
-buzz-core = { workspace = true }
+buzz-core = { workspace = true, features = ["test-utils"] }
 buzz-ws-client = { workspace = true }
 nostr = { workspace = true }
 tokio = { workspace = true }

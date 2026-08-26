@@ -10,6 +10,7 @@ pub(crate) struct WalletPaymentMatch<'a> {
     pub personal_note: Option<&'a str>,
     pub expected_amount: Option<u64>,
     pub expected_offer: Option<&'a str>,
+    pub expected_invoice: Option<&'a str>,
 }
 
 /// Provider-neutral operations needed by the current wallet UI.
@@ -28,6 +29,13 @@ pub trait WalletProvider: Send + Sync {
     async fn status(&self) -> Result<WalletStatus, WalletError>;
 
     async fn offer(&self, rotate: bool) -> Result<String, WalletError>;
+
+    /// Return the stable receive offer assigned to one hosted agent.
+    async fn offer_for_agent(
+        &self,
+        agent_pubkey: &str,
+        agent_name: &str,
+    ) -> Result<String, WalletError>;
 
     async fn funding_request(&self) -> Result<WalletFundingRequest, WalletError>;
 

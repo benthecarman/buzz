@@ -1,8 +1,15 @@
 import { expect, test } from "@playwright/test";
 
-import { installMockBridge } from "../helpers/bridge";
+import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 import { FEATURE_OVERRIDES_STORAGE_KEY } from "../helpers/features";
 import { openSettings } from "../helpers/settings";
+
+const MOCK_OWNER_PUBKEY = "deadbeef".repeat(8);
+const MOCK_RELAY_URL = (
+  process.env.BUZZ_E2E_RELAY_URL ?? "http://localhost:3000"
+).replace(/^http/, "ws");
+const AGENT_ZAP_PAYMENT_HASH = "b".repeat(64);
+const PROFILE_ZAP_INTENT_ID = "a".repeat(64);
 
 test.beforeEach(async ({ page }) => {
   await page.route(
@@ -25,7 +32,52 @@ test.beforeEach(async ({ page }) => {
     },
     { storageKey: FEATURE_OVERRIDES_STORAGE_KEY },
   );
+  await page.addInitScript(
+    ({
+      intentEventId,
+      ownerPubkey,
+      paymentHash,
+      recipientPubkey,
+      relayUrl,
+    }) => {
+      const key = `buzz-wallet-zap-history.v1:${ownerPubkey}:${encodeURIComponent(relayUrl)}`;
+      window.localStorage.setItem(
+        key,
+        JSON.stringify([
+          {
+            amount: 50,
+            channelId: null,
+            comment: "",
+            createdAt: 1_700_000_002,
+            eventId: "profile-zap-event",
+            intentEventId,
+            leaseId: null,
+            paymentHash,
+            payerPubkey: ownerPubkey,
+            recipientName: "",
+            recipientPubkey,
+            targetEventId: null,
+            targetEventKind: null,
+          },
+        ]),
+      );
+    },
+    {
+      intentEventId: PROFILE_ZAP_INTENT_ID,
+      ownerPubkey: MOCK_OWNER_PUBKEY,
+      paymentHash: AGENT_ZAP_PAYMENT_HASH,
+      recipientPubkey: TEST_IDENTITIES.alice.pubkey,
+      relayUrl: MOCK_RELAY_URL,
+    },
+  );
   await installMockBridge(page, {
+    relayAgents: [
+      {
+        pubkey: TEST_IDENTITIES.alice.pubkey,
+        name: "Alice Agent",
+        ownerPubkey: MOCK_OWNER_PUBKEY,
+      },
+    ],
     walletBalance: 21_000,
     walletSpendableBalance: 20_000,
     walletTransactions: [
@@ -39,8 +91,37 @@ test.beforeEach(async ({ page }) => {
         note: "Test payment",
         payerNote: null,
         offerId: null,
+        paymentHash: null,
         createdAtMs: 1_700_000_000_000,
         finalizedAtMs: 1_700_000_001_000,
+      },
+      {
+        id: "sent-profile-zap",
+        direction: "outbound",
+        status: "completed",
+        statusMessage: "Payment completed",
+        amount: 50,
+        fees: 1,
+        note: `Buzz profile payment ${PROFILE_ZAP_INTENT_ID}`,
+        payerNote: `nostr:nipB1:${PROFILE_ZAP_INTENT_ID}`,
+        offerId: "long-provider-offer-identifier",
+        paymentHash: AGENT_ZAP_PAYMENT_HASH,
+        createdAtMs: 1_700_000_002_000,
+        finalizedAtMs: 1_700_000_003_000,
+      },
+      {
+        id: "received-agent-zap",
+        direction: "inbound",
+        status: "completed",
+        statusMessage: "Payment completed",
+        amount: 49,
+        fees: 0,
+        note: null,
+        payerNote: null,
+        offerId: "agent-offer-identifier",
+        paymentHash: AGENT_ZAP_PAYMENT_HASH,
+        createdAtMs: 1_700_000_001_500,
+        finalizedAtMs: 1_700_000_002_500,
       },
     ],
   });
@@ -108,6 +189,18 @@ test("wallet balance exposes funding and transfer actions", async ({
     transaction.getByTestId("wallet-transaction-amount-usd"),
   ).toHaveText("+$4.00");
   await expect(page.getByText("Reserved funds")).toHaveCount(0);
+  const sentZap = page.getByTestId("wallet-transaction-sent-profile-zap");
+  await expect(sentZap).toContainText("Zap sent");
+  await expect(sentZap).toContainText("Zap sent to @alice");
+  await expect(sentZap).not.toContainText(PROFILE_ZAP_INTENT_ID);
+  await expect(sentZap).not.toContainText("long-provider-offer-identifier");
+  const receivedAgentZap = page.getByTestId(
+    "wallet-transaction-received-agent-zap",
+  );
+  await expect(receivedAgentZap).toContainText("Zap received");
+  await expect(receivedAgentZap).toContainText("Zap received by @alice from @");
+  await expect(receivedAgentZap).not.toContainText("Payment received");
+  await expect(receivedAgentZap).not.toContainText("agent-offer-identifier");
   await expect(page.getByTestId("wallet-receive-qr")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Fund wallet" }).click();
@@ -134,6 +227,76 @@ test("wallet balance exposes funding and transfer actions", async ({
   await expect(
     page.getByRole("button", { name: "Send payment" }),
   ).toBeVisible();
+});
+
+test("wallet settings changes only the default for new agents", async ({
+  page,
+}) => {
+  const agentPubkey = "cd".repeat(32);
+  await page.goto("/");
+  await page.evaluate((pubkey) => {
+    const testWindow = window as Window & {
+      __BUZZ_E2E__?: {
+        mock?: {
+          walletNwcClients?: unknown[];
+        };
+      };
+    };
+    if (!testWindow.__BUZZ_E2E__?.mock) {
+      throw new Error("mock bridge config is unavailable");
+    }
+    testWindow.__BUZZ_E2E__.mock.walletNwcClients = [
+      {
+        agentPubkey: pubkey,
+        agentName: "Steady Finch",
+        mode: "manual",
+        budgetAmount: null,
+        budgetPeriod: null,
+        spentAmount: 0,
+        remainingAmount: null,
+        periodEndsAtMs: null,
+      },
+    ];
+  }, agentPubkey);
+  await openSettings(page, "wallet");
+
+  const card = page.getByTestId("wallet-agent-spending");
+  await expect(card).toContainText("Default agent budget");
+  await expect(card).toContainText("Default for new agents");
+  await expect(card).toContainText(
+    "Existing agents keep their current budgets",
+  );
+  await expect(card).not.toContainText("Steady Finch");
+
+  await page.getByTestId("wallet-default-agent-mode-budget").click();
+  await page
+    .getByRole("textbox", { name: "Default budget for new agents" })
+    .fill("300");
+  await page.getByTestId("wallet-default-agent-period-month").click();
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect(
+    page
+      .locator("[data-sonner-toast]")
+      .filter({ hasText: "Default agent budget was updated" }),
+  ).toBeVisible();
+  const commands = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __BUZZ_E2E_COMMANDS__?: string[];
+        }
+      ).__BUZZ_E2E_COMMANDS__ ?? [],
+  );
+  expect(
+    commands.filter((command) => command === "wallet_set_default_nwc_policy"),
+  ).toHaveLength(1);
+  expect(
+    commands.filter((command) => command === "wallet_list_nwc_clients"),
+  ).toHaveLength(0);
+  expect(
+    commands.filter((command) => command === "wallet_set_nwc_policy"),
+  ).toHaveLength(0);
 });
 
 test("transfer out is disabled when the wallet is empty", async ({ page }) => {
@@ -375,6 +538,7 @@ test("incoming payment event refreshes the wallet balance", async ({
       note: null,
       payerNote: null,
       offerId: null,
+      paymentHash: null,
       createdAtMs: Date.now(),
       finalizedAtMs: Date.now(),
     };
@@ -446,6 +610,7 @@ test("successful funding closes the QR and returns to the wallet overview", asyn
       note: null,
       payerNote: null,
       offerId: null,
+      paymentHash: null,
       createdAtMs: Date.now(),
       finalizedAtMs: Date.now(),
     };

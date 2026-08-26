@@ -486,6 +486,25 @@ buzz notes get --name dco-check   # exits non-zero: not found
 buzz notes rm --name does-not-exist   # exits non-zero
 ```
 
+### Wallet recovery
+
+These commands need an auth tag for a hosted agent and an owner wallet that
+advertises NWC `pay` support.
+
+```bash
+# Start a payment and save the request_event_id from the JSON result.
+buzz wallet pay '<BIP-321-URI>' --amount 50sats | tee /tmp/wallet-pay.json
+REQUEST_ID="$(jq -r .request_event_id /tmp/wallet-pay.json)"
+
+# Resume a pending payment with the exact signed request. This command also
+# republishes a missing zap proof when the payment has settled.
+buzz wallet status "$REQUEST_ID" | jq .
+```
+
+If the first command loses its response after the relay accepts the request,
+copy the request ID from the error and run `wallet status`. Do not run a new
+`wallet pay` command for the same payment.
+
 ---
 
 ## 7. Error Path Testing

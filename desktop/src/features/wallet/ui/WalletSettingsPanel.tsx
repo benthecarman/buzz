@@ -32,6 +32,10 @@ import { INCOMING_WALLET_PAYMENT_EVENT } from "../events";
 import { formatBitcoin, formatSatsAsUsd } from "../lib/formatBitcoin";
 import { parseWholeBitcoinAmount } from "../lib/profileZap";
 import { walletCommandError, walletErrorMessage } from "../lib/walletError";
+import {
+  type WalletTransactionContext,
+  walletTransactionPresentation,
+} from "../lib/walletTransactionPresentation";
 import type {
   WalletFundingRequest,
   WalletIncomingPaymentEvent,
@@ -39,6 +43,8 @@ import type {
   WalletStatus,
   WalletTransaction,
 } from "../types";
+import { useWalletTransactionContext } from "../useWalletTransactionContext";
+import { AgentSpendingCard } from "./AgentSpendingCard";
 
 type WalletAction = "fund" | "transfer";
 
@@ -512,12 +518,14 @@ function RecoveryCard() {
 }
 
 function TransactionHistory({
+  context,
   error,
   loading,
   onLoadMore,
   transactions,
   canLoadMore,
 }: {
+  context: WalletTransactionContext;
   error: string | null;
   loading: boolean;
   onLoadMore: () => void;
@@ -542,6 +550,10 @@ function TransactionHistory({
         ) : null}
         {transactions.map((transaction) => {
           const prefix = directionPrefix(transaction);
+          const presentation = walletTransactionPresentation(
+            transaction,
+            context,
+          );
           const amountUsd =
             transaction.amount === null
               ? null
@@ -553,11 +565,9 @@ function TransactionHistory({
               key={transaction.id}
             >
               <div className="min-w-0">
-                <p className="text-sm font-medium capitalize">
-                  {transaction.direction} · {transaction.status}
-                </p>
+                <p className="text-sm font-medium">{presentation.title}</p>
                 <p className="truncate text-xs text-muted-foreground">
-                  {transaction.note || transaction.statusMessage}
+                  {presentation.description}
                 </p>
                 <p className="text-2xs text-muted-foreground">
                   {new Date(transaction.createdAtMs).toLocaleString()}
@@ -605,6 +615,7 @@ function TransactionHistory({
 }
 
 export function WalletSettingsPanel() {
+  const transactionContext = useWalletTransactionContext();
   const [status, setStatus] = useState<WalletStatus | null>(null);
   const [funding, setFunding] = useState<WalletFundingRequest | null>(null);
   const [activeAction, setActiveAction] = useState<WalletAction | null>(null);
@@ -806,9 +817,11 @@ export function WalletSettingsPanel() {
           onPaymentComplete={() => void refreshStatusAndHistory()}
         />
       ) : null}
+      <AgentSpendingCard />
       <RecoveryCard />
       <TransactionHistory
         canLoadMore={nextCursor !== null}
+        context={transactionContext}
         error={historyError}
         loading={historyLoading}
         onLoadMore={() => {

@@ -380,10 +380,11 @@ fn extract_page_offset(raw: &Value, limit: Option<i64>) -> Option<i64> {
 const BRIDGE_WINDOW_DEFAULT_LIMIT: u32 = 50;
 const BRIDGE_WINDOW_MAX_LIMIT: u32 = 200;
 
-/// Aux closure kinds: reactions, deletions (NIP-09 + NIP-29), edits.
-const WINDOW_AUX_KINDS: [u32; 4] = [
+/// Aux closure kinds: reactions, zaps, deletions (NIP-09 + NIP-29), edits.
+const WINDOW_AUX_KINDS: [u32; 5] = [
     buzz_core::kind::KIND_DELETION,
     buzz_core::kind::KIND_REACTION,
+    buzz_core::kind::KIND_BOLT12_ZAP,
     buzz_core::kind::KIND_NIP29_DELETE_EVENT,
     buzz_core::kind::KIND_STREAM_MESSAGE_EDIT,
 ];
@@ -560,8 +561,8 @@ async fn handle_channel_window_filter(
         events.push(v);
     }
 
-    // 2. Aux closure: reactions/deletions/edits targeting retained rows, plus
-    //    deletions targeting those aux events (the transitive second hop).
+    // 2. Aux closure: reactions/zaps/deletions/edits targeting retained rows,
+    //    plus deletions targeting those aux events (the transitive second hop).
     //    One round trip for the client instead of an #e fan-out. Runs in the
     //    SAME request transaction that served the window: when the page came
     //    from a proved replica session, the heartbeat observation anchored a

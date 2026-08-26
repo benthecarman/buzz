@@ -278,6 +278,19 @@ CREATE INDEX idx_events_not_before ON events (community_id, not_before)
 -- EXPLAIN before its work lands (Quinn option A; Max's index-spelling caveat).
 CREATE INDEX idx_events_search_tsv ON events USING GIN (search_tsv);
 
+-- ── BOLT12 zap payment claims ────────────────────────────────────────────────
+-- The payer-proof payment hash is the idempotency key for kind 9736. Claim it
+-- in the same transaction as the event so concurrent wrappers cannot both win.
+
+CREATE TABLE bolt12_zap_payments (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    payment_hash BYTEA NOT NULL CHECK (length(payment_hash) = 32),
+    event_id     BYTEA NOT NULL CHECK (length(event_id) = 32),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (community_id, payment_hash),
+    UNIQUE (community_id, event_id)
+);
+
 -- ── Event mentions ────────────────────────────────────────────────────────────
 -- Conformance: "Channel-less global events and DMs" (#p fan-out). The join to
 -- events MUST carry the community tuple (e.community_id = m.community_id AND
@@ -1722,6 +1735,7 @@ $$;
 SELECT attach_community_write_fence('api_tokens');
 SELECT attach_community_write_fence('archived_identities');
 SELECT attach_community_write_fence('audit_log');
+SELECT attach_community_write_fence('bolt12_zap_payments');
 SELECT attach_community_write_fence('channel_members');
 SELECT attach_community_write_fence('channels');
 SELECT attach_community_write_fence('community_bans');

@@ -223,6 +223,7 @@ test("shows the received amount in the incoming payment toast", async ({
       note: null,
       payerNote: null,
       offerId: null,
+      paymentHash: null,
       createdAtMs: Date.now(),
       finalizedAtMs: Date.now(),
     };

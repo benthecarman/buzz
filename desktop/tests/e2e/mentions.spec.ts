@@ -536,6 +536,59 @@ test("relay-only shared agents emit an outbound mention tag when selected", asyn
     .toContain(TEST_IDENTITIES.alice.pubkey);
 });
 
+test("a hosted agent owner can add it to another channel by mentioning it", async ({
+  page,
+}) => {
+  const hostedAgentPubkey = "7".repeat(64);
+  await installMockBridge(page, {
+    searchProfiles: [
+      {
+        pubkey: hostedAgentPubkey,
+        displayName: "Silly Elephant",
+        ownerPubkey: MOCK_VIEWER_PUBKEY,
+        isAgent: true,
+      },
+    ],
+    relayAgents: [
+      {
+        pubkey: hostedAgentPubkey,
+        name: "Silly Elephant",
+        ownerPubkey: MOCK_VIEWER_PUBKEY,
+        respondTo: "owner-only",
+      },
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+
+  const input = page.getByTestId("message-input");
+  await input.fill("@");
+  const agentRow = autocomplete(page).locator("button", {
+    hasText: "Silly Elephant",
+  });
+  await expect(agentRow).toBeVisible();
+  await expect(agentRow.getByText("not in channel")).toBeVisible();
+  await agentRow.click();
+  await page.keyboard.type("hello");
+
+  const baselineCommands = await readCommandLog(page);
+  const baselineAddCount = commandCount(
+    baselineCommands,
+    "add_channel_members",
+  );
+  await page.getByTestId("send-message").click();
+  await page.getByRole("button", { name: "Invite", exact: true }).click();
+
+  await expect
+    .poll(async () =>
+      commandCount(await readCommandLog(page), "add_channel_members"),
+    )
+    .toBeGreaterThan(baselineAddCount);
+  await expect
+    .poll(() => readOutgoingMentionPubkeys(page, "@Silly Elephant hello"))
+    .toContain(hostedAgentPubkey);
+});
+
 test("thread autocomplete keeps multiple long names readable in a narrow panel", async ({
   page,
 }) => {

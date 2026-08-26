@@ -359,6 +359,7 @@ export function AgentsView() {
           }
           submitLabel={personas.personaDialogState.submitLabel}
           title={personas.personaDialogState.title}
+          walletAgent={personas.personaDialogState.walletAgent}
         />
       ) : null}
       {personas.personaToDelete ? (
@@ -468,7 +469,11 @@ export function AgentsView() {
               onOpenChange={(open) => {
                 if (!open) onRequestClose();
               }}
-              onSubmitDefinition={personas.handleSubmit}
+              onSubmitDefinition={(input, intent, backendIntent, options) =>
+                personas.handleSubmit(input, intent, backendIntent, null, {
+                  walletPolicy: options.walletPolicy,
+                })
+              }
               runtimes={personas.acpRuntimesQuery.data ?? []}
               runtimeCatalogStatus={
                 personas.acpRuntimesQuery.isLoading

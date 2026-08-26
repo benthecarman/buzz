@@ -110,7 +110,7 @@ type AgentDefinitionDialogProps = {
   ) => Promise<unknown>;
   /** Publishes saved changes when the edited agent is shared in the catalog. */
   publishCatalogUpdatesOnSave?: boolean;
-  createRunSection?: React.ReactNode;
+  afterRespondTo?: React.ReactNode;
   /** Extra create-mode submit gate (e.g. incomplete provider config). */
   createSubmitBlocked?: boolean;
 };
@@ -134,7 +134,7 @@ export function AgentDefinitionDialog({
   onOpenChange,
   onSubmit,
   publishCatalogUpdatesOnSave = false,
-  createRunSection,
+  afterRespondTo,
   createSubmitBlocked = false,
 }: AgentDefinitionDialogProps) {
   const runtimesLoading = runtimeCatalogStatus === "loading";
@@ -980,7 +980,7 @@ export function AgentDefinitionDialog({
                 transition={advancedFieldsTransition}
               >
                 <PersonaAdvancedFields
-                  afterRespondTo={isCreateMode ? createRunSection : undefined}
+                  afterRespondTo={afterRespondTo}
                   behaviorDraft={behaviorDraft}
                   disabled={isPending}
                   envVars={envVars}

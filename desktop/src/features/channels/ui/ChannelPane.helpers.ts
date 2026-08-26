@@ -1,7 +1,13 @@
+import type { CSSProperties } from "react";
 import { isEphemeralChannel } from "@/features/channels/lib/ephemeralChannel";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { Channel } from "@/shared/api/types";
 import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
+
+export const HUDDLE_TRANSCRIPT_ROOT_STYLE = {
+  "--buzz-channel-content-top-padding": "0rem",
+  "--channel-top-chrome-height": "0.25rem",
+} as CSSProperties;
 
 export function getChannelIntroKind(channel: Channel): string {
   const isPrivate = channel.visibility === "private";

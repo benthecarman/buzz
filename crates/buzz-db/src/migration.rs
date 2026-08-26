@@ -645,8 +645,12 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 32);
+        assert_eq!(migrations.len(), 33);
         assert_eq!(migrations[0].version, 1);
+        assert_eq!(
+            migrations.last().map(|migration| migration.version),
+            Some(33)
+        );
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
             .sql
@@ -1110,6 +1114,26 @@ mod tests {
     }
 
     #[test]
+    fn bolt12_payment_hash_claims_are_scoped_and_fenced() {
+        let migration = MIGRATOR
+            .iter()
+            .find(|migration| &*migration.description == "bolt12 zap payment hashes")
+            .expect("BOLT12 payment-hash migration");
+        assert_eq!(migration.version, 33);
+        let sql = migration.sql.as_str();
+        assert!(sql.contains("CREATE TABLE bolt12_zap_payments"));
+        assert!(sql.contains("PRIMARY KEY (community_id, payment_hash)"));
+        assert!(sql.contains("UNIQUE (community_id, event_id)"));
+        assert!(sql.contains("attach_community_write_fence('bolt12_zap_payments')"));
+
+        let desired_schema = include_str!("../../../schema/schema.sql");
+        assert!(desired_schema.contains("CREATE TABLE bolt12_zap_payments"));
+        assert!(desired_schema.contains("PRIMARY KEY (community_id, payment_hash)"));
+        assert!(desired_schema.contains("UNIQUE (community_id, event_id)"));
+        assert!(desired_schema.contains("attach_community_write_fence('bolt12_zap_payments')"));
+    }
+
+    #[test]
     fn migration_lint_detects_tables_missing_community_id_by_default() {
         let sql = r#"
             CREATE TABLE communities (id UUID PRIMARY KEY);
@@ -1544,7 +1568,11 @@ mod tests {
                 "schema.sql is missing operator-global registry row {row:?}"
             );
         }
-        let mut expected_fences = migration.fence_attachments.clone();
+        // Migration 0029 attaches every table that existed at that point.
+        // Later additive migrations must attach their new scoped tables too.
+        // Compare the desired state with the complete migration history so a
+        // new table does not create a false parity failure.
+        let mut expected_fences = surface(&migration_sql()).fence_attachments;
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
         assert_eq!(

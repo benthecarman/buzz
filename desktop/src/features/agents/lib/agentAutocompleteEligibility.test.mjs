@@ -4,8 +4,10 @@ import test from "node:test";
 import {
   coalesceAgentAutocompleteCandidates,
   filterAdmittedMentionPubkeys,
+  filterSelectedMentionPubkeys,
   filterCachedAgentSuggestions,
   getAgentMentionAdmission,
+  getOwnedAgentPubkeys,
   getMentionableAgentPubkeys,
   getSharedChannelIds,
   isAgentIdentityInAllowedList,
@@ -221,6 +223,64 @@ test("getMentionableAgentPubkeys: scopes channel composers and fails closed with
   );
 });
 
+test("getOwnedAgentPubkeys: requires agent membership and the current owner", () => {
+  const result = getOwnedAgentPubkeys({
+    currentPubkey: CURRENT_PUBKEY,
+    members: [
+      { pubkey: PUB_A.toUpperCase(), role: "bot" },
+      { pubkey: PUB_B, role: "bot" },
+      { pubkey: PUB_C, role: "member" },
+    ],
+    getOwnerPubkey: (pubkey) =>
+      pubkey === PUB_A
+        ? CURRENT_PUBKEY.toUpperCase()
+        : pubkey === PUB_B
+          ? OTHER_OWNER_PUBKEY
+          : CURRENT_PUBKEY,
+  });
+
+  assert.deepEqual(result, new Set([PUB_A]));
+});
+
+test("getOwnedAgentPubkeys: includes verified directory agents", () => {
+  const result = getOwnedAgentPubkeys({
+    currentPubkey: CURRENT_PUBKEY,
+    members: [],
+    getOwnerPubkey: () => null,
+    additionalAgents: [
+      { pubkey: PUB_A, ownerPubkey: CURRENT_PUBKEY.toUpperCase() },
+      { pubkey: PUB_B, ownerPubkey: OTHER_OWNER_PUBKEY },
+    ],
+  });
+
+  assert.deepEqual(result, new Set([PUB_A]));
+});
+
+test("getMentionableAgentPubkeys: admits an owned agent only in its channel composer", () => {
+  const base = {
+    currentPubkey: CURRENT_PUBKEY,
+    managedAgentPubkeys: [],
+    ownedAgentPubkeys: [PUB_A],
+    relayAgents: [],
+    sharedChannelIds: new Set(["general"]),
+  };
+
+  assert.deepEqual(
+    getMentionableAgentPubkeys({
+      ...base,
+      eligibilityScope: { type: "channel", channelId: "general" },
+    }),
+    new Set([PUB_A]),
+  );
+  assert.deepEqual(
+    getMentionableAgentPubkeys({
+      ...base,
+      eligibilityScope: { type: "community" },
+    }),
+    new Set(),
+  );
+});
+
 test("autocomplete helper extraction preserves safe filtering and labels", () => {
   assert.equal(isAgentMentionChannelType("stream"), true);
   assert.equal(isAgentMentionChannelType("forum"), true);
@@ -296,6 +356,7 @@ test("shouldHideAgentFromMentions: shows invocable agents even when non-member",
       pubkey: PUB_A,
       mentionableAgentPubkeys: new Set([PUB_A]),
       directoryAgentPubkeys: new Set([PUB_A]),
+      ownerOnly: false,
     }),
     false,
   );
@@ -403,6 +464,7 @@ test("shouldHideAgentFromMentions: shows authorized agents without managed-owner
       pubkey: PUB_A,
       mentionableAgentPubkeys: new Set([PUB_A]),
       directoryReady: true,
+      ownerOnly: false,
     }),
     false,
   );
@@ -427,9 +489,11 @@ test("shouldHideAgentFromMentions: normalizes the pubkey before lookup", () => {
 test("getAgentMentionAdmission: authorized relay agents are independent of owner", () => {
   const common = {
     isAgent: true,
+    isManagedAgent: false,
     pubkey: PUB_A,
     mentionableAgentPubkeys: new Set([PUB_A]),
     directoryReady: true,
+    ownerOnly: false,
   };
 
   assert.equal(getAgentMentionAdmission(common), "allow");
@@ -439,6 +503,23 @@ test("getAgentMentionAdmission: authorized relay agents are independent of owner
       mentionableAgentPubkeys: new Set(),
     }),
     "deny",
+  );
+});
+
+test("getAgentMentionAdmission: owner-only admits an owned agent", () => {
+  assert.equal(
+    getAgentMentionAdmission({
+      isAgent: true,
+      isManagedAgent: false,
+      isOwnedAgent: true,
+      pubkey: PUB_A,
+      currentPubkey: CURRENT_PUBKEY,
+      ownerPubkey: OTHER_OWNER_PUBKEY,
+      mentionableAgentPubkeys: new Set([PUB_A]),
+      directoryReady: true,
+      ownerOnly: true,
+    }),
+    "allow",
   );
 });
 
@@ -462,6 +543,18 @@ test("filterAdmittedMentionPubkeys: rechecks agent admission without dropping pe
       new Set([PUB_B]),
     ),
     [PUB_B, PUB_C],
+  );
+});
+
+test("filterSelectedMentionPubkeys: keeps an agent after search results close", () => {
+  assert.deepEqual(
+    filterSelectedMentionPubkeys(
+      [PUB_A, PUB_B, PUB_C],
+      new Set([PUB_A, PUB_B, PUB_C]),
+      new Set([PUB_B]),
+      new Set([PUB_A]),
+    ),
+    [PUB_A, PUB_B],
   );
 });
 

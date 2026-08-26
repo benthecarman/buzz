@@ -11,7 +11,6 @@ import * as channelHooks from "@/features/channels/hooks";
 import * as readStateFormat from "@/features/channels/readState/readStateFormat";
 import { ChannelScreenEmptyState } from "@/features/channels/ui/ChannelScreenEmptyState";
 import { ChannelScreenHeader } from "@/features/channels/ui/ChannelScreenHeader";
-import { WelcomeAgentCreateDialog } from "@/features/channels/ui/WelcomeAgentCreateDialog";
 import { ForumChannelContent } from "@/features/channels/ui/ForumChannelContent";
 import { MembersSidebar } from "@/features/channels/ui/MembersSidebar";
 import * as agentHooks from "@/features/agents/hooks";
@@ -33,7 +32,6 @@ import {
 } from "@/features/messages/hooks";
 import { buildMessageComposerEditTarget } from "@/features/messages/lib/draftMentionRefs";
 import { formatTimelineMessages } from "@/features/messages/lib/formatTimelineMessages";
-import { DeleteMessageConfirmDialog } from "@/features/messages/ui/DeleteMessageConfirmDialog";
 import * as threading from "@/features/messages/lib/threading";
 import { hasPersistedHydratedChannel } from "@/features/messages/lib/channelHeadCache";
 import {
@@ -47,6 +45,7 @@ import { useChannelTyping } from "@/features/messages/useChannelTyping";
 import type { TimelineMessage } from "@/features/messages/types";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { useRelaySelfQuery } from "@/features/moderation/hooks";
+import { useVerifiedZapEvents } from "@/features/wallet/lib/useVerifiedZapEvents";
 import type { RelayEvent, RespondToMode } from "@/shared/api/types";
 import { ChannelScreenLoadingFallback } from "@/features/channels/ui/ChannelScreenLoadingFallback";
 import * as huddleMessages from "@/features/channels/ui/useHuddleChannelMessages";
@@ -71,6 +70,7 @@ import { useChannelRouteTarget } from "./useChannelRouteTarget";
 import { useChannelOpenReadState } from "./useChannelOpenReadState";
 import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
+import { ChannelScreenDialogs } from "./ChannelScreenDialogs";
 import { GuardedChannelPane } from "./GuardedChannelPane";
 import { useNavigationGuard } from "./useNavigationGuard";
 import * as searchForwarding from "./searchTargetForwarding";
@@ -392,6 +392,11 @@ export function ChannelScreen({
     }
     return { personaLookup: pLookup, respondToLookup: rLookup };
   }, [managedAgentsQuery.data, personasQuery.data]);
+  const zapValidationEvents = React.useMemo(
+    () => [...resolvedMessages, ...threadReplyEvents],
+    [resolvedMessages, threadReplyEvents],
+  );
+  const verifiedZapEvents = useVerifiedZapEvents(zapValidationEvents);
   const timelineMessages = React.useMemo(
     () =>
       formatTimelineMessages(
@@ -405,6 +410,7 @@ export function ChannelScreen({
         respondToLookup,
         relaySelfPubkey,
         messageOwnerProfiles,
+        verifiedZapEvents,
       ),
     [
       activeChannel,
@@ -417,6 +423,7 @@ export function ChannelScreen({
       relaySelfPubkey,
       respondToLookup,
       resolvedMessages,
+      verifiedZapEvents,
     ],
   );
   const threadPanelData = useIndependentThreadPanel({
@@ -434,6 +441,7 @@ export function ChannelScreen({
     personaLookup,
     respondToLookup,
     relaySelfPubkey,
+    verifiedZapEvents,
   });
   const {
     firstUnreadMessageId,
@@ -786,27 +794,13 @@ export function ChannelScreen({
   return (
     <AgentSessionProvider onOpenAgentSession={handleOpenAgentSession}>
       <ProfilePanelProvider onOpenProfilePanel={handleOpenProfilePanel}>
-        <WelcomeAgentCreateDialog
+        <ChannelScreenDialogs
+          deleteMessageId={emptyDeleteId}
           guideName={welcomeGuideAgent?.name ?? "your welcome guide"}
-          isSending={welcomeAgentCreate.isSending}
-          onCreateInChat={() => void welcomeAgentCreate.createInChat()}
-          onCreateManually={welcomeAgentCreate.createManually}
-          onOpenChange={welcomeAgentCreate.setIsOpen}
-          open={welcomeAgentCreate.isOpen}
-          sendError={welcomeAgentCreate.error}
-        />
-        <DeleteMessageConfirmDialog
-          onConfirm={() => {
-            if (emptyDeleteId) {
-              setEditTargetId(null);
-              void handleDelete({ id: emptyDeleteId });
-            }
-            setEmptyDeleteId(null);
-          }}
-          onOpenChange={(open) => {
-            if (!open) setEmptyDeleteId(null);
-          }}
-          open={emptyDeleteId !== null}
+          handleDelete={handleDelete}
+          setDeleteMessageId={setEmptyDeleteId}
+          setEditTargetId={setEditTargetId}
+          welcomeAgentCreate={welcomeAgentCreate}
         />
         <div
           className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"

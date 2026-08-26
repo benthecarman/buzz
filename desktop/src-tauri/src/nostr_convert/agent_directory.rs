@@ -4,9 +4,14 @@ use std::collections::{BTreeSet, HashMap};
 
 use nostr::Event;
 
-use crate::managed_agents::{agent_events::managed_agent_content_from_event, RelayAgentInfo};
+use crate::managed_agents::{
+    agent_events::managed_agent_content_from_event, RelayAgentInfo, RespondTo,
+};
 
-use super::{agents_from_events, first_tag_value, profile_valid_oa_owner_pubkey, tags_named};
+use super::{
+    agents_from_events, first_tag_value, profile_info_from_event, profile_valid_oa_owner_pubkey,
+    tags_named,
+};
 
 /// Collect valid agent pubkeys from kind:30177 `d` tags for follow-up relay
 /// queries. Malformed tags are ignored so one hostile event cannot invalidate
@@ -53,6 +58,43 @@ fn relay_agents_from_legacy_events(events: &[Event]) -> Vec<RelayAgentInfo> {
         .collect()
 }
 
+fn relay_agents_from_owner_profiles(events: &[Event]) -> Vec<RelayAgentInfo> {
+    let mut latest: HashMap<String, &Event> = HashMap::new();
+    for event in events {
+        let pubkey = event.pubkey.to_hex();
+        if latest
+            .get(&pubkey)
+            .is_none_or(|previous| event_is_newer(event, previous))
+        {
+            latest.insert(pubkey, event);
+        }
+    }
+
+    latest
+        .into_iter()
+        .filter_map(|(pubkey, event)| {
+            let owner_pubkey = profile_valid_oa_owner_pubkey(event)?;
+            let profile = profile_info_from_event(event).ok()?;
+            let name = profile
+                .display_name
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| pubkey.clone());
+            Some(RelayAgentInfo {
+                pubkey,
+                owner_pubkey: Some(owner_pubkey.clone()),
+                name,
+                agent_type: "agent".to_string(),
+                channels: Vec::new(),
+                channel_ids: Vec::new(),
+                capabilities: Vec::new(),
+                status: "offline".to_string(),
+                respond_to: Some(RespondTo::Allowlist),
+                respond_to_allowlist: vec![owner_pubkey],
+            })
+        })
+        .collect()
+}
+
 /// Merge self-authored kind:10100 runtime profiles with verified Desktop-managed
 /// policy records. A verified managed coordinate reserves the agent identity even
 /// when its current policy is malformed, so stale legacy permissions cannot win.
@@ -61,7 +103,10 @@ pub fn relay_agents_from_directory_events(
     managed_agent_events: &[Event],
     profile_events: &[Event],
 ) -> Vec<RelayAgentInfo> {
+    let verified_owners = verified_agent_owners_from_profiles(profile_events);
     let verified_policies = latest_verified_managed_policies(managed_agent_events, profile_events);
+    let policy_reserved_pubkeys: std::collections::HashSet<_> =
+        verified_policies.keys().cloned().collect();
     let mut agents: HashMap<String, RelayAgentInfo> =
         relay_agents_from_legacy_events(directory_events)
             .into_iter()
@@ -75,8 +120,19 @@ pub fn relay_agents_from_directory_events(
             agents.insert(agent_pubkey, agent);
         }
     }
+    for agent in relay_agents_from_owner_profiles(profile_events) {
+        if !policy_reserved_pubkeys.contains(&agent.pubkey) {
+            agents.entry(agent.pubkey.clone()).or_insert(agent);
+        }
+    }
 
-    let mut agents: Vec<_> = agents.into_values().collect();
+    let mut agents: Vec<_> = agents
+        .into_values()
+        .map(|mut agent| {
+            agent.owner_pubkey = verified_owners.get(&agent.pubkey).cloned();
+            agent
+        })
+        .collect();
     agents.sort_by(|left, right| left.name.cmp(&right.name));
     agents
 }

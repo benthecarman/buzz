@@ -60,16 +60,65 @@ export type AgentEligibilityScope =
   | { type: "channel"; channelId: string }
   | { type: "managed-only" };
 
+export function getOwnedAgentPubkeys({
+  currentPubkey,
+  members,
+  getOwnerPubkey,
+  additionalAgents = [],
+}: {
+  currentPubkey?: string | null;
+  members: readonly {
+    pubkey: string;
+    isAgent?: boolean;
+    role?: string | null;
+  }[];
+  getOwnerPubkey: (pubkey: string) => string | null | undefined;
+  additionalAgents?: readonly {
+    pubkey: string;
+    ownerPubkey?: string | null;
+  }[];
+}) {
+  if (!currentPubkey) {
+    return new Set<string>();
+  }
+
+  const normalizedCurrentPubkey = normalizePubkey(currentPubkey);
+  const owned = new Set(
+    members.flatMap((member) => {
+      if (member.isAgent !== true && member.role !== "bot") {
+        return [];
+      }
+      const pubkey = normalizePubkey(member.pubkey);
+      const ownerPubkey = getOwnerPubkey(pubkey);
+      return ownerPubkey &&
+        normalizePubkey(ownerPubkey) === normalizedCurrentPubkey
+        ? [pubkey]
+        : [];
+    }),
+  );
+  for (const agent of additionalAgents) {
+    if (
+      agent.ownerPubkey &&
+      normalizePubkey(agent.ownerPubkey) === normalizedCurrentPubkey
+    ) {
+      owned.add(normalizePubkey(agent.pubkey));
+    }
+  }
+  return owned;
+}
+
 export function getMentionableAgentPubkeys({
   currentPubkey,
   eligibilityScope,
   managedAgentPubkeys,
+  ownedAgentPubkeys = [],
   relayAgents,
   sharedChannelIds,
 }: {
   currentPubkey?: string | null;
   eligibilityScope: AgentEligibilityScope;
   managedAgentPubkeys: Iterable<string>;
+  ownedAgentPubkeys?: Iterable<string>;
   relayAgents: readonly RelayAgent[] | undefined;
   sharedChannelIds: ReadonlySet<string>;
 }) {
@@ -93,6 +142,12 @@ export function getMentionableAgentPubkeys({
     }
   }
 
+  if (eligibilityScope.type === "channel") {
+    for (const pubkey of ownedAgentPubkeys) {
+      pubkeys.add(normalizePubkey(pubkey));
+    }
+  }
+
   return pubkeys;
 }
 
@@ -110,40 +165,70 @@ export type AgentMentionAdmission = "allow" | "deny" | "unknown";
 
 export function getAgentMentionAdmission({
   isAgent,
+  isManagedAgent,
+  isOwnedAgent = false,
   pubkey,
+  ownerPubkey,
+  currentPubkey,
   mentionableAgentPubkeys,
   directoryReady,
+  ownerOnly,
 }: {
   isAgent: boolean;
+  isManagedAgent: boolean;
+  isOwnedAgent?: boolean;
   pubkey: string;
+  ownerPubkey?: string | null;
+  currentPubkey?: string | null;
   mentionableAgentPubkeys: ReadonlySet<string>;
   directoryReady: boolean;
+  ownerOnly: boolean | undefined;
 }): AgentMentionAdmission {
   if (!isAgent) return "allow";
-  if (!directoryReady) return "unknown";
+  if (!directoryReady || ownerOnly === undefined) return "unknown";
 
-  return mentionableAgentPubkeys.has(normalizePubkey(pubkey))
+  const normalized = normalizePubkey(pubkey);
+  if (!mentionableAgentPubkeys.has(normalized)) return "deny";
+  if (!ownerOnly || isManagedAgent || isOwnedAgent) return "allow";
+  if (!ownerPubkey || !currentPubkey) return "unknown";
+
+  return normalizePubkey(ownerPubkey) === normalizePubkey(currentPubkey)
     ? "allow"
     : "deny";
 }
 
 export function shouldHideAgentFromMentions({
   isAgent,
+  isManagedAgent = false,
+  isOwnedAgent = false,
   pubkey,
+  ownerPubkey,
+  currentPubkey,
   mentionableAgentPubkeys,
   directoryReady = true,
+  ownerOnly,
 }: {
   isAgent: boolean;
+  isManagedAgent?: boolean;
+  isOwnedAgent?: boolean;
   pubkey: string;
+  ownerPubkey?: string | null;
+  currentPubkey?: string | null;
   mentionableAgentPubkeys: ReadonlySet<string>;
   directoryReady?: boolean;
+  ownerOnly: boolean | undefined;
 }) {
   return (
     getAgentMentionAdmission({
       isAgent,
+      isManagedAgent,
+      isOwnedAgent,
       pubkey,
+      ownerPubkey,
+      currentPubkey,
       mentionableAgentPubkeys,
       directoryReady,
+      ownerOnly,
     }) !== "allow"
   );
 }
@@ -213,6 +298,20 @@ export function filterAdmittedMentionPubkeys(
       admittedAgentPubkeys.has(normalized)
     );
   });
+}
+
+export function filterSelectedMentionPubkeys(
+  pubkeys: readonly string[],
+  agentIdentityPubkeys: ReadonlySet<string>,
+  admittedAgentPubkeys: ReadonlySet<string>,
+  selectedAgentPubkeys: ReadonlySet<string>,
+) {
+  const selected = new Set([...selectedAgentPubkeys].map(normalizePubkey));
+  return filterAdmittedMentionPubkeys(
+    pubkeys,
+    new Set([...agentIdentityPubkeys, ...selected]),
+    new Set([...admittedAgentPubkeys, ...selected]),
+  );
 }
 
 export function isAgentMentionChannelType(type?: string | null) {

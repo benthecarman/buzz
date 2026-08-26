@@ -612,6 +612,66 @@ fn relay_agent_directory_preserves_headless_profiles_and_prefers_verified_manage
 }
 
 #[test]
+fn relay_agent_directory_exposes_verified_owner() {
+    let agent_keys = Keys::generate();
+    let buyer_keys = Keys::generate();
+    let agent_pubkey = agent_keys.public_key();
+    let auth_json = buzz_sdk_pkg::nip_oa::compute_auth_tag(&buyer_keys, &agent_pubkey, "")
+        .expect("compute auth tag");
+    let auth_values: Vec<String> = serde_json::from_str(&auth_json).expect("parse auth tag");
+    let profile = EventBuilder::new(Kind::Metadata, r#"{"display_name":"Hosted"}"#)
+        .tags([Tag::parse(auth_values).expect("parse auth tag")])
+        .sign_with_keys(&agent_keys)
+        .expect("sign profile");
+    let directory = EventBuilder::new(
+        Kind::Custom(10100),
+        r#"{"name":"Hosted","respond_to":"anyone"}"#,
+    )
+    .sign_with_keys(&agent_keys)
+    .expect("sign directory event");
+
+    let agents = relay_agents_from_directory_events(&[directory], &[], &[profile]);
+
+    assert_eq!(agents.len(), 1);
+    assert_eq!(
+        agents[0].owner_pubkey.as_deref(),
+        Some(buyer_keys.public_key().to_hex().as_str())
+    );
+}
+
+#[test]
+fn relay_agent_directory_accepts_owner_profile_without_policy() {
+    let agent_keys = Keys::generate();
+    let buyer_keys = Keys::generate();
+    let agent_pubkey = agent_keys.public_key();
+    let auth_json = buzz_sdk_pkg::nip_oa::compute_auth_tag(&buyer_keys, &agent_pubkey, "")
+        .expect("compute auth tag");
+    let auth_values: Vec<String> = serde_json::from_str(&auth_json).expect("parse auth tag");
+    let profile = EventBuilder::new(Kind::Metadata, r#"{"display_name":"Hosted"}"#)
+        .tags([Tag::parse(auth_values).expect("parse auth tag")])
+        .sign_with_keys(&agent_keys)
+        .expect("sign profile");
+
+    let agents = relay_agents_from_directory_events(&[], &[], &[profile]);
+
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].pubkey, agent_pubkey.to_hex());
+    assert_eq!(agents[0].name, "Hosted");
+    assert_eq!(
+        agents[0].owner_pubkey.as_deref(),
+        Some(buyer_keys.public_key().to_hex().as_str())
+    );
+    assert_eq!(
+        agents[0].respond_to,
+        Some(crate::managed_agents::RespondTo::Allowlist)
+    );
+    assert_eq!(
+        agents[0].respond_to_allowlist,
+        vec![buyer_keys.public_key().to_hex()]
+    );
+}
+
+#[test]
 fn authenticated_malformed_managed_policy_does_not_fall_back_to_legacy_permissions() {
     let owner_keys = Keys::generate();
     let agent_keys = Keys::generate();

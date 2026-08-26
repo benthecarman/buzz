@@ -16,7 +16,11 @@ import type {
   RelayEvent,
   UserProfileSummary,
 } from "@/shared/api/types";
-import { KIND_REMINDER } from "@/shared/constants/kinds";
+import {
+  KIND_BOLT12_ZAP,
+  KIND_REMINDER,
+  KIND_SYSTEM_MESSAGE,
+} from "@/shared/constants/kinds";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 
@@ -27,6 +31,13 @@ function hasThreadReplyTags(tags: string[][]) {
 
 export function filterInboxItems(items: InboxItem[]) {
   return items.filter((item) => item.item.kind !== KIND_REMINDER);
+}
+
+/** Returns true when the Inbox must use the shared system-event renderer. */
+export function usesInboxSystemRow(
+  message: Pick<InboxContextMessage, "kind">,
+): boolean {
+  return message.kind === KIND_SYSTEM_MESSAGE;
 }
 
 export function hasInboxThreadContext(
@@ -93,6 +104,7 @@ export function matchesInboxAllView(
     [item.item, ...(item.groupItems ?? [])].some(
       (groupItem) => groupItem && isProjectInboxItem(groupItem),
     ) ||
+    representative?.kind === KIND_BOLT12_ZAP ||
     item.categories.includes("needs_action") ||
     Boolean(
       representative &&

@@ -22,13 +22,29 @@ function relayEvent(id, createdAt) {
 }
 
 test("zap catch-up scopes one recipient with a cursor overlap", () => {
-  assert.deepEqual(buildZapCatchupFilter("AA", 100, 200), {
-    kinds: [9736],
-    "#p": ["aa"],
-    limit: 500,
-    since: 95,
-    until: 200,
-  });
+  assert.deepEqual(
+    buildZapCatchupFilter({ pubkey: "AA", role: "recipient" }, 100, 200),
+    {
+      kinds: [9736],
+      "#p": ["aa"],
+      limit: 500,
+      since: 95,
+      until: 200,
+    },
+  );
+});
+
+test("zap catch-up scopes one author with a cursor overlap", () => {
+  assert.deepEqual(
+    buildZapCatchupFilter({ pubkey: "AA", role: "author" }, 100, 200),
+    {
+      kinds: [9736],
+      authors: ["aa"],
+      limit: 500,
+      since: 95,
+      until: 200,
+    },
+  );
 });
 
 test("zap catch-up pages backward, deduplicates, and returns oldest first", async () => {
@@ -38,7 +54,7 @@ test("zap catch-up pages backward, deduplicates, and returns oldest first", asyn
   const overlap = firstPage[0];
   const filters = [];
   const events = await fetchZapCatchupEvents({
-    recipientPubkey: "recipient",
+    scope: { pubkey: "recipient", role: "recipient" },
     since: 500,
     until: 2_000,
     fetchPage: async (filter) => {
@@ -74,25 +90,33 @@ test("zap catch-up processes later proofs without skipping an unresolved proof",
   );
 });
 
-test("zap sync cursor is validated and scoped by relay and recipient", () => {
+test("zap sync cursor is validated and scoped by relay, identity, and role", () => {
   assert.equal(parseZapSyncCursor(null), 0);
   assert.equal(parseZapSyncCursor("invalid"), 0);
   assert.equal(parseZapSyncCursor("123"), 123);
 
   const ownerScope = {
     ownerPubkey: "owner",
-    recipientPubkey: "recipient-a",
+    pubkey: "recipient-a",
+    role: "recipient",
     relayUrl: "wss://relay.example/",
   };
   assert.match(
     zapSyncCursorStorageKey(ownerScope),
-    /^buzz-wallet-zap-sync\.v3:/,
+    /^buzz-wallet-zap-sync\.v5:/,
   );
   assert.notEqual(
     zapSyncCursorStorageKey(ownerScope),
     zapSyncCursorStorageKey({
       ...ownerScope,
-      recipientPubkey: "recipient-b",
+      pubkey: "recipient-b",
+    }),
+  );
+  assert.notEqual(
+    zapSyncCursorStorageKey(ownerScope),
+    zapSyncCursorStorageKey({
+      ...ownerScope,
+      role: "author",
     }),
   );
   assert.notEqual(

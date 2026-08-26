@@ -3960,6 +3960,79 @@ test("home inbox groups consecutive DMs and opens the full conversation", async 
   ).toBeVisible();
 });
 
+test("home inbox renders DM creation as a system event", async ({ page }) => {
+  const dmChannelId = "f48efb06-0c93-5025-aac9-2e646bb6bfa8";
+  const systemEventId = "inbox-dm-created-system-event";
+  const messageEventId = "inbox-dm-created-follow-up";
+  const content = JSON.stringify({
+    actor: TEST_IDENTITIES.alice.pubkey,
+    participants: [TEST_IDENTITIES.alice.pubkey, MOCK_IDENTITY_PUBKEY],
+    type: "dm_created",
+  });
+
+  await page.goto("/");
+  await expect(page.getByTestId("home-inbox-list")).toBeVisible();
+  await page.waitForFunction(() => {
+    const win = window as MockFeedWindow;
+    return (
+      typeof win.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function" &&
+      typeof win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__ === "function"
+    );
+  });
+
+  await page.evaluate(
+    ({ channelId, content, messageEventId, senderPubkey, systemEventId }) => {
+      const win = window as MockFeedWindow;
+      const emitMessage = win.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emitMessage || !win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__) {
+        throw new Error("Mock bridge helpers are not installed.");
+      }
+      const createdAt = Math.floor(Date.now() / 1000);
+      emitMessage({
+        channelName: "alice-tyler",
+        content,
+        createdAt,
+        id: systemEventId,
+        kind: 40099,
+        pubkey: senderPubkey,
+      });
+      const event = emitMessage({
+        channelName: "alice-tyler",
+        content: "Your hosted agent is ready.",
+        createdAt: createdAt + 1,
+        id: messageEventId,
+        pubkey: senderPubkey,
+      });
+      win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__({
+        category: "activity",
+        channel_id: channelId,
+        channel_name: "alice-tyler",
+        channel_type: null,
+        content: event.content,
+        created_at: event.created_at,
+        id: event.id,
+        kind: event.kind,
+        pubkey: event.pubkey,
+        tags: event.tags,
+      });
+    },
+    {
+      channelId: dmChannelId,
+      content,
+      messageEventId,
+      senderPubkey: TEST_IDENTITIES.alice.pubkey,
+      systemEventId,
+    },
+  );
+
+  await page.getByTestId(`home-inbox-item-${messageEventId}`).click();
+  const detail = page.getByTestId("home-inbox-detail");
+  await expect(detail.getByTestId("system-message-row")).toContainText(
+    "started this conversation",
+  );
+  await expect(detail).not.toContainText('"type":"dm_created"');
+});
+
 test("home inbox manage affordance opens management without leaving home", async ({
   page,
 }) => {

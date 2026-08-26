@@ -21,6 +21,7 @@ import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import { useCustomEmoji } from "@/features/custom-emoji/hooks";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { ReportMessageDialog } from "@/features/moderation/ui/ReportMessageDialog";
+import bitcoinIconUrl from "@/features/profile/assets/bitcoin.svg?inline";
 import { MessageModerationMenuItems } from "@/features/moderation/ui/MessageModerationMenuItems";
 import type {
   TimelineMessage,
@@ -49,6 +50,7 @@ import {
 import { isPositiveEmojiParticle } from "@/shared/ui/EmojiBurstProvider";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import type { MessageZapAction } from "./useMessageZap";
 
 const ACTION_BUTTON_CLASS = "h-8 w-8 rounded-full p-0";
 const ACTION_ICON_CLASS = "!h-4 !w-4";
@@ -397,6 +399,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onUnfollowThread,
   reactionErrorMessage = null,
   reactions,
+  zapAction,
   isFollowingThread,
   isUnread,
 }: {
@@ -417,6 +420,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   onUnfollowThread?: (message: TimelineMessage) => void;
   reactionErrorMessage?: string | null;
   reactions: TimelineReaction[];
+  zapAction?: MessageZapAction;
   isFollowingThread?: boolean;
   /** Current read state of the clicked message, from the same predicate the
    *  unread badge uses. Drives the single mark-read/unread toggle label. */
@@ -440,6 +444,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   );
   const hasReplyAction = Boolean(onReply);
   const hasReactionAction = Boolean(onReactionSelect);
+  const hasZapAction = zapAction?.canZap === true;
 
   const hasMoreMenuActions =
     Boolean(onEdit) ||
@@ -482,8 +487,12 @@ export const MessageActionBar = React.memo(function MessageActionBar({
     },
     [onReactionBadgeBurstRequest, onReactionSelect, wouldAddReaction],
   );
-
-  if (!hasReplyAction && !hasReactionAction && !hasMoreMenuActions) {
+  if (
+    !hasReplyAction &&
+    !hasReactionAction &&
+    !hasZapAction &&
+    !hasMoreMenuActions
+  ) {
     return null;
   }
 
@@ -609,6 +618,31 @@ export const MessageActionBar = React.memo(function MessageActionBar({
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Copy link</TooltipContent>
+            </Tooltip>
+          ) : null}
+
+          {hasZapAction ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label={zapAction.label}
+                  className={ACTION_BUTTON_CLASS}
+                  data-testid={`zap-message-${message.id}`}
+                  disabled={zapAction.disabled}
+                  onClick={zapAction.run}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <img
+                    alt=""
+                    aria-hidden="true"
+                    className="h-5 w-5"
+                    src={bitcoinIconUrl}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{zapAction.label}</TooltipContent>
             </Tooltip>
           ) : null}
 

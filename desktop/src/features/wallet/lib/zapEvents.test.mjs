@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  zapAuthorSubscriptionFilter,
   zapLiveSubscriptionFilters,
   zapSubscriptionFilter,
 } from "./zapEvents.ts";
@@ -16,15 +17,30 @@ test("zap subscription covers the owner and agents once", () => {
   });
 });
 
+test("zap author subscription covers sent proofs once", () => {
+  assert.deepEqual(zapAuthorSubscriptionFilter(["AA", "bb", "aa"], 123), {
+    kinds: [9736],
+    authors: ["aa", "bb"],
+    limit: 50,
+    since: 123,
+  });
+});
+
 test("zap live subscriptions use one exact channel scope per filter", () => {
   assert.deepEqual(
-    zapLiveSubscriptionFilters(["owner"], 123, [
+    zapLiveSubscriptionFilters(["owner"], ["owner", "agent"], 123, [
       "channel-b",
       "channel-a",
       "channel-b",
     ]),
     [
       { kinds: [9736], "#p": ["owner"], limit: 50, since: 123 },
+      {
+        kinds: [9736],
+        authors: ["owner", "agent"],
+        limit: 50,
+        since: 123,
+      },
       {
         kinds: [9736],
         "#p": ["owner"],
@@ -34,7 +50,21 @@ test("zap live subscriptions use one exact channel scope per filter", () => {
       },
       {
         kinds: [9736],
+        authors: ["owner", "agent"],
+        "#h": ["channel-a"],
+        limit: 50,
+        since: 123,
+      },
+      {
+        kinds: [9736],
         "#p": ["owner"],
+        "#h": ["channel-b"],
+        limit: 50,
+        since: 123,
+      },
+      {
+        kinds: [9736],
+        authors: ["owner", "agent"],
         "#h": ["channel-b"],
         limit: 50,
         since: 123,

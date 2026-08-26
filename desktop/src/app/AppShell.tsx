@@ -39,6 +39,7 @@ import { useMembershipNotifications } from "@/features/channels/useMembershipNot
 import { useFeedItemState } from "@/features/home/useFeedItemState";
 import { useThreadFollows } from "@/features/messages/lib/useThreadFollows";
 import { useIncomingWalletPayments } from "@/features/wallet/useIncomingWalletPayments";
+import { useHostedAgentOwnership } from "@/features/wallet/useHostedAgentOwnership";
 import {
   useHomeFeedNotifications,
   useHomeFeedNotificationState,
@@ -232,7 +233,8 @@ export function AppShell() {
   );
   const setUserStatusMutation = useSetUserStatusMutation(deferredPubkey);
   const channelsQuery = useChannelsQuery();
-  const channels = channelsQuery.data ?? [];
+  const channels = channelsQuery.data ?? EMPTY_CHANNELS;
+  useHostedAgentOwnership(identityQuery.data?.pubkey, channels);
   const { feedProfilesQuery, homeFeedQuery, notificationSettings } =
     useHomeFeedNotifications(identityQuery.data?.pubkey, channels);
   const feedItemState = useFeedItemState(identityQuery.data?.pubkey);

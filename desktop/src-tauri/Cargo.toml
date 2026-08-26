@@ -23,7 +23,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = ["bitcoin", "system-keyring"]
-bitcoin = ["dep:async-trait", "dep:bip39", "dep:buzz_conformance_pkg", "dep:hkdf", "dep:lexe", "dep:lexe-payment-uri-core", "dep:sha2_10"]
+bitcoin = ["dep:async-trait", "dep:bip39", "dep:buzz_conformance_pkg", "dep:hkdf", "dep:lexe", "dep:lexe-api", "dep:lexe-payment-uri-core", "dep:lightning-payer-proof", "dep:sha2_10"]
 mesh-llm = ["dep:iroh", "dep:mesh-llm-sdk", "dep:mesh-llm-host-runtime", "dep:mesh-llm-client", "dep:mesh-llm-node", "dep:mesh-llm-system", "dep:mesh-llm-events"]
 # OS keyring backing for desktop secret storage (nsec private keys). When
 # disabled, secrets fall back to 0o600 files. On by default for real builds.
@@ -75,8 +75,9 @@ async-trait = { version = "0.1", optional = true }
 bip39 = { version = "2", default-features = false, features = ["std", "zeroize"], optional = true }
 dirs = "6"
 hkdf = { version = "0.12", optional = true }
-lexe = { version = "=0.1.20", optional = true }
-lexe-payment-uri-core = { version = "=0.1.20", optional = true }
+lexe = { version = "=0.1.22", features = ["unstable"], optional = true }
+lexe-api = { version = "=0.1.22", optional = true }
+lexe-payment-uri-core = { version = "=0.1.22", optional = true }
 sha2_10 = { package = "sha2", version = "0.10", optional = true }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-deep-link = "2"
@@ -101,6 +102,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 toml = "0.8"
 nostr = { version = "0.44", features = ["nip44", "nip49"] }
+lightning-payer-proof = { git = "https://git.rust-bitcoin.org/vincenzopalazzo/rust-lightning.git", rev = "6b5629856ec567a45ef3853b8787181cb3f33d89", optional = true }
 # OS-entropy source for backup passphrase generation (already in the tree as a
 # transitive dependency; pinned here for direct use).
 getrandom = "0.3"

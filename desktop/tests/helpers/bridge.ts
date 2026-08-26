@@ -1,5 +1,9 @@
 import type { Page } from "@playwright/test";
-import type { WalletTransaction } from "../../src/features/wallet/types";
+import type {
+  WalletNwcClient,
+  WalletNwcDefaultPolicy,
+  WalletTransaction,
+} from "../../src/features/wallet/types";
 import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
 import type { MockManagedAgentSeed } from "../../src/testing/e2eBridge";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
@@ -373,6 +377,8 @@ type MockBridgeOptions = {
   walletBalance?: number;
   walletSpendableBalance?: number;
   walletTransactions?: WalletTransaction[];
+  walletNwcClients?: WalletNwcClient[];
+  walletDefaultNwcPolicy?: WalletNwcDefaultPolicy;
   /** Delay wallet history reads to exercise snapshot ordering races. */
   walletTransactionDelayMs?: number;
   /** Exact persisted request returned for pending-payment reconciliation. */

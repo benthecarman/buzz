@@ -60,3 +60,12 @@ test("owned agents exclude agents controlled by somebody else", () => {
 
   assert.equal(merged.size, 0);
 });
+
+test("owned agents include relay-managed remote agents", () => {
+  const merged = mergeOwnedAgentPubkeys(undefined, undefined, "owner", [
+    { pubkey: RELAY, ownerPubkey: " owner " },
+    { pubkey: "other", ownerPubkey: "somebody-else" },
+  ]);
+
+  assert.deepEqual([...merged], [RELAY]);
+});

@@ -596,6 +596,22 @@ export async function signRelayEvent(input: {
   return JSON.parse(eventJson) as RelayEvent;
 }
 
+export async function buildHostedAgentOwnerAttestation(
+  request: RelayEvent,
+  zap: RelayEvent,
+  plan: RelayEvent,
+): Promise<RelayEvent> {
+  const eventJson = await invokeTauri<string>(
+    "build_hosted_agent_owner_attestation",
+    {
+      requestJson: JSON.stringify(request),
+      zapJson: JSON.stringify(zap),
+      planJson: JSON.stringify(plan),
+    },
+  );
+  return JSON.parse(eventJson) as RelayEvent;
+}
+
 export async function createAuthEvent(input: {
   challenge: string;
   relayUrl: string;
