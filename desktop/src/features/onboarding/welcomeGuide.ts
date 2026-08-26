@@ -4,7 +4,6 @@ import {
 } from "@/features/agents/lib/instanceInputForDefinition";
 import {
   addChannelMembers,
-  createManagedAgent,
   getChannelMembers,
   listManagedAgents,
   updateManagedAgent,
@@ -12,6 +11,7 @@ import {
 import { discoverAcpRuntimes } from "@/shared/api/tauriAcpDiscovery";
 import { getAgentAccessOwnerOnly } from "@/shared/api/tauriAgentAccess";
 import { getGlobalAgentConfig } from "@/shared/api/tauriGlobalAgentConfig";
+import { createManagedAgent } from "@/shared/api/tauriManagedAgents";
 import { listPersonas, setPersonaActive } from "@/shared/api/tauriPersonas";
 import type {
   AcpRuntime,

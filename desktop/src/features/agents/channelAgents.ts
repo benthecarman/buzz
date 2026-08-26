@@ -9,12 +9,14 @@ import { normalizePubkey } from "@/shared/lib/pubkey";
 import { resolveManagedAgentAvatarUrl } from "@/features/agents/ui/managedAgentAvatar";
 import {
   addChannelMembers,
-  createManagedAgent,
   getChannelMembers,
   listManagedAgents,
   updateManagedAgent,
 } from "@/shared/api/tauri";
-import { startManagedAgent } from "@/shared/api/tauriManagedAgents";
+import {
+  createManagedAgent,
+  startManagedAgent,
+} from "@/shared/api/tauriManagedAgents";
 import type {
   AcpRuntime,
   ChannelRole,

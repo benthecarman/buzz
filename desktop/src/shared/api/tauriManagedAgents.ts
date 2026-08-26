@@ -3,10 +3,39 @@ import {
   invokeTauri,
   type RawManagedAgent,
 } from "@/shared/api/tauri";
+import { managedAgentWalletCreationContext } from "@/features/agents/lib/managedAgentWallet";
 import type {
+  CreateManagedAgentInput,
   ManagedAgent,
   ManagedAgentRuntimeStatus,
 } from "@/shared/api/types";
+
+type RawCreateManagedAgentResponse = {
+  agent: RawManagedAgent;
+  private_key_nsec: string;
+  profile_sync_error: string | null;
+  spawn_error: string | null;
+};
+
+export async function createManagedAgent(input: CreateManagedAgentInput) {
+  const response = await invokeTauri<RawCreateManagedAgentResponse>(
+    "create_managed_agent",
+    {
+      input: {
+        ...input,
+        envVars: input.envVars ?? {},
+        harnessOverride: input.harnessOverride ?? false,
+        ...managedAgentWalletCreationContext(),
+      },
+    },
+  );
+  return {
+    agent: fromRawManagedAgent(response.agent),
+    privateKeyNsec: response.private_key_nsec,
+    profileSyncError: response.profile_sync_error,
+    spawnError: response.spawn_error,
+  };
+}
 
 export async function startManagedAgent(
   pubkey: string,

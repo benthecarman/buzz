@@ -425,6 +425,7 @@ export function ProfileSummaryView({
           actionGroupRef={setPrimaryActionsElement}
           className={primaryActionsMotionClassName}
           concealed={primaryActionsConcealed}
+          recipientName={displayName}
           followMutation={followMutation}
           agentActionDisabled={isAgentActionPending}
           agentActionLabel={

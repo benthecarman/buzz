@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import type { WalletTransaction } from "../../src/features/wallet/types";
 import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
 import type { MockManagedAgentSeed } from "../../src/testing/e2eBridge";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
@@ -50,6 +51,7 @@ type MockSearchProfileSeed = {
   avatarUrl?: string | null;
   nip05Handle?: string | null;
   about?: string | null;
+  bolt12Offer?: string | null;
   ownerPubkey?: string | null;
   isAgent?: boolean;
 };
@@ -64,6 +66,8 @@ type MockRelayAgentSeed = {
   channelNames?: string[];
   channelIds?: string[];
   status?: "online" | "away" | "offline";
+  ownerPubkey?: string | null;
+  priceSats?: number | null;
 };
 
 type MockHuddleSeed = {
@@ -365,6 +369,52 @@ type MockBridgeOptions = {
   stallFirstAuthSigning?: boolean;
   stallWebsocketSends?: boolean;
   userSearchDelayMs?: number;
+  /** Current mocked wallet totals, mutable by wallet polling specs. */
+  walletBalance?: number;
+  walletSpendableBalance?: number;
+  walletTransactions?: WalletTransaction[];
+  /** Delay wallet history reads to exercise snapshot ordering races. */
+  walletTransactionDelayMs?: number;
+  /** Exact persisted request returned for pending-payment reconciliation. */
+  walletPendingSend?: {
+    destination: string;
+    amount: number | null;
+    message: string | null;
+    requestId: string;
+  };
+  /** Sequenced wallet-send failures; null entries allow that call through. */
+  walletSendErrors?: ({ code: string; message: string } | null)[];
+  /** Captured wallet-send requests for idempotency assertions. */
+  walletSendRequests?: Array<{
+    destination: string;
+    amount: number | null;
+    message: string | null;
+    requestId: string;
+  }>;
+  walletProfileZapStatus?: "completed" | "failed" | "pending";
+  /** Successive message/profile zap results for reconciliation tests. */
+  walletProfileZapStatuses?: ("completed" | "failed" | "pending")[];
+  /** Successive zap command errors; null entries let that call continue. */
+  walletProfileZapErrors?: ({ code: string; message: string } | null)[];
+  /** Delay a message/profile zap result so optimistic UI can be asserted. */
+  walletProfileZapDelayMs?: number;
+  /**
+   * Value returned by the `observer_archive_default_enabled` mock command.
+   * `true` = internal-policy build (toggle locked ON); `false`/omitted = OSS
+   * build (toggle functional). Drives LocalArchiveSettingsCard policy state.
+   */
+  observerArchiveDefaultEnabled?: boolean;
+  /**
+   * Delay (ms) applied to `observer_archive_default_enabled` so specs can
+   * assert the pending-reconciliation state (toggle disabled, no
+   * `list_save_subscriptions` call yet) before the policy resolves.
+   */
+  observerArchiveDefaultEnabledDelayMs?: number;
+  /**
+   * When set, `observer_archive_default_enabled` throws with this message —
+   * drives the fail-closed path when the policy check itself fails.
+   */
+  observerArchiveDefaultEnabledError?: string;
   // NIP-IA gate inputs — drive the archive-button gate matrix in
   // tests/e2e/identity-archive.spec.ts.
   /**

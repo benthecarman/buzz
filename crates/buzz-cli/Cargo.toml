@@ -35,6 +35,11 @@ thiserror = { workspace = true }
 # Nostr event signing — used in `buzz auth`, auto-mint, and signed event writes
 nostr = { workspace = true }
 
+# Typed BOLT12 and BIP-321 parsing/formatting.
+lightning = { workspace = true }
+lexe-api-core = { workspace = true }
+lexe-payment-uri-core = { workspace = true }
+
 # UUID parsing for validate_uuid + event building
 uuid = { workspace = true }
 

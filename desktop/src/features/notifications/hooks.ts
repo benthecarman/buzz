@@ -1,8 +1,11 @@
 import * as React from "react";
 
+import { useCommunities } from "@/features/communities/useCommunities";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
+import { useZapNotifications } from "@/features/wallet/useZapNotifications";
+import { useAgentWalletRequests } from "@/features/wallet/useAgentWalletRequests";
 import type { Channel, FeedItem, HomeFeedResponse } from "@/shared/api/types";
 import { scheduleAfterForegroundReady } from "@/shared/lib/foregroundReady";
 import {
@@ -521,8 +524,19 @@ export function useHomeFeedNotificationState(
   ]);
 }
 
-export function useHomeFeedNotifications(pubkey: string | undefined) {
+export function useHomeFeedNotifications(
+  pubkey: string | undefined,
+  channels: readonly Channel[],
+) {
+  const { activeCommunity } = useCommunities();
   const notificationSettings = useNotificationSettings(pubkey);
+  useZapNotifications(
+    pubkey,
+    notificationSettings.settings,
+    activeCommunity?.relayUrl,
+    channels.filter((channel) => channel.isMember).map((channel) => channel.id),
+  );
+  useAgentWalletRequests(pubkey);
   const homeFeedQuery = useHomeFeedQuery();
   const refetchHomeFeedForE2e = React.useEffectEvent(() => {
     void homeFeedQuery.refetch();

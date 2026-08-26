@@ -1,3 +1,10 @@
+import { useState } from "react";
+import { LoaderCircle } from "lucide-react";
+import { toast } from "sonner";
+
+import { disableWallet, enableWallet } from "@/features/wallet/api";
+import { useBitcoinCompileEnabled } from "@/features/wallet/hooks";
+import { walletErrorMessage } from "@/features/wallet/lib/walletError";
 import { setAgentManagedProfiles } from "@/shared/api/tauri";
 import { desktopFeatures, useFeatureToggle } from "@/shared/features";
 import type { FeatureDefinition } from "@/shared/features";
@@ -7,7 +14,35 @@ import { SettingsSectionHeader } from "./SettingsSectionHeader";
 
 function FeatureRow({ feature }: { feature: FeatureDefinition }) {
   const [enabled, toggle] = useFeatureToggle(feature.id);
+  const [applying, setApplying] = useState(false);
   const switchId = `feature-toggle-${feature.id}`;
+
+  async function handleToggle(value: boolean) {
+    if (feature.id === "bitcoin") {
+      setApplying(true);
+      try {
+        const result = value ? await enableWallet() : await disableWallet();
+        toggle(value);
+        if (result.publicationWarnings.length > 0) {
+          toast.warning(
+            `Wallet ${value ? "enabled" : "disabled"}, but some agent offers or communities could not be updated. They may not support wallet profile payments yet.`,
+          );
+        }
+      } catch (error) {
+        toast.error(walletErrorMessage(error));
+      } finally {
+        setApplying(false);
+      }
+      return;
+    }
+
+    toggle(value);
+    if (feature.id === "agentManagedProfiles") {
+      void setAgentManagedProfiles(value).catch((error) => {
+        console.error("Failed to apply agent-managed profiles setting:", error);
+      });
+    }
+  }
 
   return (
     <SettingsOptionRow>
@@ -19,30 +54,30 @@ function FeatureRow({ feature }: { feature: FeatureDefinition }) {
           {feature.description}
         </p>
       </div>
-      <Switch
-        aria-labelledby={`${switchId}-label`}
-        checked={enabled}
-        data-testid={switchId}
-        onCheckedChange={(value) => {
-          toggle(value);
-          if (feature.id === "agentManagedProfiles") {
-            void setAgentManagedProfiles(value).catch((error) => {
-              console.error(
-                "Failed to apply agent-managed profiles setting:",
-                error,
-              );
-            });
-          }
-        }}
-      />
+      <div className="flex items-center gap-2">
+        {applying ? (
+          <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" />
+        ) : null}
+        <Switch
+          aria-labelledby={`${switchId}-label`}
+          checked={enabled}
+          data-testid={switchId}
+          disabled={applying}
+          onCheckedChange={(value) => void handleToggle(value)}
+        />
+      </div>
     </SettingsOptionRow>
   );
 }
 
 export function ExperimentalFeaturesCard() {
+  const bitcoinAvailable = useBitcoinCompileEnabled();
+
   // Manifest is preview-only by definition; every desktop entry is a preview
   // feature.
-  const previewFeatures = desktopFeatures;
+  const previewFeatures = desktopFeatures.filter(
+    (feature) => feature.id !== "bitcoin" || bitcoinAvailable,
+  );
 
   return (
     <section className="min-w-0" data-testid="settings-experimental">

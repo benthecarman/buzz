@@ -8,6 +8,38 @@ pub struct SubmitEventResponse {
     pub message: String,
 }
 
+#[derive(Debug)]
+pub struct SubmitEventError {
+    message: String,
+    retryable: bool,
+}
+
+impl SubmitEventError {
+    fn permanent(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: true,
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+}
+
+impl std::fmt::Display for SubmitEventError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
 /// POST an already-signed event to an explicit relay with an explicit owner.
 ///
 /// Deferred/scoped publication uses this form so a workspace or identity
@@ -19,14 +51,30 @@ pub async fn submit_signed_event_at_with_keys(
     api_base_url: &str,
     keys: &nostr::Keys,
 ) -> Result<SubmitEventResponse, String> {
+    submit_signed_event_at_with_keys_classified(event, state, api_base_url, keys)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Submit an event while preserving whether a failed publication can be retried.
+pub async fn submit_signed_event_at_with_keys_classified(
+    event: &nostr::Event,
+    state: &AppState,
+    api_base_url: &str,
+    keys: &nostr::Keys,
+) -> Result<SubmitEventResponse, SubmitEventError> {
     if event.pubkey != keys.public_key() {
-        return Err("signed event does not match the publishing identity".to_string());
+        return Err(SubmitEventError::permanent(
+            "signed event does not match the publishing identity",
+        ));
     }
     crate::relay_admission::wait_for_rate_limit().await;
     let url = format!("{}/events", api_base_url.trim_end_matches('/'));
     let body_bytes = event.as_json().into_bytes();
-    crate::egress_guard::assert_no_key_backup_bytes(&body_bytes, "relay event submit")?;
-    let auth_header = build_nip98_auth_header_for_keys(keys, &Method::POST, &url, &body_bytes)?;
+    crate::egress_guard::assert_no_key_backup_bytes(&body_bytes, "relay event submit")
+        .map_err(SubmitEventError::permanent)?;
+    let auth_header = build_nip98_auth_header_for_keys(keys, &Method::POST, &url, &body_bytes)
+        .map_err(SubmitEventError::permanent)?;
 
     let response = state
         .http_client
@@ -36,15 +84,29 @@ pub async fn submit_signed_event_at_with_keys(
         .body(body_bytes)
         .send()
         .await
-        .map_err(|e| classify_request_error(&e))?;
+        .map_err(|error| SubmitEventError::retryable(classify_request_error(&error)))?;
 
     if !response.status().is_success() {
-        return Err(relay_error_message(response).await);
+        let status = response.status();
+        let message = relay_error_message(response).await;
+        let retryable = status.is_server_error()
+            || status == reqwest::StatusCode::REQUEST_TIMEOUT
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+        return Err(if retryable {
+            SubmitEventError::retryable(message)
+        } else {
+            SubmitEventError::permanent(message)
+        });
     }
 
-    let result: SubmitEventResponse = parse_json_response(response).await?;
+    let result: SubmitEventResponse = parse_json_response(response)
+        .await
+        .map_err(SubmitEventError::retryable)?;
     if !result.accepted {
-        return Err(format!("relay rejected event: {}", result.message));
+        return Err(SubmitEventError::permanent(format!(
+            "relay rejected event: {}",
+            result.message
+        )));
     }
 
     Ok(result)

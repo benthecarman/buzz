@@ -1,0 +1,673 @@
+use std::{future::Future, path::Path, str::FromStr, sync::Arc, time::Duration};
+
+use async_trait::async_trait;
+use lexe::types::payment::PaymentStatus;
+use lexe::{
+    config::WalletEnvConfig,
+    types::{
+        auth::{CredentialsRef, RootSeed},
+        bitcoin::{Amount, Invoice, Offer},
+        command::{
+            AnalyzeRequest, CreateInvoiceRequest, CreateOfferRequest, PayOfferRequest, PayRequest,
+            PaymentSyncSummary,
+        },
+        payment::{Order, Payment, PaymentCreatedIndex, PaymentDirection, PaymentFilter},
+    },
+    wallet::LexeWallet,
+};
+use lexe_payment_uri_core::Bip321Uri;
+use tokio::sync::Mutex;
+
+use super::{
+    models::{
+        WalletDestinationAnalysis, WalletError, WalletFundingRequest, WalletOfferSendRequest,
+        WalletPaymentResult, WalletPaymentStatus, WalletSendRequest, WalletStatus,
+        WalletTransaction, WalletTransactionPage,
+    },
+    provider::{WalletPaymentMatch, WalletProvider},
+    seed::WalletSeed,
+};
+
+const OFFER_EXPIRATION_SECS: u32 = 60 * 60 * 24 * 365 * 50;
+// Lexe limits BOLT11 invoices to one day. The accompanying BOLT12 offer
+// remains the long-lived funding method in the BIP-321 request.
+const FUNDING_INVOICE_EXPIRATION_SECS: u32 = 60 * 60 * 24;
+const LEXE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const LEXE_PAYMENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+async fn bounded<T>(
+    operation: &'static str,
+    timeout: Duration,
+    future: impl Future<Output = T>,
+) -> Result<T, WalletError> {
+    tokio::time::timeout(timeout, future).await.map_err(|_| {
+        WalletError::new(
+            "provider_timeout",
+            format!(
+                "Lexe {operation} timed out after {} seconds",
+                timeout.as_secs()
+            ),
+        )
+    })
+}
+
+fn bip321_uri(
+    amount: Option<u64>,
+    bolt11_invoice: Option<&str>,
+    bolt12_offer: Option<&str>,
+) -> Result<String, WalletError> {
+    if amount == Some(0) {
+        return Err(WalletError::new(
+            "invalid_amount",
+            "Bitcoin amount must be greater than zero",
+        ));
+    }
+
+    let bolt11_invoice = bolt11_invoice
+        .filter(|value| !value.is_empty())
+        .map(Invoice::from_str)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_funding_request", error.to_string()))?;
+    let bolt12_offer = bolt12_offer
+        .filter(|value| !value.is_empty())
+        .map(Offer::from_str)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_funding_request", error.to_string()))?;
+    if bolt11_invoice.is_none() && bolt12_offer.is_none() {
+        return Err(WalletError::new(
+            "invalid_funding_request",
+            "at least one Lightning payment method is required",
+        ));
+    }
+
+    let amount = amount
+        .map(Amount::try_from_sats_u64)
+        .transpose()
+        .map_err(|error| WalletError::new("invalid_amount", error.to_string()))?;
+    Ok(Bip321Uri {
+        invoice: bolt11_invoice,
+        offer: bolt12_offer,
+        amount,
+        ..Default::default()
+    }
+    .to_string())
+}
+
+fn payment_sync_changed(summary: &PaymentSyncSummary) -> bool {
+    summary.num_new > 0 || summary.num_updated > 0
+}
+
+fn reconciliation_fields_match(
+    direction: PaymentDirection,
+    payer_note: Option<&str>,
+    personal_note: Option<&str>,
+    amount: Option<u64>,
+    offer_id: Option<&lexe::types::payment::OfferId>,
+    payment_match: &WalletPaymentMatch<'_>,
+    expected_offer_id: Option<&lexe::types::payment::OfferId>,
+) -> bool {
+    direction == PaymentDirection::Outbound
+        && payment_match
+            .payer_note
+            .is_none_or(|note| payer_note == Some(note))
+        && payment_match
+            .personal_note
+            .is_none_or(|note| personal_note == Some(note))
+        && payment_match
+            .expected_amount
+            .is_none_or(|expected| amount == Some(expected))
+        && expected_offer_id.is_none_or(|expected| offer_id == Some(expected))
+}
+
+pub(super) fn canonical_offer(value: &str) -> bool {
+    Offer::from_str(value)
+        .map(|offer| offer.to_string() == value)
+        .unwrap_or(false)
+}
+
+/// Creates the Lexe adapter for one identity-scoped wallet cache.
+pub(super) fn create_lexe_provider(
+    seed: WalletSeed,
+    cache_dir: &Path,
+) -> Result<Arc<dyn WalletProvider>, WalletError> {
+    super::ensure_private_directory(cache_dir)
+        .map_err(|error| WalletError::unavailable(format!("create wallet cache: {error}")))?;
+
+    let root_seed = RootSeed::from_bytes(seed.as_bytes())
+        .map_err(|error| WalletError::unavailable(format!("create Lexe seed: {error}")))?;
+    let wallet = LexeWallet::load_or_fresh(
+        WalletEnvConfig::mainnet(),
+        (&root_seed).into(),
+        Some(cache_dir.to_path_buf()),
+    )
+    .map_err(|error| WalletError::provider(format!("initialize Lexe wallet: {error:#}")))?;
+
+    Ok(Arc::new(LexeProvider {
+        wallet,
+        root_seed,
+        offer_path: cache_dir.join("active-offer.txt"),
+        offer_lock: Mutex::new(()),
+    }))
+}
+
+/// Lexe SDK adapter for one deterministic Buzz wallet.
+///
+/// This is the only wallet module allowed to depend on Lexe SDK types. It
+/// normalizes balances, payment states, cursors, and errors before returning
+/// them through `WalletProvider`.
+struct LexeProvider {
+    /// Lexe client bound to this Nostr identity's deterministic root seed.
+    wallet: LexeWallet,
+    /// Retained because Lexe's idempotent signup API requires the root seed.
+    root_seed: RootSeed,
+    /// Disk location of the persisted active offer. Lexe 0.1.20 has no API to
+    /// recover an existing offer and `create_offer` never invalidates prior
+    /// ones, so the offer is persisted here to keep a restart from minting a
+    /// fresh one and orphaning the previously published offer.
+    offer_path: std::path::PathBuf,
+    /// Serializes read-create-persist so concurrent requests cannot mint two
+    /// offers and publish different values.
+    offer_lock: Mutex<()>,
+}
+
+impl LexeProvider {
+    async fn offer_at(
+        &self,
+        path: &Path,
+        description: &str,
+        rotate: bool,
+    ) -> Result<String, WalletError> {
+        let _guard = self.offer_lock.lock().await;
+        if !rotate {
+            if let Some(offer) = std::fs::read_to_string(path)
+                .ok()
+                .map(|offer| offer.trim().to_string())
+                .filter(|offer| canonical_offer(offer))
+            {
+                return Ok(offer);
+            }
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                WalletError::unavailable(format!("create wallet offer directory: {error}"))
+            })?;
+        }
+        let offer = bounded(
+            "offer creation",
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet.create_offer(CreateOfferRequest {
+                description: Some(description.to_string()),
+                expiration_secs: Some(OFFER_EXPIRATION_SECS),
+                ..Default::default()
+            }),
+        )
+        .await?
+        .map_err(|error| WalletError::provider(format!("create BOLT12 offer: {error:#}")))?
+        .offer
+        .to_string();
+        // The offer is public and published to Nostr. A persistence failure is
+        // non-fatal, but the next process can mint a replacement for the scope.
+        if let Err(error) = std::fs::write(path, &offer) {
+            tracing::warn!(error = %error, "persist wallet offer");
+        }
+        Ok(offer)
+    }
+
+    fn amount(value: u64) -> Result<Amount, WalletError> {
+        Amount::try_from_sats_u64(value)
+            .map_err(|error| WalletError::new("invalid_amount", error.to_string()))
+    }
+
+    fn json_string<T: serde::Serialize>(value: &T) -> String {
+        serde_json::to_value(value)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    fn payment_id(index: &PaymentCreatedIndex) -> Result<String, WalletError> {
+        serde_json::to_string(index)
+            .map_err(|error| WalletError::provider(format!("encode payment id: {error}")))
+    }
+
+    fn payment_result(payment: Payment) -> Result<WalletPaymentResult, WalletError> {
+        Ok(WalletPaymentResult {
+            payment_id: Self::payment_id(&payment.index)?,
+            status: match payment.status {
+                PaymentStatus::Pending => WalletPaymentStatus::Pending,
+                PaymentStatus::Completed => WalletPaymentStatus::Completed,
+                PaymentStatus::Failed => WalletPaymentStatus::Failed,
+            },
+            status_message: payment.status_msg,
+            amount: payment.amount.map(|amount| amount.sats_u64()),
+            fees: payment.fees.sats_u64(),
+            created_at_ms: payment.created_at.to_millis(),
+            finalized_at_ms: payment.finalized_at.map(|timestamp| timestamp.to_millis()),
+        })
+    }
+
+    fn transaction(payment: Payment) -> Result<WalletTransaction, WalletError> {
+        let payer_note = payment.message.clone();
+        let offer_id = payment.offer_id.as_ref().map(Self::json_string);
+        Ok(WalletTransaction {
+            id: Self::payment_id(&payment.index)?,
+            direction: Self::json_string(&payment.direction),
+            status: Self::json_string(&payment.status),
+            status_message: payment.status_msg,
+            amount: payment.amount.map(|amount| amount.sats_u64()),
+            fees: payment.fees.sats_u64(),
+            note: payment
+                .personal_note
+                .or(payment.message)
+                .or(payment.payer_name),
+            payer_note,
+            offer_id,
+            created_at_ms: payment.created_at.to_millis(),
+            finalized_at_ms: payment.finalized_at.map(|timestamp| timestamp.to_millis()),
+        })
+    }
+}
+
+#[async_trait]
+impl WalletProvider for LexeProvider {
+    async fn signup(&self) -> Result<(), WalletError> {
+        // Lexe documents signup as idempotent. It also performs initial
+        // provisioning, so this also recovers a clean install that uses the
+        // same deterministic root seed.
+        bounded(
+            "signup",
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet.signup(&self.root_seed, None),
+        )
+        .await?
+        .map_err(|error| WalletError::provider(format!("sign up Lexe wallet: {error:#}")))
+    }
+
+    async fn provision(&self) -> Result<(), WalletError> {
+        bounded(
+            "provisioning",
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet.provision(CredentialsRef::from(&self.root_seed)),
+        )
+        .await?
+        .map_err(|error| WalletError::provider(format!("provision Lexe wallet: {error:#}")))
+    }
+
+    async fn status(&self) -> Result<WalletStatus, WalletError> {
+        let info = bounded(
+            "balance lookup",
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet.node_info(),
+        )
+        .await?
+        .map_err(|error| WalletError::provider(format!("load Lexe balance: {error:#}")))?;
+        Ok(WalletStatus {
+            provider_name: "Lexe".to_string(),
+            balance: info.balance.sats_u64(),
+            spendable_balance: info.lightning_max_sendable_balance.sats_u64(),
+            lightning_balance: info.lightning_balance.sats_u64(),
+            onchain_balance: info.onchain_balance.sats_u64(),
+        })
+    }
+
+    async fn offer(&self, rotate: bool) -> Result<String, WalletError> {
+        self.offer_at(&self.offer_path, "Buzz wallet", rotate).await
+    }
+
+    async fn funding_request(&self) -> Result<WalletFundingRequest, WalletError> {
+        let invoice = bounded(
+            "invoice creation",
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet.create_invoice(CreateInvoiceRequest {
+                expiration_secs: Some(FUNDING_INVOICE_EXPIRATION_SECS),
+                amount: None,
+                description: Some("Fund Buzz wallet".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await?
+        .map_err(|error| WalletError::provider(format!("create BOLT11 invoice: {error:#}")))?;
+
+        let offer = self.offer(false).await?;
+
+        let bolt11_invoice = invoice.invoice.to_string();
+        let bip321_uri = bip321_uri(None, Some(&bolt11_invoice), Some(&offer))?;
+        Ok(WalletFundingRequest {
+            bip321_uri,
+            bolt11_invoice,
+            bolt11_expires_at_ms: invoice.expires_at.to_millis(),
+            bolt12_offer: offer,
+        })
+    }
+
+    async fn analyze(&self, destination: String) -> Result<WalletDestinationAnalysis, WalletError> {
+        let response = bounded(
+            "destination analysis",
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet.analyze(AnalyzeRequest {
+                payment_string: destination,
+            }),
+        )
+        .await?
+        .map_err(|error| {
+            WalletError::new(
+                "invalid_destination",
+                format!("analyze destination: {error:#}"),
+            )
+        })?;
+        let payable = response.payables.into_iter().next().ok_or_else(|| {
+            WalletError::new("invalid_destination", "no payable destination was found")
+        })?;
+        Ok(WalletDestinationAnalysis {
+            normalized_destination: payable.payable,
+            description: payable.description,
+            amount: payable.amount.map(|amount| amount.sats_u64()),
+            min_amount: payable.min_amount.map(|amount| amount.sats_u64()),
+            max_amount: payable.max_amount.map(|amount| amount.sats_u64()),
+            expires_at_ms: payable.expires_at.map(|timestamp| timestamp.to_millis()),
+        })
+    }
+
+    async fn send(&self, request: WalletSendRequest) -> Result<WalletPaymentResult, WalletError> {
+        let amount = request.amount.map(Self::amount).transpose()?;
+        let payment = bounded(
+            "payment dispatch",
+            LEXE_PAYMENT_TIMEOUT,
+            self.wallet.pay(PayRequest {
+                payable: request.destination,
+                amount,
+                message: request.message,
+                personal_note: Some(format!("Buzz payment {}", request.request_id)),
+            }),
+        )
+        .await?
+        .map_err(|error| WalletError::new("payment_failed", format!("{error:#}")))?;
+        Self::payment_result(payment)
+    }
+
+    async fn send_offer(
+        &self,
+        request: WalletOfferSendRequest,
+    ) -> Result<WalletPaymentResult, WalletError> {
+        let offer = Offer::from_str(&request.offer)
+            .map_err(|error| WalletError::new("invalid_destination", error.to_string()))?;
+        let payment = bounded(
+            "offer payment dispatch",
+            LEXE_PAYMENT_TIMEOUT,
+            self.wallet.pay_offer(PayOfferRequest {
+                offer,
+                amount: Self::amount(request.amount)?,
+                message: Some(request.payer_note),
+                personal_note: Some(request.personal_note),
+            }),
+        )
+        .await?
+        .map_err(|error| WalletError::new("payment_failed", format!("{error:#}")))?;
+        Self::payment_result(payment)
+    }
+
+    async fn find_outbound_payment(
+        &self,
+        payment_match: WalletPaymentMatch<'_>,
+    ) -> Result<Option<WalletPaymentResult>, WalletError> {
+        let expected_offer_id = payment_match
+            .expected_offer
+            .map(Offer::from_str)
+            .transpose()
+            .map_err(|error| WalletError::new("offer_invalid", error.to_string()))?
+            .map(|offer| offer.id());
+        bounded(
+            "payment synchronization",
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet.sync_payments(),
+        )
+        .await?
+        .map_err(|error| WalletError::provider(format!("sync payments: {error:#}")))?;
+        let mut after = None;
+        loop {
+            let page = self
+                .wallet
+                .list_payments(
+                    &PaymentFilter::All,
+                    Some(Order::Desc),
+                    Some(100),
+                    after.as_ref(),
+                )
+                .map_err(|error| WalletError::provider(format!("list payments: {error:#}")))?;
+            if let Some(payment) = page.payments.into_iter().find(|payment| {
+                reconciliation_fields_match(
+                    payment.direction,
+                    payment.message.as_deref(),
+                    payment.personal_note.as_deref(),
+                    payment.amount.map(|value| value.sats_u64()),
+                    payment.offer_id.as_ref(),
+                    &payment_match,
+                    expected_offer_id.as_ref(),
+                )
+            }) {
+                return Self::payment_result(payment).map(Some);
+            }
+            let Some(next_index) = page.next_index else {
+                return Ok(None);
+            };
+            after = Some(next_index);
+        }
+    }
+
+    async fn poll_updates(&self) -> Result<bool, WalletError> {
+        bounded(
+            "payment synchronization",
+            LEXE_REQUEST_TIMEOUT,
+            self.wallet.sync_payments(),
+        )
+        .await?
+        .map(|summary| payment_sync_changed(&summary))
+        .map_err(|error| WalletError::provider(format!("sync payments: {error:#}")))
+    }
+
+    async fn transactions(
+        &self,
+        cursor: Option<String>,
+        limit: usize,
+        sync: bool,
+    ) -> Result<WalletTransactionPage, WalletError> {
+        if sync {
+            bounded(
+                "payment synchronization",
+                LEXE_REQUEST_TIMEOUT,
+                self.wallet.sync_payments(),
+            )
+            .await?
+            .map_err(|error| WalletError::provider(format!("sync payments: {error:#}")))?;
+        }
+        let after = cursor
+            .as_deref()
+            .map(serde_json::from_str::<PaymentCreatedIndex>)
+            .transpose()
+            .map_err(|error| WalletError::new("invalid_cursor", error.to_string()))?;
+        let page = self
+            .wallet
+            .list_payments(
+                &PaymentFilter::All,
+                Some(Order::Desc),
+                Some(limit.clamp(1, 100)),
+                after.as_ref(),
+            )
+            .map_err(|error| WalletError::provider(format!("list payments: {error:#}")))?;
+        let transactions = page
+            .payments
+            .into_iter()
+            .map(Self::transaction)
+            .collect::<Result<Vec<_>, _>>()?;
+        let next_cursor = page.next_index.as_ref().map(Self::payment_id).transpose()?;
+        Ok(WalletTransactionPage {
+            transactions,
+            next_cursor,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use lexe::types::{
+        bitcoin::{Invoice, Offer},
+        command::PaymentSyncSummary,
+        payment::PaymentDirection,
+    };
+
+    use super::{
+        bip321_uri, bounded, payment_sync_changed, reconciliation_fields_match, WalletPaymentMatch,
+    };
+    use crate::wallet::{VALID_INVOICE, VALID_OFFER};
+
+    const VALID_PAYER_NOTE: &str =
+        "nostr:nipB1:c63e8667c29f5db1dbdec9ce4d720b692a15665c03530af5a978701783a073bb";
+
+    #[tokio::test]
+    async fn provider_waits_are_bounded() {
+        let error = bounded(
+            "test operation",
+            std::time::Duration::from_millis(1),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, "provider_timeout");
+    }
+
+    fn query_pairs(uri: &str) -> std::collections::HashMap<String, String> {
+        url::Url::parse(uri)
+            .unwrap()
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn bip321_uri_supports_both_lightning_methods() {
+        let uri = bip321_uri(Some(123_456_789), Some(VALID_INVOICE), Some(VALID_OFFER)).unwrap();
+        let pairs = query_pairs(&uri);
+        assert_eq!(pairs.get("amount").unwrap(), "1.23456789");
+        assert_eq!(pairs.get("lightning").unwrap(), VALID_INVOICE);
+        assert_eq!(pairs.get("lno").unwrap(), VALID_OFFER);
+    }
+
+    #[test]
+    fn bip321_uri_supports_either_lightning_method() {
+        let invoice_only = query_pairs(&bip321_uri(Some(100), Some(VALID_INVOICE), None).unwrap());
+        assert_eq!(invoice_only.get("amount").unwrap(), "0.000001");
+        assert_eq!(invoice_only.get("lightning").unwrap(), VALID_INVOICE);
+        assert!(!invoice_only.contains_key("lno"));
+
+        let offer_only =
+            query_pairs(&bip321_uri(Some(100_000_000), None, Some(VALID_OFFER)).unwrap());
+        assert_eq!(offer_only.get("amount").unwrap(), "1");
+        assert_eq!(offer_only.get("lno").unwrap(), VALID_OFFER);
+        assert!(!offer_only.contains_key("lightning"));
+    }
+
+    #[test]
+    fn bip321_uri_supports_amountless_funding() {
+        let pairs = query_pairs(&bip321_uri(None, Some(VALID_INVOICE), Some(VALID_OFFER)).unwrap());
+        assert!(!pairs.contains_key("amount"));
+        assert_eq!(pairs.get("lightning").unwrap(), VALID_INVOICE);
+        assert_eq!(pairs.get("lno").unwrap(), VALID_OFFER);
+    }
+
+    #[test]
+    fn bip321_uri_rejects_explicit_zero_and_no_payment_methods() {
+        assert_eq!(
+            bip321_uri(Some(0), Some(VALID_INVOICE), Some(VALID_OFFER))
+                .unwrap_err()
+                .code,
+            "invalid_amount"
+        );
+        assert_eq!(
+            bip321_uri(None, None, None).unwrap_err().code,
+            "invalid_funding_request"
+        );
+    }
+
+    #[test]
+    fn payment_fixtures_are_canonical() {
+        assert_eq!(
+            Invoice::from_str(VALID_INVOICE).unwrap().to_string(),
+            VALID_INVOICE
+        );
+        assert_eq!(
+            Offer::from_str(VALID_OFFER).unwrap().to_string(),
+            VALID_OFFER
+        );
+    }
+
+    #[test]
+    fn payment_sync_only_reports_actual_changes() {
+        assert!(!payment_sync_changed(&PaymentSyncSummary {
+            num_new: 0,
+            num_updated: 0,
+        }));
+        assert!(payment_sync_changed(&PaymentSyncSummary {
+            num_new: 1,
+            num_updated: 0,
+        }));
+        assert!(payment_sync_changed(&PaymentSyncSummary {
+            num_new: 0,
+            num_updated: 1,
+        }));
+    }
+
+    #[test]
+    fn reconciliation_requires_matching_outbound_payment_fields() {
+        let offer_id = Offer::from_str(VALID_OFFER).unwrap().id();
+        let expected = WalletPaymentMatch {
+            payer_note: Some(VALID_PAYER_NOTE),
+            personal_note: Some("Buzz profile payment intent"),
+            expected_amount: Some(21),
+            expected_offer: Some(VALID_OFFER),
+        };
+        let matches = |direction, payer_note, amount, actual_offer_id| {
+            reconciliation_fields_match(
+                direction,
+                payer_note,
+                Some("Buzz profile payment intent"),
+                amount,
+                actual_offer_id,
+                &expected,
+                Some(&offer_id),
+            )
+        };
+        assert!(matches(
+            PaymentDirection::Outbound,
+            Some(VALID_PAYER_NOTE),
+            Some(21),
+            Some(&offer_id)
+        ));
+        assert!(!matches(
+            PaymentDirection::Inbound,
+            Some(VALID_PAYER_NOTE),
+            Some(21),
+            Some(&offer_id)
+        ));
+        assert!(!matches(
+            PaymentDirection::Outbound,
+            Some(VALID_PAYER_NOTE),
+            Some(22),
+            Some(&offer_id)
+        ));
+        assert!(!matches(
+            PaymentDirection::Outbound,
+            Some("another-note"),
+            Some(21),
+            Some(&offer_id)
+        ));
+        assert!(!matches(
+            PaymentDirection::Outbound,
+            Some(VALID_PAYER_NOTE),
+            Some(21),
+            None
+        ));
+    }
+}

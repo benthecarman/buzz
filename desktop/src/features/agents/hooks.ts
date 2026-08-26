@@ -22,7 +22,6 @@ import {
   useFocusedRefetchInterval,
 } from "@/shared/lib/useDocumentVisible";
 import {
-  createManagedAgent,
   deleteManagedAgent,
   deleteCustomHarness,
   discoverBackendProviders,
@@ -44,6 +43,7 @@ import {
 import type { HarnessDefinitionInput } from "@/shared/api/tauri";
 import { discoverAcpRuntimes } from "@/shared/api/tauriAcpDiscovery";
 import {
+  createManagedAgent,
   setManagedAgentAutoRestart,
   setManagedAgentStartOnAppLaunch,
   startManagedAgent,
