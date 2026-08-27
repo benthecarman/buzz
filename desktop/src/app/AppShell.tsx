@@ -34,12 +34,12 @@ import {
   useHideDmMutation,
   useOpenDmMutation,
 } from "@/features/channels/hooks";
+import { useDmResurfaceFromMessages } from "@/features/channels/useDmResurfaceFromMessages";
 import { useUnreadChannels } from "@/features/channels/useUnreadChannels";
 import { useMembershipNotifications } from "@/features/channels/useMembershipNotifications";
 import { useFeedItemState } from "@/features/home/useFeedItemState";
 import { useThreadFollows } from "@/features/messages/lib/useThreadFollows";
-import { useIncomingWalletPayments } from "@/features/wallet/useIncomingWalletPayments";
-import { useHostedAgentOwnership } from "@/features/wallet/useHostedAgentOwnership";
+import { useWalletRuntime } from "@/features/wallet/useWalletRuntime";
 import {
   useHomeFeedNotifications,
   useHomeFeedNotificationState,
@@ -110,7 +110,6 @@ export function AppShell() {
   useWebviewZoomShortcuts();
   useTauriWindowDrag();
   useWebviewScrollBoundaryLock();
-  useIncomingWalletPayments();
   const communitiesHook = useCommunities();
   const {
     handleHuddleCompanionOpen,
@@ -234,7 +233,7 @@ export function AppShell() {
   const setUserStatusMutation = useSetUserStatusMutation(deferredPubkey);
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? EMPTY_CHANNELS;
-  useHostedAgentOwnership(identityQuery.data?.pubkey, channels);
+  useWalletRuntime(identityQuery.data?.pubkey, channels);
   const { feedProfilesQuery, homeFeedQuery, notificationSettings } =
     useHomeFeedNotifications(identityQuery.data?.pubkey, channels);
   const feedItemState = useFeedItemState(identityQuery.data?.pubkey);
@@ -508,6 +507,11 @@ export function AppShell() {
   const { applyCanvas, applyAgents } = useApplyTemplate();
   const openDmMutation = useOpenDmMutation();
   const hideDmMutation = useHideDmMutation();
+  useDmResurfaceFromMessages({
+    pubkey: identityQuery.data?.pubkey,
+    relayUrl: communitiesHook.activeCommunity?.relayUrl,
+    reopen: openDmMutation.mutateAsync,
+  });
   const {
     browseDialogType,
     openBrowseChannels: handleOpenBrowseChannels,

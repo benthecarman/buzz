@@ -9,7 +9,43 @@ export const HUDDLE_TRANSCRIPT_ROOT_STYLE = {
   "--channel-top-chrome-height": "0.25rem",
 } as CSSProperties;
 
-export function getChannelIntroKind(channel: Channel): string {
+export function shouldUseFocusIdleDrawer({
+  channelManagementOpen,
+  hasAgentSession,
+  hasIdleAuxiliaryPanel,
+  hasIdlePanelCloseHandler,
+  hasProfilePanel,
+  hasThreadSurface,
+  overrideThread = false,
+  useSplitAuxiliaryPane,
+}: {
+  channelManagementOpen: boolean;
+  hasAgentSession: boolean;
+  hasIdleAuxiliaryPanel: boolean;
+  hasIdlePanelCloseHandler: boolean;
+  hasProfilePanel: boolean;
+  hasThreadSurface: boolean;
+  overrideThread?: boolean;
+  useSplitAuxiliaryPane: boolean;
+}): boolean {
+  return (
+    (useSplitAuxiliaryPane || overrideThread) &&
+    !channelManagementOpen &&
+    !hasAgentSession &&
+    !hasProfilePanel &&
+    (!hasThreadSurface || overrideThread) &&
+    hasIdleAuxiliaryPanel &&
+    hasIdlePanelCloseHandler
+  );
+}
+
+export function getChannelIntroKind(
+  channel: Channel,
+  projectHome = false,
+): string {
+  if (projectHome) {
+    return "project channel";
+  }
   const isPrivate = channel.visibility === "private";
   const isEphemeral = isEphemeralChannel(channel);
 
@@ -32,6 +68,14 @@ export function getChannelIntroDescription(channel: Channel): string | null {
     channel.description?.trim() ||
     null
   );
+}
+
+/** Whether a caller-owned auxiliary sheet should render ahead of a thread. */
+export function shouldPrioritizeIdleAuxiliary(
+  overrideThread: boolean,
+  hasIdleAuxiliary: boolean,
+) {
+  return overrideThread && hasIdleAuxiliary;
 }
 
 export function isWelcomeSetupSystemMessage(message: TimelineMessage) {

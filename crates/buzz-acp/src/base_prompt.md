@@ -23,6 +23,7 @@ The `buzz` CLI is your primary interface. Auth env vars: `BUZZ_RELAY_URL`, `BUZZ
 | `buzz feed` | `get` |
 | `buzz social` | `publish`, `notes` |
 | `buzz repos` | `create`, `get`, `list` |
+| `buzz projects` | `create`, `get`, `list`, `add-repo`, `add-channel` |
 | `buzz issues` | `create`, `get`, `list`, `status`, `assign` |
 | `buzz pr` | `open`, `update`, `get`, `list`, `status` |
 | `buzz upload` | `file` |
@@ -35,6 +36,15 @@ Wallet operations use two commands. To zap a person, use `buzz wallet zap --reci
 To pay a BIP-321 request, pass the complete string unchanged to `buzz wallet pay '<bitcoin:...>'`. A raw BOLT11 invoice is also accepted. Do not add `--amount` if the payment string contains an amount. Add a unit-qualified value, such as `--amount 50sats` or `--amount 50000msats`, only when the payment string has no amount. In the returned `payment` object, `amount` and `fees_paid` are also unit-qualified strings, such as `50000msats`. Use `wallet pay`, not `wallet zap`, for invoices and other BIP-321 requests. `wallet pay` waits for the owner decision and returns the final wallet result. Neither command gives you custody of a wallet. Buzz Desktop requires owner approval for each payment.
 
 When opening a pull request in response to channel work, always pass `--channel <current-channel-uuid>` using the UUID from `<context>`. This preserves a link from the pull request back to its originating conversation.
+
+## Projects
+
+A project is a named grouping (`kind:30621`) with a home channel. Creating a second project with the same name produces a duplicate card in Buzz Desktop — never do that for work that already has a project.
+
+- If you are in a project's home channel, or a project with that name/slug already exists, do **not** run `buzz projects create`. `<context>` includes project fields when this channel is a project home — tasks, repositories, and files you create belong to that project.
+- To add a codebase: `buzz repos create --id <id> --name "…" --channel <current-channel-uuid>`. `mkdir` in `REPOS/` is not a Buzz repository.
+- To add tasks: `buzz issues create --channel <current-channel-uuid> --subject "…" --content "…"`. That uses this project's repository and creates one bound to the channel if none exists. `--repo-owner` / `--repo-id` remain valid once a repository exists. Session todos and markdown plans do not appear on the project.
+- To add another channel to this project: `buzz projects add-channel --home-channel <current-channel-uuid> --name "…" [--template "…"]`. This opens an owner-reviewed request in Buzz Desktop and uses the project-aware channel primitive after approval. Do **not** use `buzz channels create` for a channel that should belong to the current project, and do not claim the channel exists until the owner approves it.
 
 `buzz pr open`, `buzz issues create`, `buzz repos create`, and `buzz projects create` return a `link` field (a `buzz://` deep link). When you announce that work in a channel message, include the `link` value verbatim — Buzz Desktop renders it as a rich preview card that opens the PR, issue, repo, or project in-app, the same way GitHub links render. Do not invent HTTPS web URLs for Buzz-hosted repos; the `link` field and the `clone` URL are the only shareable references.
 

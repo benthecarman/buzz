@@ -1,6 +1,8 @@
 import * as React from "react";
 
 import { useAppShell } from "@/app/AppShellContext";
+import { markHiddenDmFeedItems } from "@/features/channels/dmResurface";
+import { useHiddenDmIds } from "@/features/channels/useHiddenDmIds";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { HomeView } from "@/features/home/ui/HomeView";
 import type { HomeFeedResponse } from "@/shared/api/types";
@@ -26,12 +28,11 @@ export function HomeScreen({
 }: HomeScreenProps) {
   const homeFeedQuery = useHomeFeedQuery();
   const { threadActivityFeedItems } = useAppShell();
+  const hiddenDmIds = useHiddenDmIds(currentPubkey);
+
   const augmentedFeed = React.useMemo((): HomeFeedResponse | undefined => {
     const extraActivity = threadActivityFeedItems;
     if (!homeFeedQuery.data && extraActivity.length === 0) return undefined;
-    if (homeFeedQuery.data && extraActivity.length === 0) {
-      return homeFeedQuery.data;
-    }
 
     const base = homeFeedQuery.data ?? {
       feed: {
@@ -46,7 +47,7 @@ export function HomeScreen({
       base.feed.activity.map((item) => item.id),
     );
 
-    return {
+    const withThreadActivity = {
       ...base,
       feed: {
         ...base.feed,
@@ -56,7 +57,8 @@ export function HomeScreen({
         ],
       },
     };
-  }, [homeFeedQuery.data, threadActivityFeedItems]);
+    return markHiddenDmFeedItems(withThreadActivity, hiddenDmIds);
+  }, [hiddenDmIds, homeFeedQuery.data, threadActivityFeedItems]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
